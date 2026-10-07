@@ -1,0 +1,93 @@
+name: releaser
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v[0-9]+.[0-9]+.[0-9]+alpha[0-9]+"
+      - "v[0-9]+.[0-9]+.[0-9]+beta[0-9]+"
+      - "v[0-9]+.[0-9]+.[0-9]+rc[0-9]+"
+      - "v[0-9]+.[0-9]+.[0-9]+"
+
+permissions:
+  contents: write
+  id-token: write
+  attestations: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ github.ref_name }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: recursive
+      - name: Build
+        shell: bash
+        run: |
+          docker run --rm -v .:/root/repo -w /root/repo -e ADC_VERSION="${{ github.ref_name }}" ubuntu:latest /bin/bash -c 'apt update && apt install -y git curl && git config --system --add safe.directory "*" && LANG="C.UTF-8" TZ="JST-9" bash build.bash --skip-tests --zip'
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: build-artifacts
+          path: |
+            build/Release/dist/
+      - name: Attest build artifacts
+        if: ${{ !github.event.repository.private }}
+        id: attest-zip
+        uses: actions/attest-build-provenance@v4
+        with:
+          subject-path: "build/Release/dist/audient-device-closer_*.zip"
+      - name: Prepare attestation for upload
+        if: ${{ !github.event.repository.private }}
+        shell: bash
+        run: |
+          VERSION="${{ github.ref_name }}"
+          mkdir -p attestations
+          cp "${{ steps.attest-zip.outputs.bundle-path }}" "attestations/audient-device-closer_${VERSION}.zip.attestation.jsonl"
+      - name: Upload attestation for zip
+        if: ${{ !github.event.repository.private }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: attestation-zip
+          path: attestations/
+          retention-days: 1
+
+  release:
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - uses: actions/checkout@v7
+      - name: Download build artifacts
+        uses: actions/download-artifact@v8
+        with:
+          name: build-artifacts
+          path: build/Release/dist/
+      - name: Download attestation for zip
+        if: ${{ !github.event.repository.private }}
+        uses: actions/download-artifact@v8
+        with:
+          name: attestation-zip
+          path: attestations/
+      - name: Create Release
+        env:
+          GH_TOKEN: ${{ secrets.CREATE_RELEASE_SECRET || github.token }}
+          VERSION: ${{ needs.build.outputs.version }}
+          REPO: ${{ github.repository }}
+        shell: bash
+        run: |
+          chmod +x .github/extract-changelog.sh
+          {
+            sed -n '1,/^### Changes$/p' .github/RELEASE_TEMPLATE.md
+            .github/extract-changelog.sh "${VERSION}"
+          } | envsubst > release_notes.md
+          files=("build/Release/dist/audient-device-closer_${VERSION}.zip")
+          if compgen -G "attestations/*.attestation.jsonl" > /dev/null; then
+            files+=("attestations/audient-device-closer_${VERSION}.zip.attestation.jsonl")
+          fi
+          gh release create "${VERSION}" \
+            --draft \
+            --title "${VERSION}" \
+            --notes-file release_notes.md \
+            "${files[@]}"

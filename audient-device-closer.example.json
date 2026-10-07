@@ -1,0 +1,12 @@
+{
+  "ks_service": "audientusbaudioks",
+  "ks_instance_prefix": "TUSBAUDIO_ENUM",
+  "endpoint_name_pattern": "Audient",
+  "veto_log_name": "System",
+  "veto_provider_name": "Microsoft-Windows-Kernel-PnP",
+  "veto_event_id": 225,
+  "mixer_process_name": "iD.exe",
+  "task_name": "\\AudientDeviceCloser\\Device recovery after resume from sleep",
+  "auto_run_delay_ms": 5000,
+  "use_theme": true
+}

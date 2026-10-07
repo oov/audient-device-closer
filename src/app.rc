@@ -1,0 +1,13 @@
+#include <windows.h>
+#include "res/resource.h"
+
+// The manifest carries the requestedExecutionLevel, so it decides whether Windows asks for
+// the administrator before the program starts.  A debug build has to start with the ordinary
+// token: during development an elevation on every start is both annoying and risky, and the
+// code that only ever runs elevated is the code a developer is least likely to exercise.
+// The release build keeps asking for it, because the device removal needs it.
+#ifdef ADC_DEBUG_TOKEN
+ID_MANIFEST RT_MANIFEST "res/app.debug.manifest"
+#else
+ID_MANIFEST RT_MANIFEST "res/app.manifest"
+#endif

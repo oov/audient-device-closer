@@ -1,0 +1,167 @@
+msgid ""
+msgstr ""
+"Report-Msgid-Bugs-To: \n"
+"Last-Translator: Automatically generated\n"
+"Language-Team: none\n"
+"Language: ja\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Plural-Forms: nplurals=1; plural=0;\n"
+
+msgid "(unknown)"
+msgstr "(不明)"
+
+msgid "A process is still using the device, so it could not be released."
+msgstr "デバイスを使用しているプロセスがあるため、解放できません。"
+
+msgid "Abort"
+msgstr "中止"
+
+msgid "Aborted by the user."
+msgstr "ユーザーにより中断されました。"
+
+msgid "Aborting..."
+msgstr "中止しています..."
+
+msgid "Audient Device Closer"
+msgstr "Audient Device Closer"
+
+msgid "Behaviour"
+msgstr "動作設定"
+
+msgid "Blocked device"
+msgstr "止められたデバイス"
+
+msgid "Checking the device state..."
+msgstr "デバイスの状態を確認しています..."
+
+msgid "Checking what is blocking the close..."
+msgstr "閉じられない原因を確認しています..."
+
+#, c-format
+msgid "Close %1$s (%2$s) automatically"
+msgstr "%1$s (%2$s) を自動的に終了する"
+
+msgid "Close audiodg (audiodg.exe) automatically"
+msgstr "audiodg (audiodg.exe) を自動的に終了する"
+
+msgid "Close the Audient device"
+msgstr "Audient デバイスを閉じる"
+
+#, c-format
+msgid "Closing %1$s (%2$s)..."
+msgstr "%1$s (%2$s) を終了しています..."
+
+msgid "Closing audiodg (audiodg.exe)..."
+msgstr "audiodg (audiodg.exe) を終了しています..."
+
+msgid "Closing the device..."
+msgstr "デバイスを閉じています..."
+
+msgid ""
+"Could not read the settings file.\n"
+"It has to sit next to the program as %1$hs."
+msgstr ""
+"設定ファイルを読み込めませんでした。\n"
+"%1$hs という名前でプログラムと同じ場所に置いてください。"
+
+msgid "Do you really want to continue?"
+msgstr "本当に続けますか？"
+
+msgid "Failed."
+msgstr "失敗しました。"
+
+msgid "Install"
+msgstr "インストール"
+
+msgid "No Audient device was found."
+msgstr "Audient のデバイスは見つかりませんでした。"
+
+msgid ""
+"No faulty Audient device was found.\n"
+"\n"
+"A device that is working normally is likely to fail to be closed."
+msgstr ""
+"不正な状態の Audient デバイスはありません。\n"
+"\n"
+"正常に動作しているデバイスではクローズに失敗することがあります。"
+
+msgid "OK"
+msgstr "OK"
+
+msgid "PID"
+msgstr "PID"
+
+msgid "Process"
+msgstr "プロセス"
+
+msgid "Processing"
+msgstr "処理中"
+
+msgid "Register the scheduled task"
+msgstr "タスクスケジューラーに登録"
+
+msgid "Remove the scheduled task"
+msgstr "タスクスケジューラーから削除"
+
+msgid "Starts Audient Device Closer after the computer resumes from sleep and tries to fix the problem when the Audient device did not come back properly."
+msgstr "コンピューターがスリープから復帰した後に Audient Device Closer を起動し、Audient デバイスが正しく復帰できなかった場合に問題解消を試みます。"
+
+msgid "Success."
+msgstr "成功しました。"
+
+msgid "The device cannot be closed because it is in use"
+msgstr "デバイスが使用中のため閉じられません"
+
+msgid "The device could not be closed."
+msgstr "デバイスを閉じることができませんでした。"
+
+msgid "The device has a problem that this tool cannot solve."
+msgstr "このデバイスには、このツールでは解決できない問題が発生しています。"
+
+msgid "The device was already gone."
+msgstr "デバイスはすでに取り外されていました。"
+
+msgid "The device was released."
+msgstr "デバイスを正常に解放しました。"
+
+msgid "The name of the scheduled task is not valid."
+msgstr "タスクスケジューラーの登録名が不正です。"
+
+msgid "The processes below have the device open, so the close was refused."
+msgstr "以下のプロセスがデバイスを開いているため、閉じる操作は拒否されました。"
+
+msgid "The scheduled task could not be registered."
+msgstr "タスクスケジューラーに登録できませんでした。"
+
+msgid "The scheduled task could not be removed."
+msgstr "タスクスケジューラーから削除できませんでした。"
+
+msgid "The scheduled task was registered."
+msgstr "タスクスケジューラーに登録しました。"
+
+msgid "The scheduled task was removed."
+msgstr "タスクスケジューラーから削除しました。"
+
+msgid ""
+"This program is not allowed to close the device.\n"
+"\n"
+"Run it as an administrator, then close the device again."
+msgstr ""
+"このプログラムには、デバイスを閉じる権限がありません。\n"
+"\n"
+"管理者として実行し直してから、もう一度お試しください。"
+
+msgid "This tool cannot handle the problem that was found."
+msgstr "このツールでは対応できない異常を検知しました。"
+
+msgid "Waiting..."
+msgstr "待機しています..."
+
+#. trans: This dagger helps UTF-8 detection. You don't need to translate this.
+msgid "†"
+msgstr "†"
+
+#~ msgid "Closing iD Mixer (iD.exe)..."
+#~ msgstr "iD Mixer (iD.exe) を終了しています..."
