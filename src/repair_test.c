@@ -32,6 +32,7 @@ static void test_path_matches_name(void) {
  * is what keeps the close away from any other process.
  */
 static void test_pick_blockers(void) {
+  struct ov_error err = {0};
   struct culprit *list = NULL;
   struct repair_blockers b;
   char mixer_path[] = "\\Device\\HarddiskVolume1\\Program Files\\Audient\\iD\\iD.exe";
@@ -61,37 +62,37 @@ static void test_pick_blockers(void) {
   }
 
   TEST_CASE("both allowed");
-  b = repair_pick_blockers(list, "iD.exe", true, true);
-  TEST_CHECK(b.mixer.found == true);
-  TEST_CHECK(b.mixer.pid == 100);
-  TEST_CHECK(b.mixer.event_time_ms == 111);
-  TEST_CHECK(b.audiodg.found == true);
-  TEST_CHECK(b.audiodg.pid == 200);
-  TEST_CHECK(b.audiodg.event_time_ms == 222);
+  b = repair_pick_blockers(list, "iD.exe", true, true, &err);
+  TEST_CHECK(b.mixer_count == 1);
+  TEST_CHECK(b.mixer[0].found == true);
+  TEST_CHECK(b.mixer[0].pid == 100);
+  TEST_CHECK(b.mixer[0].event_time_ms == 111);
+  TEST_CHECK(b.audiodg_count == 1);
+  TEST_CHECK(b.audiodg[0].found == true);
+  TEST_CHECK(b.audiodg[0].pid == 200);
+  TEST_CHECK(b.audiodg[0].event_time_ms == 222);
 
   TEST_CASE("mixer allowed only");
-  b = repair_pick_blockers(list, "iD.exe", true, false);
-  TEST_CHECK(b.mixer.found == true);
-  TEST_CHECK(b.mixer.pid == 100);
-  TEST_CHECK(b.audiodg.found == false);
-  TEST_CHECK(b.audiodg.pid == 0);
+  b = repair_pick_blockers(list, "iD.exe", true, false, &err);
+  TEST_CHECK(b.mixer_count == 1);
+  TEST_CHECK(b.mixer[0].pid == 100);
+  TEST_CHECK(b.audiodg_count == 0);
 
   TEST_CASE("audiodg allowed only");
-  b = repair_pick_blockers(list, "iD.exe", false, true);
-  TEST_CHECK(b.mixer.found == false);
-  TEST_CHECK(b.mixer.pid == 0);
-  TEST_CHECK(b.audiodg.found == true);
-  TEST_CHECK(b.audiodg.pid == 200);
+  b = repair_pick_blockers(list, "iD.exe", false, true, &err);
+  TEST_CHECK(b.mixer_count == 0);
+  TEST_CHECK(b.audiodg_count == 1);
+  TEST_CHECK(b.audiodg[0].pid == 200);
 
   TEST_CASE("nothing allowed");
-  b = repair_pick_blockers(list, "iD.exe", false, false);
-  TEST_CHECK(b.mixer.found == false);
-  TEST_CHECK(b.audiodg.found == false);
+  b = repair_pick_blockers(list, "iD.exe", false, false, &err);
+  TEST_CHECK(b.mixer_count == 0);
+  TEST_CHECK(b.audiodg_count == 0);
 
   TEST_CASE("no blockers");
-  b = repair_pick_blockers(NULL, "iD.exe", true, true);
-  TEST_CHECK(b.mixer.found == false);
-  TEST_CHECK(b.audiodg.found == false);
+  b = repair_pick_blockers(NULL, "iD.exe", true, true, &err);
+  TEST_CHECK(b.mixer_count == 0);
+  TEST_CHECK(b.audiodg_count == 0);
 
   TEST_CASE("a record outside the system32 folder is still the record");
   {
@@ -100,15 +101,15 @@ static void test_pick_blockers(void) {
     c.path = audiodg_elsewhere;
     c.event_time_ms = 444;
     if (TEST_CHECK(OV_ARRAY_PUSH(&only, c))) {
-      struct repair_blockers const picked = repair_pick_blockers(only, "iD.exe", false, true);
-      TEST_CHECK(picked.audiodg.found == true);
-      TEST_CHECK(picked.audiodg.pid == 400);
-      TEST_CHECK(picked.mixer.found == false);
+      struct repair_blockers const picked = repair_pick_blockers(only, "iD.exe", false, true, &err);
+      TEST_CHECK(picked.audiodg_count == 1);
+      TEST_CHECK(picked.audiodg[0].pid == 400);
+      TEST_CHECK(picked.mixer_count == 0);
       OV_ARRAY_DESTROY(&only);
     }
   }
 
-  TEST_CASE("the newest record of the same image wins");
+  TEST_CASE("every instance of the same image is picked");
   {
     struct culprit *dup = NULL;
     c.pid = 500;
@@ -118,13 +119,53 @@ static void test_pick_blockers(void) {
       c.pid = 501;
       c.event_time_ms = 1000;
       if (TEST_CHECK(OV_ARRAY_PUSH(&dup, c))) {
-        struct repair_blockers const picked = repair_pick_blockers(dup, "iD.exe", false, true);
-        TEST_CHECK(picked.audiodg.found == true);
-        TEST_CHECK(picked.audiodg.pid == 501);
-        TEST_CHECK(picked.audiodg.event_time_ms == 1000);
+        struct repair_blockers const picked = repair_pick_blockers(dup, "iD.exe", false, true, &err);
+        TEST_CHECK(picked.audiodg_count == 2);
+        TEST_CHECK(picked.audiodg[0].pid == 500);
+        TEST_CHECK(picked.audiodg[1].pid == 501);
+        TEST_CHECK(picked.audiodg[1].event_time_ms == 1000);
       }
       OV_ARRAY_DESTROY(&dup);
     }
+  }
+
+  TEST_CASE("a repeated pid is picked once");
+  {
+    struct culprit *dup = NULL;
+    c.pid = 600;
+    c.path = audiodg_path;
+    c.event_time_ms = 100;
+    if (TEST_CHECK(OV_ARRAY_PUSH(&dup, c))) {
+      c.event_time_ms = 200;
+      if (TEST_CHECK(OV_ARRAY_PUSH(&dup, c))) {
+        struct repair_blockers const picked = repair_pick_blockers(dup, "iD.exe", false, true, &err);
+        TEST_CHECK(picked.audiodg_count == 1);
+        TEST_CHECK(picked.audiodg[0].pid == 600);
+        TEST_CHECK(picked.audiodg[0].event_time_ms == 100);
+      }
+      OV_ARRAY_DESTROY(&dup);
+    }
+  }
+
+  TEST_CASE_(NULL);
+
+  TEST_CASE("more blockers than this tool carries are refused");
+  {
+    struct culprit *many = NULL;
+    size_t i = 0;
+    for (i = 0; i <= REPAIR_MAX_BLOCKERS; i++) {
+      c.pid = (uint32_t)(700 + i);
+      c.path = audiodg_path;
+      c.event_time_ms = (long long)(1000 + i);
+      if (!TEST_CHECK(OV_ARRAY_PUSH(&many, c))) {
+        goto cleanup;
+      }
+    }
+    TEST_FAILED_WITH(repair_pick_blockers(many, "iD.exe", false, true, &err).audiodg_count == (size_t)-1,
+                     &err,
+                     ov_error_type_generic,
+                     ov_error_generic_fail);
+    OV_ARRAY_DESTROY(&many);
   }
 
   TEST_CASE_(NULL);
@@ -133,6 +174,7 @@ cleanup:
   if (list != NULL) {
     OV_ARRAY_DESTROY(&list);
   }
+  OV_ERROR_REPORT(&err, NULL);
 }
 
 /**
@@ -173,7 +215,7 @@ static void test_release_null(void) { repair_result_release(NULL); }
  */
 static void test_closed_pids(void) {
   struct repair_blockers b;
-  uint32_t out[2];
+  uint32_t out[2 * REPAIR_MAX_BLOCKERS];
 
   memset(&b, 0, sizeof(b));
 
@@ -182,17 +224,32 @@ static void test_closed_pids(void) {
   TEST_CHECK(repair_closed_pids(&b, out) == 0);
 
   TEST_CASE("only the mixer was closed");
-  b.mixer.found = true;
-  b.mixer.pid = 100;
+  b.mixer_count = 1;
+  b.mixer[0].found = true;
+  b.mixer[0].pid = 100;
   TEST_CHECK(repair_closed_pids(&b, out) == 1);
   TEST_CHECK(out[0] == 100);
 
   TEST_CASE("both were closed");
-  b.audiodg.found = true;
-  b.audiodg.pid = 200;
+  b.audiodg_count = 1;
+  b.audiodg[0].found = true;
+  b.audiodg[0].pid = 200;
   TEST_CHECK(repair_closed_pids(&b, out) == 2);
   TEST_CHECK(out[0] == 100);
   TEST_CHECK(out[1] == 200);
+
+  TEST_CASE("every closed instance is listed");
+  b.mixer_count = 2;
+  b.mixer[1].found = true;
+  b.mixer[1].pid = 101;
+  b.audiodg_count = 2;
+  b.audiodg[1].found = true;
+  b.audiodg[1].pid = 201;
+  TEST_CHECK(repair_closed_pids(&b, out) == 4);
+  TEST_CHECK(out[0] == 100);
+  TEST_CHECK(out[1] == 101);
+  TEST_CHECK(out[2] == 200);
+  TEST_CHECK(out[3] == 201);
 
   TEST_CASE("the arguments may be absent");
   TEST_CHECK(repair_closed_pids(NULL, out) == 0);

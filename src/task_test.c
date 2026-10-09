@@ -100,7 +100,12 @@ static void test_xml_states_the_trigger_and_the_principal(void) {
   TEST_CHECK(strstr(xml, "Microsoft-Windows-Power-Troubleshooter") != NULL);
   TEST_CHECK(strstr(xml, "(EventID=1)") != NULL);
   TEST_CHECK(strstr(xml, "<RunLevel>HighestAvailable</RunLevel>") != NULL);
-  TEST_CHECK(strstr(xml, "<LogonType>InteractiveToken</LogonType>") != NULL);
+  TEST_CHECK(strstr(xml, "<UserId>S-1-5-18</UserId>") != NULL);
+  // the schema's logonType knows only S4U, Password, InteractiveToken and
+  // InteractiveTokenOrPassword: ServiceAccount is a value of the logon type the registration
+  // call carries, not of this node, and putting it here fails the whole document with
+  // SCHED_E_INVALIDVALUE
+  TEST_CHECK(strstr(xml, "<LogonType>") == NULL);
   TEST_CHECK(strstr(xml, "<MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>") != NULL);
   TEST_CHECK(strstr(xml, "<ExecutionTimeLimit>PT72H</ExecutionTimeLimit>") != NULL);
   TEST_CHECK(strstr(xml, "&lt;QueryList&gt;") != NULL);

@@ -178,7 +178,7 @@ char *task_build_xml(char const *const command, char const *const arguments, cha
                        "  </Settings>\n"
                        "  <Principals>\n"
                        "    <Principal id=\"Author\">\n"
-                       "      <LogonType>InteractiveToken</LogonType>\n"
+                       "      <UserId>S-1-5-18</UserId>\n"
                        "      <RunLevel>HighestAvailable</RunLevel>\n"
                        "    </Principal>\n"
                        "  </Principals>\n"
@@ -566,7 +566,7 @@ bool task_install_document(struct settings const *const settings, char const *co
     OV_ERROR_SET_GENERIC(err, ov_error_generic_out_of_memory);
     goto cleanup;
   }
-  hr = ITaskFolder_RegisterTask(folder, path, document, TASK_CREATE_OR_UPDATE, empty, empty, TASK_LOGON_INTERACTIVE_TOKEN, empty, NULL);
+  hr = ITaskFolder_RegisterTask(folder, path, document, TASK_CREATE_OR_UPDATE, empty, empty, TASK_LOGON_SERVICE_ACCOUNT, empty, NULL);
   if (FAILED(hr)) {
     OV_ERROR_SET_HRESULT(err, hr);
     goto cleanup;

@@ -2,9 +2,12 @@
 
 #include <windows.h>
 
+#include <ctype.h>
+#include <shlobj.h>
 #include <string.h>
 
 #include <ovarray.h>
+#include <ovprintf.h>
 #include <ovprintf_ex.h>
 
 /**
@@ -100,6 +103,78 @@ char const *paths_file_name(char const *const path_utf8) {
     }
   }
   return name;
+}
+
+bool paths_is_in_program_files(char const *const exe_path) {
+  static char const *const folders[] = {"\\program files\\", "\\program files (x86)\\"};
+
+  if (exe_path == NULL) {
+    return false;
+  }
+  for (size_t i = 0; i < (sizeof(folders) / sizeof(folders[0])); i++) {
+    size_t const n = strlen(folders[i]);
+    for (char const *p = exe_path; *p != '\0'; p++) {
+      size_t j = 0;
+      while ((j < n) && (p[j] != '\0') && (tolower((unsigned char)p[j]) == folders[i][j])) {
+        j++;
+      }
+      if (j == n) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+char *paths_log_folder(struct ov_error *const err) {
+  wchar_t *local = NULL;
+  char *result = NULL;
+  char *joined = NULL;
+  wchar_t *folder = NULL;
+  bool success = false;
+  HRESULT const hr = SHGetKnownFolderPath(&FOLDERID_LocalAppData, 0, NULL, &local);
+
+  if (FAILED(hr)) {
+    OV_ERROR_SET_HRESULT(err, hr);
+    goto cleanup;
+  }
+  if (!ov_sprintf_char(&result, err, NULL, "%ls", local)) {
+    OV_ERROR_ADD_TRACE(err);
+    goto cleanup;
+  }
+  joined = paths_join(result, "audient-device-closer", err);
+  if (joined == NULL) {
+    OV_ERROR_ADD_TRACE(err);
+    goto cleanup;
+  }
+  if (!ov_sprintf_wchar(&folder, err, NULL, L"%s", joined)) {
+    OV_ERROR_ADD_TRACE(err);
+    goto cleanup;
+  }
+  if (!CreateDirectoryW(folder, NULL)) {
+    DWORD const last_error = GetLastError();
+    if (last_error != ERROR_ALREADY_EXISTS) {
+      OV_ERROR_SET_HRESULT(err, HRESULT_FROM_WIN32(last_error));
+      goto cleanup;
+    }
+  }
+  success = true;
+
+cleanup:
+  if (local != NULL) {
+    CoTaskMemFree(local);
+  }
+  paths_string_free(&result);
+  if (folder != NULL) {
+    OV_ARRAY_DESTROY(&folder); // made by ov_sprintf_wchar
+  }
+  if (!success) {
+    if (joined != NULL) {
+      OV_ARRAY_DESTROY(&joined); // made by paths_join
+    }
+    return NULL;
+  }
+  return joined;
 }
 
 /**

@@ -4,7 +4,9 @@
 
 /**
  * The paths this program derives from its own location: the log has to sit next to the
- * executable, and so does the settings file.  Both computations live here.
+ * executable, and so does the settings file.  Both computations live here.  The log of an
+ * installed copy is the exception: Program Files is not writable, so the log moves to the
+ * local application data of the user.
  */
 
 /**
@@ -43,6 +45,34 @@ char *paths_executable_dir(struct ov_error *const err);
  * @note The returned string lives inside path_utf8, there is nothing to release.
  */
 char const *paths_file_name(char const *const path_utf8);
+
+/**
+ * @brief Is the executable installed under one of the Program Files folders
+ *
+ * A copy in Program Files shares the folder with the system and every other program, so a
+ * user process cannot write its log there.  The check is case-insensitive and looks for
+ * the folder name behind a separator, so "C:\\Program Files\\..." and
+ * "C:\\Program Files (x86)\\..." both match whatever drive they sit on.  A folder of the
+ * same name somewhere else in the path matches as well, which is fine: a folder that
+ * calls itself Program Files asks for the same treatment.
+ *
+ * @param exe_path the path to look at, UTF-8, NULL is allowed
+ * @return true when exe_path names a file inside a Program Files folder
+ */
+bool paths_is_in_program_files(char const *const exe_path);
+
+/**
+ * @brief The folder the log of an installed copy writes into
+ *
+ * The folder is the local application data folder of the user plus audient-device-closer,
+ * and it is created when it is not there, so the caller can put the log into it right
+ * away.
+ *
+ * @param err receives the failure of the lookup or of the creation
+ * @return the folder in UTF-8 without a trailing separator, NULL when it could not be built
+ * @note Release with paths_string_free.
+ */
+char *paths_log_folder(struct ov_error *const err);
 
 /**
  * @brief The path of a file that sits next to an executable under the same name

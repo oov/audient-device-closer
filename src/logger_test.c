@@ -173,11 +173,16 @@ static void test_keep_tail(void) {
 
 /**
  * @brief The log path: next to the executable, same name with the extension replaced
+ *
+ * A copy in Program Files is the exception: the log of an installed copy goes into the
+ * local application data of the user, because the folder of the executable is not
+ * writable.
  */
 static void test_path_for_exe(void) {
   struct ov_error err = {0};
   char *p = NULL;
 
+  TEST_CASE("a portable copy keeps its log next to itself");
   p = logger_path_for_exe("C:\\dir\\audient-device-closer.exe", &err);
   if (TEST_CHECK(p != NULL)) {
     TEST_CHECK(strcmp(p, "C:\\dir\\audient-device-closer.log") == 0);
@@ -198,7 +203,40 @@ static void test_path_for_exe(void) {
     TEST_CHECK(strcmp(p, "relative.log") == 0);
     logger_string_free(&p);
   }
+
+  TEST_CASE("an installed copy writes into the local application data");
+  p = logger_path_for_exe("C:\\Program Files\\audient-device-closer\\audient-device-closer.exe", &err);
+  if (!TEST_CHECK(p != NULL)) {
+    TEST_MSG("want a path, got NULL");
+    goto cleanup;
+  }
+  {
+    char const *const leaf = "\\audient-device-closer\\audient-device-closer.log";
+    size_t const n = strlen(p);
+    TEST_CHECK(n > strlen(leaf));
+    TEST_CHECK(strcmp(&p[n - strlen(leaf)], leaf) == 0);
+    logger_string_free(&p);
+  }
+  p = logger_path_for_exe("C:\\PROGRAM FILES (X86)\\audient\\adc.exe", &err);
+  if (TEST_CHECK(p != NULL)) {
+    char const *const leaf = "\\audient-device-closer\\audient-device-closer.log";
+    size_t const n = strlen(p);
+    TEST_CHECK(strcmp(&p[n - strlen(leaf)], leaf) == 0);
+    logger_string_free(&p);
+  }
+  p = logger_path_for_exe("D:\\Program Files\\adc\\app.exe", &err);
+  if (TEST_CHECK(p != NULL)) {
+    char const *const leaf = "\\audient-device-closer\\audient-device-closer.log";
+    size_t const n = strlen(p);
+    TEST_CHECK(strcmp(&p[n - strlen(leaf)], leaf) == 0);
+    logger_string_free(&p);
+  }
+
+  TEST_CASE("the arguments may be absent");
   TEST_FAILED_WITH(logger_path_for_exe(NULL, &err), &err, ov_error_type_generic, ov_error_generic_invalid_argument);
+cleanup:
+  logger_string_free(&p);
+  OV_ERROR_REPORT(&err, NULL);
 }
 
 /**

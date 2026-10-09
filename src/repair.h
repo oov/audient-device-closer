@@ -102,11 +102,21 @@ struct repair_blocker {
 };
 
 /**
+ * @brief Maximum number of blockers this tool will close at once
+ */
+#define REPAIR_MAX_BLOCKERS 16
+
+/**
  * @brief The blockers the run may close, in the order they are closed
+ *
+ * The same image may run several times on this machine, one per logged-in session, so the
+ * records may name more than one blocker per image; every one of them is closed.
  */
 struct repair_blockers {
-  struct repair_blocker mixer;
-  struct repair_blocker audiodg;
+  struct repair_blocker mixer[REPAIR_MAX_BLOCKERS];
+  struct repair_blocker audiodg[REPAIR_MAX_BLOCKERS];
+  size_t mixer_count;
+  size_t audiodg_count;
 };
 
 /**
@@ -120,18 +130,22 @@ struct repair_blockers {
  * @brief Which blockers of a veto record this run may close
  *
  * mixer_name is the image name from the settings, REPAIR_AUDIODG_NAME is the audio engine;
- * the two allow_* flags are the user's decision to let this tool close them at all.
+ * the two allow_* flags are the user's decision to let this tool close them at all.  A run
+ * that names more blockers than REPAIR_MAX_BLOCKERS of one image is refused instead of
+ * being cut down: closing only the first ones would read as a repair that worked.
  *
  * @param culprits the records of the veto, may be NULL
  * @param mixer_name the image name the settings name
  * @param allow_mixer_close the user allowed closing the mixer
  * @param allow_audiodg_close the user allowed closing the audio engine
- * @return the blockers to close, found is false when there is none
+ * @param err receives the refusal when one image names more blockers than the run carries
+ * @return the blockers to close, or a zeroed structure when the run was refused
  */
 struct repair_blockers repair_pick_blockers(struct culprit const *const culprits,
                                             char const *const mixer_name,
                                             bool const allow_mixer_close,
-                                            bool const allow_audiodg_close);
+                                            bool const allow_audiodg_close,
+                                            struct ov_error *const err);
 
 /**
  * @brief What the run is waiting for at the moment

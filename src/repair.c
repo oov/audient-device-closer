@@ -151,20 +151,25 @@ static void sayf(struct repair_result *const out, char const *const reference, c
  * elsewhere stays on the list.
  *
  * @param blockers the blockers of the run
- * @param out receives the pids, capacity 2 (the mixer and audiodg)
+ * @param out receives the pids, capacity 2 * REPAIR_MAX_BLOCKERS
  * @return how many pids were written
  */
 size_t repair_closed_pids(struct repair_blockers const *const blockers, uint32_t *const out) {
   size_t n = 0;
+  size_t i = 0;
 
   if ((blockers == NULL) || (out == NULL)) {
     return 0;
   }
-  if (blockers->mixer.found) {
-    out[n++] = blockers->mixer.pid;
+  for (i = 0; i < blockers->mixer_count; i++) {
+    if (blockers->mixer[i].found) {
+      out[n++] = blockers->mixer[i].pid;
+    }
   }
-  if (blockers->audiodg.found) {
-    out[n++] = blockers->audiodg.pid;
+  for (i = 0; i < blockers->audiodg_count; i++) {
+    if (blockers->audiodg[i].found) {
+      out[n++] = blockers->audiodg[i].pid;
+    }
   }
   return n;
 }
@@ -176,7 +181,7 @@ size_t repair_closed_pids(struct repair_blockers const *const blockers, uint32_t
  * @param closed the blockers the run closed
  */
 static void drop_closed(struct culprit **const list, struct repair_blockers const *const closed) {
-  uint32_t pids[2];
+  uint32_t pids[2 * REPAIR_MAX_BLOCKERS];
   size_t const n = repair_closed_pids(closed, pids);
 
   culprit_drop_pids(list, pids, n);
@@ -289,23 +294,32 @@ static struct culprit *read_veto_events(struct settings const *const s,
 }
 
 /**
- * @brief The blocker this tool may close, out of the record of one veto
+ * @brief Collect all blockers of the given name
  *
- * The newest record wins when the same image is named twice.
+ * All matching culprits are collected; duplicates by PID are skipped.  A NULL out asks
+ * only for the count, so the caller can name the blockers it was not allowed to close.
  *
- * @param culprits the records of the veto
+ * @param culprits the records to search in, may be NULL
  * @param name the image name to look for
- * @return the blocker to close, found is false when the records name only blockers this
- *         tool may not close
+ * @param out array to fill, NULL counts the matches only
+ * @param max_count maximum number of entries to fill
+ * @return number of blockers collected
  */
-static struct repair_blocker pick_one(struct culprit const *const culprits, char const *const name) {
-  struct repair_blocker result;
+static size_t pick_all(struct culprit const *const culprits,
+                       char const *const name,
+                       struct repair_blocker *const out,
+                       size_t const max_count,
+                       bool *const truncated) {
+  size_t count = 0;
   size_t const n = culprit_count(culprits);
   size_t i = 0;
+  size_t j = 0;
 
-  memset(&result, 0, sizeof(result));
-  if ((culprits == NULL) || (name == NULL)) {
-    return result;
+  if ((culprits == NULL) || (name == NULL) || (max_count == 0)) {
+    return 0;
+  }
+  if (truncated != NULL) {
+    *truncated = false;
   }
   for (i = 0; i < n; i++) {
     if (culprits[i].pid == 0) {
@@ -314,14 +328,28 @@ static struct repair_blocker pick_one(struct culprit const *const culprits, char
     if (!repair_path_matches_name(culprits[i].path, name)) {
       continue;
     }
-    if (result.found && (culprits[i].event_time_ms <= result.event_time_ms)) {
-      continue;
+    if (out != NULL) {
+      for (j = 0; j < count; j++) {
+        if (out[j].pid == culprits[i].pid) {
+          break;
+        }
+      }
+      if (j < count) {
+        continue;
+      }
+      if (count >= max_count) {
+        if (truncated != NULL) {
+          *truncated = true;
+        }
+        break;
+      }
+      out[count].found = true;
+      out[count].pid = culprits[i].pid;
+      out[count].event_time_ms = culprits[i].event_time_ms;
     }
-    result.found = true;
-    result.pid = culprits[i].pid;
-    result.event_time_ms = culprits[i].event_time_ms;
+    count++;
   }
-  return result;
+  return count;
 }
 
 /**
@@ -335,20 +363,39 @@ static struct repair_blocker pick_one(struct culprit const *const culprits, char
  * @param mixer_name the image name the settings name
  * @param allow_mixer_close the user allowed closing the mixer
  * @param allow_audiodg_close the user allowed closing the audio engine
- * @return the blockers to close, found is false when there is none
+ * @return the blockers to close
  */
 struct repair_blockers repair_pick_blockers(struct culprit const *const culprits,
                                             char const *const mixer_name,
                                             bool const allow_mixer_close,
-                                            bool const allow_audiodg_close) {
+                                            bool const allow_audiodg_close,
+                                            struct ov_error *const err) {
   struct repair_blockers b;
+  bool mixer_truncated = false;
+  bool audiodg_truncated = false;
+  bool success = false;
 
   memset(&b, 0, sizeof(b));
   if (allow_mixer_close) {
-    b.mixer = pick_one(culprits, mixer_name);
+    b.mixer_count = pick_all(culprits, mixer_name, b.mixer, REPAIR_MAX_BLOCKERS, &mixer_truncated);
   }
   if (allow_audiodg_close) {
-    b.audiodg = pick_one(culprits, REPAIR_AUDIODG_NAME);
+    b.audiodg_count = pick_all(culprits, REPAIR_AUDIODG_NAME, b.audiodg, REPAIR_MAX_BLOCKERS, &audiodg_truncated);
+  }
+  if (mixer_truncated || audiodg_truncated) {
+    OV_ERROR_SETF(err,
+                  ov_error_type_generic,
+                  ov_error_generic_fail,
+                  "%1$hs",
+                  gettext("Too many blocker processes are named in the record, more than this tool can close at once."),
+                  NULL);
+    goto cleanup;
+  }
+  success = true;
+
+cleanup:
+  if (!success) {
+    memset(&b, 0, sizeof(b));
   }
   return b;
 }
@@ -550,17 +597,19 @@ bool repair_run(struct settings const *const s,
     OV_ERROR_REPORT(&log_err, NULL);
   }
 
-  picked = repair_pick_blockers(out->culprits, s->mixer_process_name, allow_mixer_close, allow_audiodg_close);
-  if (!picked.mixer.found && !picked.audiodg.found) {
+  picked = repair_pick_blockers(out->culprits, s->mixer_process_name, allow_mixer_close, allow_audiodg_close, err);
+  if (picked.mixer_count == 0 && picked.audiodg_count == 0) {
     char option_buf[256] = {0};
     char const *option = NULL;
     char sentence[256];
 
     out->outcome = REPAIR_OUTCOME_VETOED;
-    if (pick_one(out->culprits, s->mixer_process_name).found) {
+    // the blockers the user did not allow this tool to close are still worth naming: the
+    // pick with both flags up says which option would have helped
+    if (pick_all(out->culprits, s->mixer_process_name, NULL, REPAIR_MAX_BLOCKERS, NULL) > 0) {
       repair_option_mixer_label(s, option_buf, sizeof(option_buf));
       option = option_buf;
-    } else if (pick_one(out->culprits, REPAIR_AUDIODG_NAME).found) {
+    } else if (pick_all(out->culprits, REPAIR_AUDIODG_NAME, NULL, REPAIR_MAX_BLOCKERS, NULL) > 0) {
       option = repair_option_audiodg_label();
     }
     repair_blocked_sentence(option, culprit_count(out->culprits), sentence, sizeof(sentence));
@@ -574,22 +623,42 @@ bool repair_run(struct settings const *const s,
     success = true;
     goto cleanup;
   }
-  if (picked.mixer.found &&
-      !close_blocking_process(
-          &picked.mixer, s->mixer_process_name, REPAIR_STAGE_MIXER, progress, progress_userdata, &step, out, &taken_mixer, err)) {
-    success = true;
-    goto cleanup;
+  {
+    size_t i = 0;
+    for (i = 0; i < picked.mixer_count; i++) {
+      if (!close_blocking_process(
+              &picked.mixer[i], s->mixer_process_name, REPAIR_STAGE_MIXER, progress, progress_userdata, &step, out, &taken_mixer, err)) {
+        success = true;
+        goto cleanup;
+      }
+      if (cancel_requested(cancel)) {
+        say_aborted(out);
+        success = true;
+        goto cleanup;
+      }
+    }
   }
-  if (cancel_requested(cancel)) {
-    say_aborted(out);
-    success = true;
-    goto cleanup;
-  }
-  if (picked.audiodg.found &&
-      !close_blocking_process(
-          &picked.audiodg, REPAIR_AUDIODG_NAME, REPAIR_STAGE_AUDIODG, progress, progress_userdata, &step, out, &taken_audiodg, err)) {
-    success = true;
-    goto cleanup;
+  {
+    size_t i = 0;
+    for (i = 0; i < picked.audiodg_count; i++) {
+      if (!close_blocking_process(&picked.audiodg[i],
+                                  REPAIR_AUDIODG_NAME,
+                                  REPAIR_STAGE_AUDIODG,
+                                  progress,
+                                  progress_userdata,
+                                  &step,
+                                  out,
+                                  &taken_audiodg,
+                                  err)) {
+        success = true;
+        goto cleanup;
+      }
+      if (cancel_requested(cancel)) {
+        say_aborted(out);
+        success = true;
+        goto cleanup;
+      }
+    }
   }
 
   if (cancel_requested(cancel)) {

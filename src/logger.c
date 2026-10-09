@@ -273,7 +273,53 @@ void logger_string_free(char **const value) {
  * @return the path in UTF-8, NULL when it could not be built
  * @note Release with logger_string_free.
  */
-char *logger_path_for_exe(char const *const exe_path, struct ov_error *const err) { return paths_replace_extension(exe_path, ".log", err); }
+char *logger_path_for_exe(char const *const exe_path, struct ov_error *const err) {
+  char *folder = NULL;
+  char *joined = NULL;
+  char *result = NULL;
+  size_t len = 0;
+  bool success = false;
+
+  if (exe_path == NULL) {
+    OV_ERROR_SET_GENERIC(err, ov_error_generic_invalid_argument);
+    return NULL;
+  }
+  if (!paths_is_in_program_files(exe_path)) {
+    return paths_replace_extension(exe_path, ".log", err); // a portable copy keeps its log next to itself
+  }
+  folder = paths_log_folder(err);
+  if (folder == NULL) {
+    OV_ERROR_ADD_TRACE(err);
+    goto cleanup;
+  }
+  joined = paths_join(folder, "audient-device-closer.log", err);
+  if (joined == NULL) {
+    OV_ERROR_ADD_TRACE(err);
+    goto cleanup;
+  }
+  // the caller releases the result with logger_string_free, which frees a block of
+  // OV_REALLOC, so the joined string of ov_sprintf_char is copied into one
+  len = strlen(joined) + 1;
+  if (!OV_REALLOC(&result, len, sizeof(result[0]))) {
+    OV_ERROR_SET_GENERIC(err, ov_error_generic_out_of_memory);
+    goto cleanup;
+  }
+  memcpy(result, joined, len);
+  success = true;
+
+cleanup:
+  paths_string_free(&folder);
+  if (joined != NULL) {
+    OV_ARRAY_DESTROY(&joined); // made by paths_join
+  }
+  if (!success) {
+    if (result != NULL) {
+      OV_FREE(&result);
+    }
+    return NULL;
+  }
+  return result;
+}
 
 /**
  * @brief Read a file from its current position

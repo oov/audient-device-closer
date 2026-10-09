@@ -109,6 +109,7 @@ target_link_libraries(adc_core PRIVATE
   ntdll
   shell32
   ole32
+  uuid
   oleaut32
   taskschd
   comctl32
