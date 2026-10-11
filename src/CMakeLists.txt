@@ -194,7 +194,7 @@ add_custom_command(TARGET adc POST_BUILD
 # its own rather than a post build step of the program, so that a changed document is copied
 # without relinking the program and the program is relinked without copying an unchanged
 # document.
-set(adc_readmes "README.md" "README-jp.md" "PRIVILEGES.txt" "PRIVILEGES-jp.txt" "LICENSE")
+set(adc_readmes "README.md" "README-jp.md" "LICENSE")
 set(adc_readme_inputs "")
 set(adc_readme_outputs "")
 foreach(adc_readme IN LISTS adc_readmes)

@@ -81,6 +81,24 @@ fi
 
 echo "built: ${destdir}/bin/audient-device-closer.exe"
 
+# Extracts the privilege-elevation section between the PRIVILEGES BEGIN/END
+# markers from a README and writes it as plain text for the installer.  Headings
+# are flattened: the installer shows the section out of the document context, so
+# "#"-runs carry no meaning there.
+extract_privileges() {
+  sed -n '/^<!-- PRIVILEGES BEGIN -->$/,/^<!-- PRIVILEGES END -->$/p' "$1" |
+    grep -v '^<!-- PRIVILEGES \(BEGIN\|END\) -->$' |
+    sed -e 's/^#\+ //' > "$2"
+}
+
+# The installer shows the privilege-elevation section of the READMEs on one of
+# its pages and the installer itself carries it as a text file: the section is
+# extracted from the markers around it so the text lives in one place.  It goes
+# to the dist folder rather than next to the executable, because unlike the
+# readmes it is a part of the installer, not a part of the folder a build makes.
+extract_privileges "${PWD}/README.md" "${PWD}/build/${CMAKE_BUILD_TYPE}/dist/PRIVILEGES.txt"
+extract_privileges "${PWD}/README-jp.md" "${PWD}/build/${CMAKE_BUILD_TYPE}/dist/PRIVILEGES-jp.txt"
+
 if [ "${CREATE_ZIP}" -eq 1 ]; then
   distdir="${PWD}/build/${CMAKE_BUILD_TYPE}/dist"
   mkdir -p "${distdir}"
@@ -107,8 +125,9 @@ if [ "${CREATE_INSTALLER}" -eq 1 ]; then
     exit 1
   fi
   # MSYS would turn /DADC_VERSION=... into a path of its own, which the compiler then
-  # takes for a second script name: the switch is kept out of that conversion
-  MSYS2_ARG_CONV_EXCL="/D" "${iscc}" "/DADC_VERSION=${ADC_VERSION:-dev}" "${PWD}/installer.iss"
+  # takes for a second script name: the switch is kept out of that conversion.  ADC_DIST
+  # stays a relative path for the same reason: it is resolved against the script folder.
+  MSYS2_ARG_CONV_EXCL="/D" "${iscc}" "/DADC_VERSION=${ADC_VERSION:-dev}" "/DADC_DIST=build/${CMAKE_BUILD_TYPE}/dist" "${PWD}/installer.iss"
   echo "installer: ${PWD}/build/Release/dist/audient-device-closer_${ADC_VERSION:-dev}_setup.exe"
 fi
 

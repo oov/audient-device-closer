@@ -7,6 +7,11 @@
 #  define ADC_VERSION "dev"
 #endif
 
+; where the extracted privilege-elevation text files sit, relative to this script
+#ifndef ADC_DIST
+#  define ADC_DIST "build\\Release\\dist"
+#endif
+
 #define ADC_NAME "Audient Device Closer"
 #define ADC_EXE "audient-device-closer.exe"
 #define ADC_PUBLISHER "oov"
@@ -46,16 +51,16 @@ PrivilegesRequired=admin
 ChangesEnvironment=no
 
 [Languages]
-Name: "en"; MessagesFile: "compiler:Default.isl"; LicenseFile: "LICENSE"; InfoBeforeFile: "PRIVILEGES.txt"
-Name: "ja"; MessagesFile: "compiler:Languages\Japanese.isl"; LicenseFile: "LICENSE"; InfoBeforeFile: "PRIVILEGES-jp.txt"
+Name: "en"; MessagesFile: "compiler:Default.isl"; LicenseFile: "LICENSE"; InfoBeforeFile: "{#ADC_DIST}\PRIVILEGES.txt"
+Name: "ja"; MessagesFile: "compiler:Languages\Japanese.isl"; LicenseFile: "LICENSE"; InfoBeforeFile: "{#ADC_DIST}\PRIVILEGES-jp.txt"
 
 [Files]
 Source: "build\Release\x86_64\bin\{#ADC_EXE}"; DestDir: "{app}"; Flags: ignoreversion
 Source: "build\Release\x86_64\bin\audient-device-closer.json"; DestDir: "{app}"; Flags: ignoreversion
 Source: "README.md"; DestDir: "{app}"; Flags: ignoreversion
 Source: "README-jp.md"; DestDir: "{app}"; Flags: ignoreversion
-Source: "PRIVILEGES.txt"; DestDir: "{app}"; Flags: ignoreversion
-Source: "PRIVILEGES-jp.txt"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#ADC_DIST}\PRIVILEGES.txt"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#ADC_DIST}\PRIVILEGES-jp.txt"; DestDir: "{app}"; Flags: ignoreversion
 Source: "LICENSE"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]

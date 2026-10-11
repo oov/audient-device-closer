@@ -5,7 +5,8 @@
 My Audient iD14mkII sometimes fails to come back properly after resuming from sleep on Windows.  
 It doesn't happen every time, but it occurs fairly often.
 
-After digging into it, I found the cause: applications such as iD Mixer keep holding the device internally across sleep and cannot restart it properly when the machine resumes.  
+After digging into it, I found the cause: applications such as iD Mixer keep holding the device internally across sleep and cannot restart it properly when the machine resumes.
+
 Unfortunately, [the official guidance is completely wrong](https://support.audient.com/hc/en-us/articles/360030879291-Interface-Frequently-Disconnects-On-Windows), so real help doesn't seem likely.
 
 So I made a workaround tool called `audient-device-closer`.  
@@ -16,9 +17,23 @@ There is no guarantee that this fix works in every environment, but since I buil
 - Windows 11 Home 26H2
 - Audient iD14mkII
 
-It may work with other devices too, but I don't own any, so that is untested.  
-Note that this tool performs privileged operations such as closing devices, so it cannot be started with normal user privileges.  
-If you don't trust it, please review the source code and build it yourself, or use it as a reference to write your own tool.
+It may work with other devices too, but I don't own any, so that is untested.
+
+<!-- PRIVILEGES BEGIN -->
+## Privilege elevation
+
+Some of the operations this application performs to fix the problem, as well as registering the task that launches it when the computer resumes from sleep or hibernation, require administrator privileges.  
+Since those operations would fail without elevation, this application is configured to elevate itself at startup.
+
+This application requires privileges for the following three things:
+
+- Releasing the Audient device specified in the settings file
+- Forcefully terminating audiodg.exe when allowed in the settings
+- Registering or removing the scheduled task
+
+Note that this application exits as soon as the recovery process finishes, so it never stays resident.  
+If these explanations do not convince you, or you do not trust it, please stop using it and write your own equivalent tool based on its internal processing.
+<!-- PRIVILEGES END -->
 
 ## Getting Started
 
@@ -38,19 +53,24 @@ When you start the program normally, a window like this appears.
 
 ### The `Close the Audient device` button
 
-Pressing this button closes the device that is stuck in a bad state.
+Pressing this button releases the device that is stuck in a bad state.
 Pressing it when no problem is occurring will most likely fail.
 
 ### Behaviour
 
 #### Close iD Mixer (iD.exe) automatically
 
-With this checked, iD Mixer is closed automatically when it is holding the device.
+With this checked, `iD Mixer` is closed automatically when it is holding the device.  
+This program is launched automatically from `AudientAppLauncher.exe` when the device reconnects.  
+This option is enabled by default.
 
 #### Close audiodg (audiodg.exe) automatically
 
-With this checked, audiodg is closed automatically when it is holding the device.  
-However, this process may also be holding other audio devices, so this option is generally not recommended.
+With this checked, `audiodg` is closed automatically when it is holding the device.  
+This program is launched automatically from `Audiosrv` when it is terminated.  
+However, since this process may also be holding other audio devices,  
+it can affect other devices and programs as well, so this option is generally not recommended.  
+This option is disabled by default.
 
 ### Install
 
@@ -59,7 +79,7 @@ If you delete or move the file afterwards, the tool will stop working properly.
 
 #### Register the scheduled task
 
-Registers the program so that it runs automatically after the computer resumes from sleep.
+Registers the application so that it runs automatically after the computer resumes from sleep.
 
 #### Remove the scheduled task
 
@@ -71,23 +91,11 @@ A rough outline of what this tool actually does:
 
 1. If started from Task Scheduler, wait 5 seconds; if started manually, don't wait
 2. Check whether the device is connected via USB but not recognized as an audio device; if everything looks fine, exit
-3. If a problem is found, try closing the device; if that succeeds, exit
-4. If the failure was caused by `iD.exe` and the option is enabled, force it to quit (it is launched again from `AudientAppLauncher.exe` when the device reconnects, so this is safe; enabled by default)
-5. If the failure was caused by `audiodg.exe` and the option is enabled, force it to quit (it comes back automatically via `Audiosrv`, but this affects other audio devices too, so it is disabled by default)
-6. Try closing the device once more; if that succeeds, exit
+3. If a problem is found, try releasing the device; if that succeeds, exit
+4. If `iD.exe` is holding the device and the option is enabled, force it to quit
+5. If `audiodg.exe` is holding the device and the option is enabled, force it to quit
+6. Try releasing the device once more; if that succeeds, exit
 7. If it still fails, show a list of the applications that caused the problem
-
-## Administrator privileges
-
-Recovering the device after sleep means releasing it and having Windows detect it again, which
-Windows allows only to an administrator; the program therefore asks for elevation every time it
-starts. With elevation it releases and re-detects the Audient device named in its settings, ends
-the application holding it (iD.exe, or audiodg.exe when that is enabled), and registers a task
-that runs it as the system account on resume. It connects to no network, installs no driver, and
-does not stay resident.
-
-The same text is shown on a page of the installer, and an installed copy carries it beside the
-program as PRIVILEGES.txt.
 
 ## Credits
 
