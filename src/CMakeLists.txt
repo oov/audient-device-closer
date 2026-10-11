@@ -91,7 +91,6 @@ add_library(adc_core STATIC
   mixer.c
   process.c
   device.c
-  logger.c
   loggate.c
   options.c
   removal.c

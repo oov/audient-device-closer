@@ -82,30 +82,16 @@ void logger_close(void);
 void logger_output(enum ov_error_severity const severity, char const *const str);
 
 /**
- * @brief Write one record for a message that carries numbers
- *
- * The level is info and the reference is both the reference and the format, the way
- * ov_sprintf_char is called everywhere else in this program: the reference keeps a format
- * that comes from outside, a translation for one, from reading its arguments in a way the
- * caller did not intend.  Without an open log this is a no-op that reports success.  A
- * record that cannot be written goes to err the way logger_write gives it: what a missing
- * record means is the caller's to decide.
- *
- * @param tag the module the record belongs to, UTF-8, must not be NULL
- * @param err receives the failure of the write
- * @param reference the pattern of the message, and its reference
- * @param ... the values the pattern names
- * @return false when the record did not reach the file
- */
-bool logger_writef(char const *const tag, struct ov_error *const err, char const *const reference, ...);
-
-/**
  * @brief Write one record for a message that carries numbers, reporting a failure itself
  *
  * The note records a step of a run, where the answer to a missing record is nothing more
  * than a report: the log is the reader of these lines, so a failure to write one is
- * reported there and nowhere else.  A caller that has to react to a missing record uses
- * logger_writef and gives it an error of its own.
+ * reported there and nowhere else.
+ *
+ * The level is info and the reference is both the reference and the format, the way
+ * ov_sprintf_char is called everywhere else in this program: the reference keeps a format
+ * that comes from outside, a translation for one, from reading its arguments in a way the
+ * caller did not intend.  Without an open log this is a no-op that reports success.
  *
  * @param tag the module the record belongs to, UTF-8, must not be NULL
  * @param reference the pattern of the message, and its reference

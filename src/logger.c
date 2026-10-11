@@ -614,38 +614,6 @@ bool logger_write(char const *const tag, char const *const message, struct ov_er
 }
 
 /**
- * @brief Write one record for a message that carries numbers
- *
- * Without an open log this is a no-op that reports success.  A record that cannot be
- * written goes to err the way logger_write gives it: what a missing record means is the
- * caller's to decide.
- *
- * @param tag the module the record belongs to, UTF-8, must not be NULL
- * @param err receives the failure of the write
- * @param reference the pattern of the message, and the reference that keeps a format of
- *                  its own from reading its arguments the wrong way
- * @param ... the values the pattern names
- * @return false when the record did not reach the file
- */
-bool logger_writef(char const *const tag, struct ov_error *const err, char const *const reference, ...) {
-  char message[LOGGER_LINE_BYTES];
-  va_list ap;
-  int n = -1;
-
-  if (!logger_is_open()) {
-    return true; // no log wanted: reporting is not a failure
-  }
-  va_start(ap, reference);
-  n = OV_VSNPRINTF(message, sizeof(message), reference, reference, ap);
-  va_end(ap);
-  if (n < 0) {
-    OV_ERROR_SET_GENERIC(err, ov_error_generic_fail);
-    return false;
-  }
-  return logger_write(tag, message, err);
-}
-
-/**
  * @brief Write one record for a message that carries numbers, reporting a failure itself
  *
  * @param tag the module the record belongs to, UTF-8, must not be NULL
