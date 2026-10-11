@@ -14,53 +14,9 @@
 #include "device.h"
 #include "logger.h"
 #include "mixer.h"
+#include "process.h"
 #include "removal.h"
 #include "settings.h"
-
-/**
- * @brief Does an image path end with the given name
- *
- * @param path the path as reported by the veto event
- * @param name the image name to look for
- * @return true when the last component of path is name
- */
-bool repair_path_matches_name(char const *const path, char const *const name) {
-  size_t plen = 0;
-  size_t nlen = 0;
-  size_t i = 0;
-
-  if ((path == NULL) || (name == NULL) || (name[0] == '\0')) {
-    return false;
-  }
-  plen = strlen(path);
-  nlen = strlen(name);
-  if (plen < nlen) {
-    return false;
-  }
-  i = plen - nlen;
-  if (i > 0) {
-    char const prev = path[i - 1];
-    if ((prev != (char)0x5C) && (prev != '/') && (prev != ':')) {
-      return false;
-    }
-  }
-  return (_strnicmp(&path[i], name, nlen) == 0);
-}
-
-/**
- * @brief The moment now, in epoch milliseconds UTC
- *
- * @return the moment in epoch milliseconds UTC
- */
-static long long now_ms(void) {
-  FILETIME ft;
-  ULARGE_INTEGER u;
-
-  GetSystemTimeAsFileTime(&ft);
-  u.LowPart = ft.dwLowDateTime;
-  u.HighPart = ft.dwHighDateTime;
-  return (long long)((u.QuadPart - 116444736000000000ULL) / 10000ULL);
-}
 
 /**
  * @brief Put a sentence of its own into the result
@@ -112,7 +68,7 @@ char const *repair_option_audiodg_label(void) { return gettext("Close audiodg (a
  * @param out receives the sentence, UTF-8
  * @param out_size room of out
  */
-void repair_blocked_sentence(char const *const option, size_t const blockers, char *const out, size_t const out_size) {
+static void repair_blocked_sentence(char const *const option, size_t const blockers, char *const out, size_t const out_size) {
   if ((out == NULL) || (out_size == 0)) {
     return;
   }
@@ -154,7 +110,7 @@ static void sayf(struct repair_result *const out, char const *const reference, c
  * @param out receives the pids, capacity 2 * REPAIR_MAX_BLOCKERS
  * @return how many pids were written
  */
-size_t repair_closed_pids(struct repair_blockers const *const blockers, uint32_t *const out) {
+static size_t repair_closed_pids(struct repair_blockers const *const blockers, uint32_t *const out) {
   size_t n = 0;
   size_t i = 0;
 
@@ -325,7 +281,7 @@ static size_t pick_all(struct culprit const *const culprits,
     if (culprits[i].pid == 0) {
       continue;
     }
-    if (!repair_path_matches_name(culprits[i].path, name)) {
+    if (!process_path_matches_name(culprits[i].path, name)) {
       continue;
     }
     if (out != NULL) {
@@ -365,11 +321,11 @@ static size_t pick_all(struct culprit const *const culprits,
  * @param allow_audiodg_close the user allowed closing the audio engine
  * @return the blockers to close
  */
-struct repair_blockers repair_pick_blockers(struct culprit const *const culprits,
-                                            char const *const mixer_name,
-                                            bool const allow_mixer_close,
-                                            bool const allow_audiodg_close,
-                                            struct ov_error *const err) {
+static struct repair_blockers repair_pick_blockers(struct culprit const *const culprits,
+                                                   char const *const mixer_name,
+                                                   bool const allow_mixer_close,
+                                                   bool const allow_audiodg_close,
+                                                   struct ov_error *const err) {
   struct repair_blockers b;
   bool mixer_truncated = false;
   bool audiodg_truncated = false;
@@ -414,7 +370,7 @@ cleanup:
  * @param progress_userdata handed back to progress
  * @param step the step of the run
  * @param out receives what happened
- * @param target receives the identity that was closed, for the restart hint
+ * @param target receives the identity that was closed
  * @param err receives the hard failure
  * @return false only on a hard failure
  */
@@ -555,7 +511,7 @@ bool repair_run(struct settings const *const s,
     goto cleanup;
   }
 
-  since = now_ms();
+  since = process_now_ms();
   if (!logger_writef("remove", &log_err, "first attempt, device=%s since=%lld", devnode, since)) {
     OV_ERROR_REPORT(&log_err, NULL);
   }
@@ -666,7 +622,7 @@ bool repair_run(struct settings const *const s,
     success = true;
     goto cleanup;
   }
-  since = now_ms();
+  since = process_now_ms();
   if (!logger_writef("remove", &log_err, "second attempt, device=%s since=%lld", devnode, since)) {
     OV_ERROR_REPORT(&log_err, NULL);
   }

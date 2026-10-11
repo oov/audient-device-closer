@@ -307,6 +307,25 @@ cleanup:
 }
 
 /**
+ * @brief Give a push button back to the theme of the system
+ *
+ * @param button the button to detach from, NULL is allowed
+ */
+static void theme_button_detach(HWND const button) {
+  DWORD_PTR existing = 0;
+
+  if (button == NULL) {
+    return;
+  }
+  if (GetWindowSubclass(button, button_subclass, 1, &existing) && existing != 0) {
+    struct button_paint *paint = (struct button_paint *)(void *)existing;
+    RemoveWindowSubclass(button, button_subclass, 1);
+    button_paint_destroy(paint);
+    SetWindowTheme(button, NULL, NULL);
+  }
+}
+
+/**
  * @brief Attach the theme to a push button
  *
  * The button keeps the face of the explorer theme and stays usable when the paint state
@@ -326,24 +345,5 @@ void theme_button_attach(HWND const button) {
   }
   if (ensure_subclass(button, &err) == NULL) {
     OV_ERROR_REPORT(&err, NULL);
-  }
-}
-
-/**
- * @brief Give a push button back to the theme of the system
- *
- * @param button the button to detach from, NULL is allowed
- */
-void theme_button_detach(HWND const button) {
-  DWORD_PTR existing = 0;
-
-  if (button == NULL) {
-    return;
-  }
-  if (GetWindowSubclass(button, button_subclass, 1, &existing) && existing != 0) {
-    struct button_paint *paint = (struct button_paint *)(void *)existing;
-    RemoveWindowSubclass(button, button_subclass, 1);
-    button_paint_destroy(paint);
-    SetWindowTheme(button, NULL, NULL);
   }
 }

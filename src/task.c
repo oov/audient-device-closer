@@ -18,17 +18,6 @@ static char const kEventSubscription[] = "<QueryList><Query Id=\"0\" Path=\"Syst
                                          "</Select></Query></QueryList>";
 
 /**
- * @brief Release a string this module handed out
- *
- * @param value set to NULL afterwards, NULL is allowed
- */
-void task_string_free(char **const value) {
-  if ((value != NULL) && (*value != NULL)) {
-    OV_ARRAY_DESTROY(value); // made by ov_sprintf_*
-  }
-}
-
-/**
  * @brief Append a text to a document, with the XML entities it needs
  *
  * @param out the document to append to
@@ -68,9 +57,9 @@ static bool xml_append_escaped(char **const out, char const *const text, struct 
  * @param close_audiodg the box of the caller that allows closing the audio engine
  * @param err receives a failure of the build
  * @return the arguments in UTF-8, NULL when they could not be built
- * @note Release with task_string_free.
+ * @note Release with OV_ARRAY_DESTROY.
  */
-char *task_build_arguments(bool const close_mixer, bool const close_audiodg, struct ov_error *const err) {
+static char *task_build_arguments(bool const close_mixer, bool const close_audiodg, struct ov_error *const err) {
   char *args = NULL;
   bool success = false;
 
@@ -121,9 +110,10 @@ static char const *default_description(void) {
  *                    program
  * @param err receives a failure of the build
  * @return the document in UTF-8, NULL when it could not be built
- * @note Release with task_string_free.
+ * @note Release with OV_ARRAY_DESTROY.
  */
-char *task_build_xml(char const *const command, char const *const arguments, char const *const description, struct ov_error *const err) {
+static char *
+task_build_xml(char const *const command, char const *const arguments, char const *const description, struct ov_error *const err) {
   char *escaped_command = NULL;
   char *escaped_args = NULL;
   char *escaped_description = NULL;
@@ -231,7 +221,7 @@ cleanup:
  * @param result the HRESULT of the removal call
  * @return true when the task is not there any more
  */
-bool task_removal_is_done(long const result) { return (HRESULT)result == HRESULT_FROM_WIN32(ERROR_FILE_NOT_FOUND); }
+static bool task_removal_is_done(long const result) { return (HRESULT)result == HRESULT_FROM_WIN32(ERROR_FILE_NOT_FOUND); }
 
 /**
  * @brief Split a task path into the folder of the library and the name inside it
@@ -246,7 +236,8 @@ bool task_removal_is_done(long const result) { return (HRESULT)result == HRESULT
  * @param leaf_size room of leaf
  * @return false when the path is empty, too long for a buffer, or ends in a separator
  */
-bool task_split_path(char const *const path, char *const folder, size_t const folder_size, char *const leaf, size_t const leaf_size) {
+static bool
+task_split_path(char const *const path, char *const folder, size_t const folder_size, char *const leaf, size_t const leaf_size) {
   size_t len = 0;
   size_t last = 0;
   size_t i = 0;
@@ -522,7 +513,7 @@ static bool com_ready(struct ov_error *const err) {
  * @param err receives the refusal of the system
  * @return false when the registration did not happen
  */
-bool task_install_document(struct settings const *const settings, char const *const xml, struct ov_error *const err) {
+static bool task_install_document(struct settings const *const settings, char const *const xml, struct ov_error *const err) {
   struct scheduler sch;
   BSTR path = NULL;
   BSTR document = NULL;

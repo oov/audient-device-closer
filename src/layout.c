@@ -108,7 +108,7 @@ void layout_window_rect(
  * @param dpi the dpi of the window, 0 falls back to the base of 96
  * @return the height to give to CreateFontW
  */
-int layout_font_height(UINT const dpi) {
+static int layout_font_height(UINT const dpi) {
   UINT const d = (dpi != 0) ? dpi : USER_DEFAULT_SCREEN_DPI;
   return -MulDiv(ADC_LAYOUT_FONT_POINT, (int)d, 72);
 }

@@ -28,15 +28,6 @@
 char *paths_executable(struct ov_error *const err);
 
 /**
- * @brief Directory of the running executable
- *
- * @param err receives the failure of the lookup
- * @return the directory in UTF-8 without a trailing separator, NULL when it could not be read
- * @note Release with paths_string_free.
- */
-char *paths_executable_dir(struct ov_error *const err);
-
-/**
  * @brief The file name of a path, the part behind the last separator
  *
  * @param path_utf8 the path to look at, UTF-8, NULL is allowed

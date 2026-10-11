@@ -53,13 +53,6 @@ bool logger_open(struct ov_error *const err);
 void logger_init(void);
 
 /**
- * @brief Is the log open and usable
- *
- * @return true when logger_open() succeeded and the log is still usable
- */
-bool logger_is_open(void);
-
-/**
  * @brief Write one record at the info level
  *
  * @param tag the module the record belongs to, UTF-8, must not be NULL
@@ -68,17 +61,6 @@ bool logger_is_open(void);
  * @return false when the record did not reach the file
  */
 bool logger_write(char const *const tag, char const *const message, struct ov_error *const err);
-
-/**
- * @brief Write one record with a level of its own
- *
- * @param level the level the record carries
- * @param tag the module the record belongs to, UTF-8, must not be NULL
- * @param message the record itself, UTF-8, must not be NULL
- * @param err receives the failure of the write
- * @return false when the record did not reach the file
- */
-bool logger_write_level(enum ov_error_severity const level, char const *const tag, char const *const message, struct ov_error *const err);
 
 /**
  * @brief Flush and release the log
@@ -98,50 +80,6 @@ void logger_close(void);
  * @param str the rendering to write
  */
 void logger_output(enum ov_error_severity const severity, char const *const str);
-
-/**
- * @brief Format one record into a buffer
- *
- * @param out receives the record, size bytes
- * @param size room of out
- * @param time_ms_utc the moment of the record, in epoch milliseconds UTC
- * @param level the level the record carries
- * @param tag the module the record belongs to
- * @param message the record itself
- * @return how many bytes were written without the terminating NUL, or 0 when the line does
- *         not fit into size at all
- */
-size_t logger_format_line(char *const out,
-                          size_t const size,
-                          long long const time_ms_utc,
-                          enum ov_error_severity const level,
-                          char const *const tag,
-                          char const *const message);
-
-/**
- * @brief The level name as it appears in the record
- *
- * @param level the level to name
- * @return a static string
- */
-char const *logger_level_name(enum ov_error_severity const level);
-
-/**
- * @brief One line of a rendered error, shaped into the two record fields
- *
- * The decorations of the renderer are dropped: the level marker (the record has a level
- * field) and the error code (the message names the failure).  The tag is the module the
- * line names -- "(at removal.c:15 ...)" names "removal" -- so the errors group by where
- * they happened; "error" is the tag of a line that names no source.  line and message must
- * not overlap.
- *
- * @param line one line of the rendering
- * @param tag receives the module the line names, UTF-8
- * @param tag_size room of tag
- * @param message receives the line without its decorations, UTF-8
- * @param message_size room of message
- */
-void logger_error_fields(char const *const line, char *const tag, size_t const tag_size, char *const message, size_t const message_size);
 
 /**
  * @brief Write one record for a message that carries numbers
@@ -187,43 +125,3 @@ bool logger_log_run_start(struct ov_error *const err);
  * @return false when a record did not reach the file
  */
 bool logger_log_run_end(char const *const sentence, struct ov_error *const err);
-
-/**
- * @brief What to do with the file when another record has to fit
- *
- * @param new_size the size the file has now
- * @param add_size how much the next record adds
- * @return 0 keeps everything, -1 starts over with an empty file, and any positive number
- *         is the size the file is cut down to (the kept part always begins at a line
- *         boundary)
- */
-long long logger_trim_size(long long const new_size, size_t const add_size);
-
-/**
- * @brief The length of the tail that has to be kept
- *
- * The kept part starts at a line boundary and holds at least LOGGER_KEEP_BYTES.  Works on
- * the raw bytes of the file.
- *
- * @param data the contents of the file
- * @param size how much the file holds
- * @return how many bytes to keep at the end
- */
-size_t logger_keep_tail(char const *const data, size_t const size);
-
-/**
- * @brief The path of the log for an executable
- *
- * @param exe_path the executable the log belongs to, UTF-8
- * @param err receives the failure of the build
- * @return the path in UTF-8, NULL when it could not be built
- * @note Release with logger_string_free.
- */
-char *logger_path_for_exe(char const *const exe_path, struct ov_error *const err);
-
-/**
- * @brief Release a string this module handed out
- *
- * @param value set to NULL afterwards, NULL is allowed
- */
-void logger_string_free(char **const value);

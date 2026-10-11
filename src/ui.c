@@ -390,38 +390,42 @@ static enum repair_stage const report_stages[] = {
  *
  * @param st the window the run reports into, which knows the font to measure with
  * @param hwnd the window to measure on
- * @return the text, UTF-8
+ * @param out receives the text, UTF-8, always terminated
+ * @param out_size room of out
  */
-static char const *widest_stage_text(struct ui_state const *const st, HWND const hwnd) {
-  char const *widest = default_stage_text();
+static void widest_stage_text(struct ui_state const *const st, HWND const hwnd, char *const out, size_t const out_size) {
+  char text_buf[256];
   HDC dc = GetDC(hwnd);
   HFONT old = NULL;
   int room = 0;
   size_t i = 0;
 
+  if ((out == NULL) || (out_size == 0)) {
+    return;
+  }
+  strncpy(out, default_stage_text(), out_size - 1);
+  out[out_size - 1] = '\0';
   if (dc == NULL) {
-    return widest;
+    return;
   }
   if (st->font != NULL) {
     old = (HFONT)SelectObject(dc, st->font);
   }
-  room = text_width(dc, widest);
+  room = text_width(dc, out);
   for (i = 0; i < (sizeof(report_stages) / sizeof(report_stages[0])); i++) {
-    char text_buf[256];
     stage_text(report_stages[i], st->settings, text_buf, sizeof(text_buf));
-    char const *const text = text_buf;
-    int const width = text_width(dc, text);
+    int const width = text_width(dc, text_buf);
 
     if (width > room) {
       room = width;
-      widest = text;
+      strncpy(out, text_buf, out_size - 1);
+      out[out_size - 1] = '\0';
     }
   }
   if (old != NULL) {
     SelectObject(dc, old);
   }
   ReleaseDC(hwnd, dc);
-  return widest;
 }
 
 /**
@@ -715,14 +719,6 @@ static enum device_state refresh(struct ui_state *const st) {
   state = device_probe(st->settings->ks_service, st->settings->ks_instance_prefix, &err);
   st->state = state;
   st->faulted = (state == DEVICE_STATE_FAULTED);
-  switch (state) {
-  case DEVICE_STATE_FAULTED:
-  case DEVICE_STATE_HEALTHY:
-  case DEVICE_STATE_PROBLEM:
-  case DEVICE_STATE_ABSENT:
-  case DEVICE_STATE_UNKNOWN:
-    break;
-  }
   EnableWindow(st->close_btn, TRUE);
   if ((state != DEVICE_STATE_FAULTED) && (state != DEVICE_STATE_HEALTHY)) {
     OV_ERROR_REPORT(&err, NULL);
@@ -810,7 +806,7 @@ static int repair_thread(void *const userdata) {
  * @param outcome what came of the run
  * @return the translated sentence, UTF-8
  */
-char const *ui_result_headline(enum repair_outcome const outcome) {
+static char const *ui_result_headline(enum repair_outcome const outcome) {
   if (outcome == REPAIR_OUTCOME_CLOSED) {
     return gettext("Success.");
   }
@@ -893,7 +889,7 @@ bool ui_asks_before_close(bool const faulted) { return !faulted; }
  * @param state the state the last refresh saw
  * @return true when the press is answered with a dialog instead of a run
  */
-bool ui_state_is_not_repairable(enum device_state const state) {
+static bool ui_state_is_not_repairable(enum device_state const state) {
   return (state == DEVICE_STATE_PROBLEM) || (state == DEVICE_STATE_ABSENT) || (state == DEVICE_STATE_UNKNOWN);
 }
 
@@ -1091,13 +1087,15 @@ static void do_repair(struct ui_state *const st, HWND const hwnd, bool const wai
   {
     struct ov_error perr = {0};
     char wait_buf[256];
+    char widest_buf[256];
     stage_text(REPAIR_STAGE_WAIT, st->settings, wait_buf, sizeof(wait_buf));
+    widest_stage_text(st, hwnd, widest_buf, sizeof(widest_buf));
     if (!ui_progress_window_create(hwnd,
                                    st->dpi,
                                    ui_progress_window_steps(st->job.wait_first),
                                    &st->job.cancel,
                                    wait_first ? wait_buf : default_stage_text(),
-                                   widest_stage_text(st, hwnd),
+                                   widest_buf,
                                    &st->progress,
                                    &perr)) {
       OV_ERROR_REPORT(&perr, NULL);

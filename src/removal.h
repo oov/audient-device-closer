@@ -32,38 +32,6 @@ enum removal_reason {
 };
 
 /**
- * @brief Map the CONFIGRET of the removal call to its result
- *
- * @param cr the CONFIGRET the call answered with
- * @return the result the caller acts on
- */
-enum removal_result removal_result_from_configret(unsigned long cr);
-
-/**
- * @brief Map the CONFIGRET of the removal call to the reason the user sees
- *
- * @param cr the CONFIGRET the call answered with
- * @return the reason the dialog can explain
- */
-enum removal_reason removal_reason_from_configret(unsigned long cr);
-
-/**
- * @brief Name of the result, as the log records it
- *
- * @param result the result to name
- * @return a static string
- */
-char const *removal_result_name(enum removal_result result);
-
-/**
- * @brief Name of the reason, as the dialog offers it
- *
- * @param reason the reason to name
- * @return a static string
- */
-char const *removal_reason_name(enum removal_reason reason);
-
-/**
  * @brief Release the device with CM_Query_And_Remove_SubTreeW only
  *
  * Does not detect, does not look up the culprit, does not close any process.

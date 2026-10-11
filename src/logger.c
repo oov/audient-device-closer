@@ -12,6 +12,7 @@
 
 #include "loggate.h"
 #include "paths.h"
+#include "process.h"
 
 static HANDLE g_file = INVALID_HANDLE_VALUE;
 static mtx_t g_lock;
@@ -33,7 +34,8 @@ static struct loggate g_gate;
  * @param message receives the line without its decorations, UTF-8
  * @param message_size room of message
  */
-void logger_error_fields(char const *const line, char *const tag, size_t const tag_size, char *const message, size_t const message_size) {
+static void
+logger_error_fields(char const *const line, char *const tag, size_t const tag_size, char *const message, size_t const message_size) {
   static char const *const markers[] = {"[ERROR] ", "[WARN] ", "[INFO] ", "[VERBOSE] "};
   char const *p = (line != NULL) ? line : "";
   size_t o = 0;
@@ -86,7 +88,7 @@ void logger_error_fields(char const *const line, char *const tag, size_t const t
  * @param level the level to name
  * @return a static string
  */
-char const *logger_level_name(enum ov_error_severity const level) {
+static char const *logger_level_name(enum ov_error_severity const level) {
   switch (level) {
   case ov_error_severity_error:
     return "error";
@@ -143,12 +145,12 @@ static size_t append_field(char *const out, size_t const pos, size_t const size,
  * @return how many bytes were written without the terminating NUL, or 0 when the line does
  *         not fit into size at all
  */
-size_t logger_format_line(char *const out,
-                          size_t const size,
-                          long long const time_ms_utc,
-                          enum ov_error_severity const level,
-                          char const *const tag,
-                          char const *const message) {
+static size_t logger_format_line(char *const out,
+                                 size_t const size,
+                                 long long const time_ms_utc,
+                                 enum ov_error_severity const level,
+                                 char const *const tag,
+                                 char const *const message) {
   char stamp[32];
   struct tm local;
   time_t seconds = 0;
@@ -199,7 +201,7 @@ size_t logger_format_line(char *const out,
  * @return how many bytes to drop from the front, 0 when nothing has to go, -1 when the
  *         record alone is bigger than the file may become
  */
-long long logger_trim_size(long long const new_size, size_t const add_size) {
+static long long logger_trim_size(long long const new_size, size_t const add_size) {
   if (new_size <= 0) {
     return 0; // nothing on disk yet, nothing to trim
   }
@@ -209,54 +211,22 @@ long long logger_trim_size(long long const new_size, size_t const add_size) {
   if ((new_size + (long long)add_size) <= LOGGER_MAX_BYTES) {
     return 0; // it still fits
   }
-  return -1; // it does not fit any more, so only the newest records are kept
+  return LOGGER_KEEP_BYTES; // it does not fit any more: cut down to the newest records
 }
 
 /**
- * @brief Where the kept records of a read file start
+ * @brief Is the log open and usable
  *
- * @param data the contents of the file
- * @param size how much the file holds
- * @return the offset of the first record to keep, the tail alone when nothing fits
+ * @return true when logger_open() succeeded and the log is still usable
  */
-size_t logger_keep_tail(char const *const data, size_t const size) {
-  static size_t const keep_hint = LOGGER_KEEP_BYTES;
-  size_t const begin = (size > keep_hint) ? (size - keep_hint) : 0;
-  size_t start = begin;
-
-  if ((data == NULL) || (size == 0)) {
-    return 0;
-  }
-  while ((start < size) && (data[start] != '\n')) {
-    start++;
-  }
-  if (start >= size) {
-    return 0;
-  }
-  return size - (start + 1);
-}
-
-/**
- * @brief The moment now, in epoch milliseconds UTC
- *
- * @return the moment in epoch milliseconds UTC
- */
-static long long now_ms(void) {
-  FILETIME ft;
-  ULARGE_INTEGER u;
-
-  GetSystemTimeAsFileTime(&ft);
-  u.LowPart = ft.dwLowDateTime;
-  u.HighPart = ft.dwHighDateTime;
-  return (long long)((u.QuadPart - 116444736000000000ULL) / 10000ULL);
-}
+static bool logger_is_open(void) { return g_file != INVALID_HANDLE_VALUE; }
 
 /**
  * @brief Release a string this module handed out
  *
  * @param value set to NULL afterwards, NULL is allowed
  */
-void logger_string_free(char **const value) {
+static void logger_string_free(char **const value) {
   if ((value != NULL) && (*value != NULL)) {
     OV_FREE(value); // made by OV_REALLOC inside paths_replace_extension
   }
@@ -303,7 +273,7 @@ static void logger_make_folder(char const *const exe_path) {
  * @return the path in UTF-8, NULL when it could not be built
  * @note Release with logger_string_free.
  */
-char *logger_path_for_exe(char const *const exe_path, struct ov_error *const err) {
+static char *logger_path_for_exe(char const *const exe_path, struct ov_error *const err) {
   char *folder = NULL;
   char *joined = NULL;
   char *result = NULL;
@@ -352,86 +322,69 @@ cleanup:
 }
 
 /**
- * @brief Read a file from its current position
+ * @brief Cut the file down to the given size
  *
- * An empty file is an empty buffer, not an error.
+ * The file is rewritten in place, so no rename and no second file appear next to the log.
+ * The newest records survive: the tail the size names is read, cut to the first line
+ * boundary it holds and written over the front of the file.
  *
- * @param h the file to read
- * @param out receives the contents
- * @param out_size receives how much was read
- * @param err receives the failure of the read
- * @return false when the file could not be read
+ * @param h the file to trim
+ * @param keep_size the size the file is cut down to
+ * @param err receives the failure of the rewrite
+ * @return false when the file could not be trimmed
  */
-static bool read_all(HANDLE const h, char **const out, size_t *const out_size, struct ov_error *const err) {
+static bool trim(HANDLE const h, long long const keep_size, struct ov_error *const err) {
   bool success = false;
-  LARGE_INTEGER size;
-  DWORD got = 0;
   char *buf = NULL;
+  LARGE_INTEGER size;
+  LARGE_INTEGER start;
+  DWORD got = 0;
+  size_t keep = 0;
+  DWORD written = 0;
 
-  *out = NULL;
-  *out_size = 0;
   if (!GetFileSizeEx(h, &size)) {
     OV_ERROR_SET_HRESULT(err, HRESULT_FROM_WIN32(GetLastError()));
     goto cleanup;
   }
-  if ((size.QuadPart <= 0) || (size.QuadPart > LOGGER_MAX_BYTES)) {
-    success = true; // empty, or bigger than anything this program writes: start over
-    goto cleanup;
-  }
-  if (!OV_REALLOC(&buf, (size_t)size.QuadPart, sizeof(buf[0]))) {
-    OV_ERROR_SET_GENERIC(err, ov_error_generic_out_of_memory);
-    goto cleanup;
-  }
-  if (!ReadFile(h, buf, (DWORD)size.QuadPart, &got, NULL) || (got != (DWORD)size.QuadPart)) {
-    OV_ERROR_SET_HRESULT(err, HRESULT_FROM_WIN32(GetLastError()));
-    goto cleanup;
-  }
-  *out = buf;
-  *out_size = (size_t)got;
-  buf = NULL;
-  success = true;
-
-cleanup:
-  OV_FREE(&buf);
-  return success;
-}
-
-/**
- * @brief Drop the oldest records until only the newest ones are left
- *
- * The file is rewritten in place, so no rename and no second file appear next to the log.
- *
- * @param h the file to trim
- * @param err receives the failure of the rewrite
- * @return false when the file could not be trimmed
- */
-static bool trim(HANDLE const h, struct ov_error *const err) {
-  bool success = false;
-  char *data = NULL;
-  size_t size = 0;
-  size_t keep = 0;
-  LARGE_INTEGER zero;
-  DWORD written = 0;
-
-  if (!read_all(h, &data, &size, err)) {
-    OV_ERROR_ADD_TRACE(err);
-    goto cleanup;
-  }
-  if (size == 0) {
+  if ((size.QuadPart <= 0) || (keep_size <= 0)) {
     success = true;
     goto cleanup;
   }
-  keep = logger_keep_tail(data, size);
-  zero.QuadPart = 0;
-  if (!SetFilePointerEx(h, zero, NULL, FILE_BEGIN)) {
+  start.QuadPart = (size.QuadPart > keep_size) ? (size.QuadPart - keep_size) : 0;
+  if (!SetFilePointerEx(h, start, NULL, FILE_BEGIN)) {
     OV_ERROR_SET_HRESULT(err, HRESULT_FROM_WIN32(GetLastError()));
     goto cleanup;
   }
-  if (keep > 0) {
-    if (!WriteFile(h, &data[size - keep], (DWORD)keep, &written, NULL) || (written != (DWORD)keep)) {
+  if (!OV_REALLOC(&buf, (size_t)(size.QuadPart - start.QuadPart), sizeof(buf[0]))) {
+    OV_ERROR_SET_GENERIC(err, ov_error_generic_out_of_memory);
+    goto cleanup;
+  }
+  if (!ReadFile(h, buf, (DWORD)(size.QuadPart - start.QuadPart), &got, NULL) || ((long long)got != (size.QuadPart - start.QuadPart))) {
+    OV_ERROR_SET_HRESULT(err, HRESULT_FROM_WIN32(GetLastError()));
+    goto cleanup;
+  }
+  // the kept part begins after the first newline of the tail: the record the tail was cut
+  // out of is incomplete, and an incomplete record would read as another one
+  keep = 0;
+  while ((keep < (size_t)got) && (buf[keep] != '\n')) {
+    keep++;
+  }
+  if (keep >= (size_t)got) {
+    success = true; // no line boundary in the tail: nothing readable is left to keep
+    goto cleanup;
+  }
+  keep++; // the newline itself belongs to the record in front of the kept part
+  {
+    LARGE_INTEGER front;
+    front.QuadPart = 0;
+    if (!SetFilePointerEx(h, front, NULL, FILE_BEGIN)) {
       OV_ERROR_SET_HRESULT(err, HRESULT_FROM_WIN32(GetLastError()));
       goto cleanup;
     }
+  }
+  if (!WriteFile(h, &buf[keep], (DWORD)(got - keep), &written, NULL) || (written != (got - keep))) {
+    OV_ERROR_SET_HRESULT(err, HRESULT_FROM_WIN32(GetLastError()));
+    goto cleanup;
   }
   if (!SetEndOfFile(h)) {
     OV_ERROR_SET_HRESULT(err, HRESULT_FROM_WIN32(GetLastError()));
@@ -440,7 +393,7 @@ static bool trim(HANDLE const h, struct ov_error *const err) {
   success = true;
 
 cleanup:
-  OV_FREE(&data);
+  OV_FREE(&buf);
   if (success) {
     SetFilePointer(h, 0, NULL, FILE_END);
   }
@@ -539,7 +492,7 @@ bool logger_open(struct ov_error *const err) {
     goto cleanup;
   }
   if (size.QuadPart > LOGGER_MAX_BYTES) {
-    if (!trim(h, err)) {
+    if (!trim(h, LOGGER_KEEP_BYTES, err)) {
       OV_ERROR_ADD_TRACE(err);
       goto cleanup;
     }
@@ -553,7 +506,6 @@ bool logger_open(struct ov_error *const err) {
   g_file = h;
   h = INVALID_HANDLE_VALUE;
   success = true;
-
 cleanup:
   if (h != INVALID_HANDLE_VALUE) {
     CloseHandle(h);
@@ -566,13 +518,6 @@ cleanup:
 }
 
 /**
- * @brief Is the log open and usable
- *
- * @return true when logger_open() succeeded and the log is still usable
- */
-bool logger_is_open(void) { return g_file != INVALID_HANDLE_VALUE; }
-
-/**
  * @brief Write one record with a level of its own
  *
  * @param level the level the record carries
@@ -581,7 +526,8 @@ bool logger_is_open(void) { return g_file != INVALID_HANDLE_VALUE; }
  * @param err receives the failure of the write
  * @return false when the record did not reach the file
  */
-bool logger_write_level(enum ov_error_severity const level, char const *const tag, char const *const message, struct ov_error *const err) {
+static bool
+logger_write_level(enum ov_error_severity const level, char const *const tag, char const *const message, struct ov_error *const err) {
   bool success = false;
   char line[LOGGER_LINE_BYTES];
   LARGE_INTEGER size;
@@ -594,7 +540,7 @@ bool logger_write_level(enum ov_error_severity const level, char const *const ta
   if (!logger_is_open()) {
     return true; // no log wanted: reporting is not a failure
   }
-  if (logger_format_line(line, sizeof(line), now_ms(), level, tag, message) == 0) {
+  if (logger_format_line(line, sizeof(line), process_now_ms(), level, tag, message) == 0) {
     OV_ERROR_SET_GENERIC(err, ov_error_generic_unexpected);
     return false;
   }
@@ -614,7 +560,7 @@ bool logger_write_level(enum ov_error_severity const level, char const *const ta
       goto cleanup_unlock;
     }
   } else if (trim_to > 0) {
-    if (!trim(g_file, err)) {
+    if (!trim(g_file, trim_to, err)) {
       OV_ERROR_ADD_TRACE(err);
       goto cleanup_unlock;
     }

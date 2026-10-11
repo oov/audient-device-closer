@@ -17,8 +17,7 @@
  */
 struct mixer_target {
   uint32_t pid;
-  char *path;         // UTF-8, win32 path of the running image, as taken before the close
-  char *command_line; // UTF-8, as it was actually launched (may be NULL)
+  char *path; // UTF-8, win32 path of the running image, as taken before the close
 };
 
 /**
@@ -47,8 +46,8 @@ bool mixer_take(uint32_t const pid,
 /**
  * @brief Terminate the taken instance and wait until it is gone
  *
- * The saved path and command line stay usable afterwards, so the caller can restart it from
- * them.
+ * The saved path stays usable afterwards, and the close checks the image of the handle
+ * against it, so the instance that goes is the one that was taken.
  *
  * @param target the instance mixer_take found
  * @param err receives the failure of the termination

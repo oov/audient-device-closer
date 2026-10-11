@@ -1,6 +1,6 @@
-#include <ovtest.h>
+#include "device.c"
 
-#include "device.h"
+#include <ovtest.h>
 
 /**
  * @brief A healthy device: the problem code is CM_PROB_NONE and an endpoint is present

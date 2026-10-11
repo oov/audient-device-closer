@@ -7,52 +7,6 @@
 #include <stdint.h>
 
 /**
- * @brief One process of the list the snapshot returned
- */
-struct process_entry {
-  uint32_t pid;
-  char *path; // UTF-8 win32 path, NULL when it could not be read
-};
-
-/**
- * @brief The processes that are running right now
- *
- * @param exe_name narrows the result to this image name (UTF-8, e.g. "iD.exe"), NULL lists
- *                 every process
- * @param err receives the failure of the walk
- * @return NULL only when the listing failed, an empty array is a normal answer
- * @note Release with process_list_destroy.
- */
-struct process_entry *process_list(char const *const exe_name, struct ov_error *const err);
-
-/**
- * @brief Number of entries in the list
- *
- * @param list NULL is allowed
- * @return the number of entries, 0 for NULL
- */
-size_t process_count(struct process_entry const *const list);
-
-/**
- * @brief Release the list and every entry in it
- *
- * @param list set to NULL afterwards
- */
-void process_list_destroy(struct process_entry **const list);
-
-/**
- * @brief The command line a process was started with
- *
- * Read from its PEB.
- *
- * @param pid the process to ask
- * @param err receives the refusal of the system
- * @return the command line in UTF-8, NULL when it could not be read
- * @note Release with process_string_free.
- */
-char *process_command_line(uint32_t const pid, struct ov_error *const err);
-
-/**
  * @brief Release a string this module handed out
  *
  * @param value set to NULL afterwards, NULL is allowed
@@ -156,20 +110,6 @@ bool process_ref_wait(struct process_ref const *const ref, uint32_t const timeou
 void process_ref_close(struct process_ref *const ref);
 
 /**
- * @brief Wait until a process is gone, without holding a handle on it
- *
- * out_gone tells whether it actually exited in time; a pid that cannot be opened counts as
- * gone.
- *
- * @param pid the process to wait for
- * @param timeout_ms how long to wait
- * @param out_gone receives whether the process is gone
- * @param err receives the failure of the wait
- * @return false when the wait could not be answered
- */
-bool process_wait(uint32_t const pid, uint32_t const timeout_ms, bool *const out_gone, struct ov_error *const err);
-
-/**
  * @brief Did the process start before the event it is measured against
  *
  * A pid is reused only after its previous owner is gone, so a process that started at or
@@ -180,3 +120,10 @@ bool process_wait(uint32_t const pid, uint32_t const timeout_ms, bool *const out
  * @return false when one of the two is unknown or the process is younger than the event
  */
 bool process_start_matches_event_time(long long const start_ms_utc, long long const event_time_ms);
+
+/**
+ * @brief The moment now, in epoch milliseconds UTC
+ *
+ * @return the moment in epoch milliseconds UTC
+ */
+long long process_now_ms(void);

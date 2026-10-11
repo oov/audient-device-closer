@@ -107,7 +107,6 @@ target_link_libraries(adc_core PRIVATE
   cfgmgr32
   advapi32
   wevtapi
-  ntdll
   shell32
   ole32
   uuid
@@ -239,6 +238,9 @@ add_executable(test_ui
   app.rc
   "${CMAKE_CURRENT_BINARY_DIR}/i18n.rc"
 )
+# layout.c is included by ui_test.c itself: it must not be linked a second time through
+# adc_core, or the static functions the test reaches would live in two objects.
+set_property(TARGET test_ui APPEND PROPERTY LINK_LIBRARIES)
 set_property(SOURCE app.rc APPEND PROPERTY OBJECT_DEPENDS
   "${CMAKE_CURRENT_SOURCE_DIR}/res/app.manifest"
   "${CMAKE_CURRENT_SOURCE_DIR}/res/app.debug.manifest"
@@ -255,8 +257,28 @@ add_test(NAME ui COMMAND test_ui)
 # Unit tests: the pure decision logic of each module, no real device needed.  A test that
 # writes a file next to itself (logger, mixer) cleans up after itself.
 foreach(adc_test device removal culprit process mixer settings repair options layout loggate logger paths task instance)
-  add_executable(test_${adc_test} ${adc_test}_test.c)
-  target_link_libraries(test_${adc_test} PRIVATE adc_core ovbase adc_intf)
+  if(adc_test STREQUAL "culprit" OR adc_test STREQUAL "device" OR adc_test STREQUAL "removal" OR adc_test STREQUAL "repair" OR adc_test STREQUAL "settings" OR adc_test STREQUAL "task" OR adc_test STREQUAL "logger" OR adc_test STREQUAL "process")
+    add_executable(test_${adc_test} ${adc_test}_test.c)
+    if(adc_test STREQUAL "culprit")
+      target_link_libraries(test_${adc_test} PRIVATE ovbase adc_intf wevtapi)
+    elseif(adc_test STREQUAL "removal" OR adc_test STREQUAL "device")
+      target_link_libraries(test_${adc_test} PRIVATE ovbase adc_intf cfgmgr32)
+    elseif(adc_test STREQUAL "process")
+      target_link_libraries(test_${adc_test} PRIVATE ovbase adc_intf advapi32)
+      target_sources(test_${adc_test} PRIVATE process.c)
+    elseif(adc_test STREQUAL "settings" OR adc_test STREQUAL "logger")
+      target_link_libraries(test_${adc_test} PRIVATE ovbase adc_intf yyjson)
+      target_sources(test_${adc_test} PRIVATE paths.c loggate.c process.c)
+    elseif(adc_test STREQUAL "task")
+      target_link_libraries(test_${adc_test} PRIVATE ovbase adc_intf ole32 oleaut32 uuid taskschd)
+      target_sources(test_${adc_test} PRIVATE paths.c)
+    else()
+      target_link_libraries(test_${adc_test} PRIVATE adc_core ovbase adc_intf)
+    endif()
+  else()
+    add_executable(test_${adc_test} ${adc_test}_test.c)
+    target_link_libraries(test_${adc_test} PRIVATE adc_core ovbase adc_intf)
+  endif()
   add_test(NAME ${adc_test} COMMAND test_${adc_test})
 endforeach()
 

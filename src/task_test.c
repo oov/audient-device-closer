@@ -1,10 +1,10 @@
+#include "task.c"
+
 #include <ovtest.h>
 
 #include <windows.h>
 
 #include <string.h>
-
-#include "task.h"
 
 /**
  * @brief The arguments field carries the switches and nothing else
@@ -25,7 +25,7 @@ static void test_arguments_carry_the_switches_only(void) {
 
 cleanup:
   OV_ERROR_REPORT(&err, NULL);
-  task_string_free(&args);
+  OV_ARRAY_DESTROY(&args);
 }
 
 /**
@@ -53,8 +53,8 @@ static void test_arguments_carry_both_boxes(void) {
 
 cleanup:
   OV_ERROR_REPORT(&err, NULL);
-  task_string_free(&on);
-  task_string_free(&off);
+  OV_ARRAY_DESTROY(&on);
+  OV_ARRAY_DESTROY(&off);
 }
 
 /**
@@ -79,7 +79,7 @@ static void test_xml_escapes_what_it_has_to(void) {
 
 cleanup:
   OV_ERROR_REPORT(&err, NULL);
-  task_string_free(&xml);
+  OV_ARRAY_DESTROY(&xml);
 }
 
 /**
@@ -113,7 +113,7 @@ static void test_xml_states_the_trigger_and_the_principal(void) {
 
 cleanup:
   OV_ERROR_REPORT(&err, NULL);
-  task_string_free(&xml);
+  OV_ARRAY_DESTROY(&xml);
 }
 
 /**
@@ -135,7 +135,7 @@ static void test_xml_quotes_the_command(void) {
 
 cleanup:
   OV_ERROR_REPORT(&err, NULL);
-  task_string_free(&xml);
+  OV_ARRAY_DESTROY(&xml);
 }
 
 /**
@@ -158,7 +158,7 @@ static void test_xml_describes_what_the_task_is_for(void) {
 
 cleanup:
   OV_ERROR_REPORT(&err, NULL);
-  task_string_free(&xml);
+  OV_ARRAY_DESTROY(&xml);
 }
 
 /**
@@ -180,7 +180,7 @@ static void test_xml_takes_the_description_it_is_given(void) {
 
 cleanup:
   OV_ERROR_REPORT(&err, NULL);
-  task_string_free(&xml);
+  OV_ARRAY_DESTROY(&xml);
 }
 
 /**

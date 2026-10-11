@@ -161,25 +161,33 @@ static bool get_str(yyjson_val *const root, char const *const key, bool const re
  *
  * @param root the object that holds the key
  * @param key the key to read
+ * @param required when true, a key that is not there is an error; when false, def is used
  * @param min the smallest value this program accepts
  * @param max the largest value this program accepts
+ * @param def the value the settings run with when the key is not there and not required
  * @param out receives the value
  * @param err receives the problem of the key
- * @return false when the key is missing, not a number, out of range or out of memory
+ * @return false when the key is missing although it was required, not a number, out of
+ *         range or out of memory
  */
-static bool get_ulong(yyjson_val *const root,
-                      char const *const key,
-                      unsigned long const min,
-                      unsigned long const max,
-                      unsigned long *const out,
-                      struct ov_error *const err) {
+static bool get_ulong_full(yyjson_val *const root,
+                           char const *const key,
+                           bool const required,
+                           unsigned long const min,
+                           unsigned long const max,
+                           unsigned long const def,
+                           unsigned long *const out,
+                           struct ov_error *const err) {
   yyjson_val *v = yyjson_obj_get(root, key);
 
-  *out = 0;
+  *out = def;
   if (v == NULL) {
-    OV_ERROR_SETF(
-        err, ov_error_type_generic, ov_error_generic_not_found, "the settings file has no %1$hs", "the settings file has no %1$hs", key);
-    return false;
+    if (required) {
+      OV_ERROR_SETF(
+          err, ov_error_type_generic, ov_error_generic_not_found, "the settings file has no %1$hs", "the settings file has no %1$hs", key);
+      return false;
+    }
+    return true;
   }
   if (!yyjson_is_uint(v)) {
     OV_ERROR_SETF(err, ov_error_type_generic, ov_error_generic_invalid_argument, "%1$hs must be a number", "%1$hs must be a number", key);
@@ -230,38 +238,6 @@ static bool get_bool_optional(yyjson_val *const root, char const *const key, boo
   return true;
 }
 
-static bool get_ulong_optional(yyjson_val *const root,
-                               char const *const key,
-                               unsigned long const min,
-                               unsigned long const max,
-                               unsigned long const def,
-                               unsigned long *const out,
-                               struct ov_error *const err) {
-  yyjson_val *v = yyjson_obj_get(root, key);
-
-  *out = def;
-  if (v == NULL) {
-    return true;
-  }
-  if (!yyjson_is_uint(v)) {
-    OV_ERROR_SETF(err, ov_error_type_generic, ov_error_generic_invalid_argument, "%1$hs must be a number", "%1$hs must be a number", key);
-    return false;
-  }
-  unsigned long const got = (unsigned long)yyjson_get_uint(v);
-  if ((got < min) || (got > max)) {
-    OV_ERROR_SETF(err,
-                  ov_error_type_generic,
-                  ov_error_generic_invalid_argument,
-                  "%1$hs is out of range: %2$lu",
-                  "%1$hs is out of range: %2$lu",
-                  key,
-                  got);
-    return false;
-  }
-  *out = got;
-  return true;
-}
-
 /**
  * @brief Fill the settings from the text of the file
  *
@@ -273,7 +249,7 @@ static bool get_ulong_optional(yyjson_val *const root,
  * @param err receives the first problem of the file
  * @return false when the text does not describe settings this program can run with
  */
-bool settings_apply_json(char const *const json_utf8, struct settings *const out, struct ov_error *const err) {
+static bool settings_apply_json(char const *const json_utf8, struct settings *const out, struct ov_error *const err) {
   bool success = false;
   yyjson_doc *doc = NULL;
   yyjson_val *root = NULL;
@@ -309,10 +285,6 @@ bool settings_apply_json(char const *const json_utf8, struct settings *const out
     OV_ERROR_ADD_TRACE(err);
     goto cleanup;
   }
-  if (!get_str(root, "endpoint_name_pattern", false, &out->endpoint_name_pattern, err)) {
-    OV_ERROR_ADD_TRACE(err);
-    goto cleanup;
-  }
   if (!get_str(root, "veto_log_name", true, &out->veto_log_name, err)) {
     OV_ERROR_ADD_TRACE(err);
     goto cleanup;
@@ -321,7 +293,7 @@ bool settings_apply_json(char const *const json_utf8, struct settings *const out
     OV_ERROR_ADD_TRACE(err);
     goto cleanup;
   }
-  if (!get_ulong(root, "veto_event_id", 1, 65535, &out->veto_event_id, err)) {
+  if (!get_ulong_full(root, "veto_event_id", true, 1, 65535, 0, &out->veto_event_id, err)) {
     OV_ERROR_ADD_TRACE(err);
     goto cleanup;
   }
@@ -344,7 +316,7 @@ bool settings_apply_json(char const *const json_utf8, struct settings *const out
       goto cleanup;
     }
   }
-  if (!get_ulong_optional(root, "auto_run_delay_ms", 0, 600000, 5000UL, &out->auto_run_delay_ms, err)) {
+  if (!get_ulong_full(root, "auto_run_delay_ms", false, 0, 600000, 5000UL, &out->auto_run_delay_ms, err)) {
     OV_ERROR_ADD_TRACE(err);
     goto cleanup;
   }
@@ -495,7 +467,6 @@ void settings_release(struct settings *const s) {
   }
   OV_FREE(&s->ks_service);
   OV_FREE(&s->ks_instance_prefix);
-  OV_FREE(&s->endpoint_name_pattern);
   OV_FREE(&s->veto_log_name);
   OV_FREE(&s->veto_provider_name);
   OV_FREE(&s->mixer_process_name);

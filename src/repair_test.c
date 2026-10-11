@@ -1,27 +1,28 @@
+#include "repair.c"
+
 #include <ovtest.h>
 
 #include <string.h>
 
 #include <ovarray.h>
 
-#include "culprit.h"
-#include "repair.h"
+#include "process.h"
 #include "settings.h"
 
 /**
  * @brief The image name at the end of a path is the name of the process
  */
 static void test_path_matches_name(void) {
-  TEST_CHECK(repair_path_matches_name("\\Device\\HarddiskVolume1\\Program Files\\Audient\\iD\\iD.exe", "iD.exe") == true);
-  TEST_CHECK(repair_path_matches_name("C:\\WINDOWS\\system32\\AUDIODG.EXE", "audiodg.exe") == true);
-  TEST_CHECK(repair_path_matches_name("C:/x/y/foo.exe", "foo.exe") == true);
-  TEST_CHECK(repair_path_matches_name("C:\\dir\\foobar.exe", "foo.exe") == false);
-  TEST_CHECK(repair_path_matches_name("C:\\dir\\bar", "foo.exe") == false);
-  TEST_CHECK(repair_path_matches_name("short", "muchlongername.exe") == false);
-  TEST_CHECK(repair_path_matches_name(NULL, "iD.exe") == false);
-  TEST_CHECK(repair_path_matches_name("C:\\x\\iD.exe", NULL) == false);
-  TEST_CHECK(repair_path_matches_name("C:\\x\\iD.exe", "") == false);
-  TEST_CHECK(repair_path_matches_name("iD.exe", "iD.exe") == true);
+  TEST_CHECK(process_path_matches_name("\\Device\\HarddiskVolume1\\Program Files\\Audient\\iD\\iD.exe", "iD.exe") == true);
+  TEST_CHECK(process_path_matches_name("C:\\WINDOWS\\system32\\AUDIODG.EXE", "audiodg.exe") == true);
+  TEST_CHECK(process_path_matches_name("C:/x/y/foo.exe", "foo.exe") == true);
+  TEST_CHECK(process_path_matches_name("C:\\dir\\foobar.exe", "foo.exe") == false);
+  TEST_CHECK(process_path_matches_name("C:\\dir\\bar", "foo.exe") == false);
+  TEST_CHECK(process_path_matches_name("short", "muchlongername.exe") == false);
+  TEST_CHECK(process_path_matches_name(NULL, "iD.exe") == false);
+  TEST_CHECK(process_path_matches_name("C:\\x\\iD.exe", NULL) == false);
+  TEST_CHECK(process_path_matches_name("C:\\x\\iD.exe", "") == false);
+  TEST_CHECK(process_path_matches_name("iD.exe", "iD.exe") == true);
 }
 
 /**

@@ -60,8 +60,107 @@ if [ "${INSTALL_TOOLS}" -eq 1 ]; then
   . "${PWD}/setup-llvm-mingw.sh" --dir "${PWD}/build/tools"
 fi
 
+# Run command with progress indicator (prints . every second)
+# Usage: run_with_progress <message> <log_file> <command...>
+run_with_progress() {
+  local message="$1"
+  local log_file="$2"
+  shift 2
+  printf "%s" "${message}"
+  local start_time=$(date +%s.%N)
+  "$@" > "${log_file}" 2>&1 &
+  local pid=$!
+  while kill -0 "${pid}" 2>/dev/null; do
+    sleep 1
+    printf "."
+  done
+  local end_time=$(date +%s.%N)
+  local elapsed=$(awk "BEGIN {printf \"%.3f\", ${end_time} - ${start_time}}")
+  wait "${pid}"
+  local exit_code=$?
+  if [ ${exit_code} -eq 0 ]; then
+    echo " done (${elapsed}s)"
+  fi
+  return ${exit_code}
+}
+
+# Extract and display relevant error information from build log
+show_error_log() {
+  local log_file="$1"
+  local error_block
+  error_block=$(awk '
+    /^FAILED:/ { printing=1; next }
+    /^\[[0-9]+\/[0-9]+\]/ { printing=0 }
+    /^ninja: build stopped/ { printing=0 }
+    printing && /\.(exe|clang|gcc) / { next }
+    printing { print }
+  ' "${log_file}" 2>/dev/null | head -n 50)
+
+  if [ -n "${error_block}" ]; then
+    echo "${error_block}"
+  else
+    tail -n 30 "${log_file}"
+  fi
+  echo ""
+  echo "(Full log: ${log_file})"
+}
+
+# Extract and display relevant test failure information from JUnit XML
+show_test_log() {
+  local log_file="$1"
+  local xml_file="$(dirname "${log_file}")/testlog.xml"
+
+  if [ -f "${xml_file}" ]; then
+    awk '
+      /<testsuite/,/>/ {
+        if (/tests="/) { match($0, /tests="([0-9]+)"/, t); tests = t[1] }
+        if (/failures="/) { match($0, /failures="([0-9]+)"/, f); failures = f[1] }
+      }
+      /<testcase / {
+        match($0, /name="([^"]*)"/, arr)
+        testname = arr[1]
+        has_failure = 0
+        system_out = ""
+      }
+      /<failure/ { has_failure = 1 }
+      /<system-out>/ {
+        in_system_out = 1
+        gsub(/.*<system-out>/, "")
+      }
+      in_system_out {
+        if (/<\/system-out>/) {
+          gsub(/<\/system-out>.*/, "")
+          system_out = system_out $0
+          in_system_out = 0
+        } else {
+          system_out = system_out $0 "\n"
+        }
+      }
+      /<\/testcase>/ {
+        if (has_failure) {
+          print "=== " testname " ==="
+          print system_out
+        }
+      }
+      END {
+        if (failures > 0) {
+          printf "%d/%d tests failed\n", failures, tests
+        }
+      }
+    ' "${xml_file}"
+    echo ""
+    echo "(Full log: ${log_file})"
+  else
+    tail -n 30 "${log_file}"
+    echo ""
+    echo "(Full log: ${log_file})"
+  fi
+}
+
 ARCHDIR="${ARCHDIR:-$(uname -m)}"
 destdir="${PWD}/build/${CMAKE_BUILD_TYPE}/${ARCHDIR}"
+build_log="${destdir}/build.log"
+test_log="${destdir}/test.log"
 
 if [ "${REBUILD}" -eq 1 ] || [ ! -e "${destdir}/CMakeCache.txt" ]; then
   rm -rf "${destdir}"
@@ -74,9 +173,19 @@ fi
 # ovbase has no switch to disable its own test targets, so its tests are built and run
 # together with ours.  Everything is built: the application, the tests, the diagnostic
 # tools and the clang-format pass.  A narrow --target build would silently skip the rest.
-cmake --build "${destdir}"
+if ! run_with_progress "Building" "${build_log}" cmake --build "${destdir}"; then
+  echo ""
+  echo "Build failed:"
+  show_error_log "${build_log}"
+  exit 1
+fi
 if [ "${SKIP_TESTS}" -eq 0 ]; then
-  ctest --test-dir "${destdir}" --output-on-failure
+  if ! run_with_progress "Testing" "${test_log}" ctest --test-dir "${destdir}" --output-on-failure --output-junit testlog.xml; then
+    echo ""
+    echo "Tests failed:"
+    show_test_log "${test_log}"
+    exit 1
+  fi
 fi
 
 echo "built: ${destdir}/bin/audient-device-closer.exe"
@@ -96,12 +205,18 @@ extract_privileges() {
 # extracted from the markers around it so the text lives in one place.  It goes
 # to the dist folder rather than next to the executable, because unlike the
 # readmes it is a part of the installer, not a part of the folder a build makes.
-extract_privileges "${PWD}/README.md" "${PWD}/build/${CMAKE_BUILD_TYPE}/dist/PRIVILEGES.txt"
-extract_privileges "${PWD}/README-jp.md" "${PWD}/build/${CMAKE_BUILD_TYPE}/dist/PRIVILEGES-jp.txt"
+# The privilege section exists for the installer alone, and the installer asks for
+# the elevation the release binary carries: a debug build never makes a dist, so
+# the extraction happens only when a package is asked for.
+if [ "${CREATE_ZIP}" -eq 1 ] || [ "${CREATE_INSTALLER}" -eq 1 ]; then
+  distdir="${PWD}/build/${CMAKE_BUILD_TYPE}/dist"
+  mkdir -p "${distdir}"
+  extract_privileges "${PWD}/README.md" "${distdir}/PRIVILEGES.txt"
+  extract_privileges "${PWD}/README-jp.md" "${distdir}/PRIVILEGES-jp.txt"
+fi
 
 if [ "${CREATE_ZIP}" -eq 1 ]; then
   distdir="${PWD}/build/${CMAKE_BUILD_TYPE}/dist"
-  mkdir -p "${distdir}"
   zippath="${distdir}/audient-device-closer_${ADC_VERSION:-dev}.zip"
   rm -f "${zippath}"
   (cd "${destdir}/bin" && cmake -E tar cf "${zippath}" --format=zip .)

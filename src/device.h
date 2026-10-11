@@ -16,19 +16,6 @@ enum device_state {
 };
 
 /**
- * @brief Decide the state of the device from what the system reports
- *
- * @param problem_code a CM_PROB_* value of the devnode
- * @param render_present interfaces of the render category that are present
- * @param render_registered interfaces of the render category that are registered
- * @param capture_present interfaces of the capture category that are present
- * @param capture_registered interfaces of the capture category that are registered
- * @return the state the dialog shows
- */
-enum device_state device_evaluate(
-    unsigned long problem_code, size_t render_present, size_t render_registered, size_t capture_present, size_t capture_registered);
-
-/**
  * @brief First present devnode of the KS service
  *
  * @param service DEVPKEY_Device_Service of the KS devnode

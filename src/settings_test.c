@@ -1,13 +1,12 @@
+#include "settings.c"
+
 #include <ovtest.h>
 
 #include <string.h>
 
-#include "settings.h"
-
 static char const kFull[] = "{"
                             "\"ks_service\": \"audientusbaudioks\","
                             "\"ks_instance_prefix\": \"TUSBAUDIO_ENUM\","
-                            "\"endpoint_name_pattern\": \"Audient\","
                             "\"veto_log_name\": \"System\","
                             "\"veto_provider_name\": \"Microsoft-Windows-Kernel-PnP\","
                             "\"veto_event_id\": 225,"
@@ -62,7 +61,6 @@ static void test_full(void) {
   }
   TEST_CHECK(s.ks_service != NULL && strcmp(s.ks_service, "audientusbaudioks") == 0);
   TEST_CHECK(s.ks_instance_prefix != NULL && strcmp(s.ks_instance_prefix, "TUSBAUDIO_ENUM") == 0);
-  TEST_CHECK(s.endpoint_name_pattern != NULL && strcmp(s.endpoint_name_pattern, "Audient") == 0);
   TEST_CHECK(s.veto_log_name != NULL && strcmp(s.veto_log_name, "System") == 0);
   TEST_CHECK(s.veto_provider_name != NULL && strcmp(s.veto_provider_name, "Microsoft-Windows-Kernel-PnP") == 0);
   TEST_CHECK(s.veto_event_id == 225);
@@ -144,7 +142,6 @@ static void test_optional_absent(void) {
     goto cleanup;
   }
   TEST_CHECK(s.ks_instance_prefix == NULL);
-  TEST_CHECK(s.endpoint_name_pattern == NULL);
   TEST_CHECK(s.task_name == NULL);
   TEST_CHECK(s.veto_event_id == 1);
 
@@ -205,6 +202,38 @@ static void test_missing_required(void) {
 
 cleanup:
   OV_ERROR_REPORT(&err, NULL);
+  settings_release(&s);
+}
+
+/**
+ * @brief The required number keys are refused when they are not there
+ *
+ * veto_event_id is a number a required key holds: the report of a missing one has to name
+ * the key the same way the missing strings do.
+ */
+static void test_missing_required_number(void) {
+  struct settings s;
+  struct ov_error err = {0};
+  char *text = NULL;
+
+  memset(&s, 0, sizeof(s));
+  if (!TEST_CHECK(settings_apply_json("{\"ks_service\":\"a\",\"veto_log_name\":\"b\",\"veto_provider_name\":\"c\","
+                                      "\"mixer_process_name\":\"d\"}",
+                                      &s,
+                                      &err) == false)) {
+    goto cleanup;
+  }
+  if (!TEST_CHECK(ov_error_to_string(&err, &text, true, NULL) == true)) {
+    goto cleanup;
+  }
+  TEST_CHECK(strstr(text, "the settings file has no veto_event_id") != NULL);
+  TEST_MSG("got: %hs", text);
+
+cleanup:
+  OV_ERROR_REPORT(&err, NULL);
+  if (text != NULL) {
+    OV_ARRAY_DESTROY(&text);
+  }
   settings_release(&s);
 }
 
@@ -392,6 +421,7 @@ TEST_LIST = {
     {"legacy_healthy_key", test_legacy_healthy_key},
     {"legacy_restart_keys", test_legacy_restart_keys},
     {"missing_required", test_missing_required},
+    {"missing_required_number", test_missing_required_number},
     {"error_names_reader_and_caller", test_error_names_reader_and_caller},
     {"wrong_types", test_wrong_types},
     {"out_of_range", test_out_of_range},

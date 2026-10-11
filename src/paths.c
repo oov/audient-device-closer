@@ -50,39 +50,6 @@ char *paths_executable(struct ov_error *const err) {
 }
 
 /**
- * @brief Directory of the running executable
- *
- * @param err receives the failure of the lookup
- * @return the directory in UTF-8 without a trailing separator, NULL when it could not be read
- * @note Release with paths_string_free.
- */
-char *paths_executable_dir(struct ov_error *const err) {
-  char *exe = NULL;
-  size_t len = 0;
-
-  exe = paths_executable(err);
-  if (exe == NULL) {
-    OV_ERROR_ADD_TRACE(err);
-    return NULL;
-  }
-  len = strlen(exe);
-  while (len > 0) {
-    char const c = exe[len - 1];
-    if ((c == '\\') || (c == '/')) {
-      break;
-    }
-    len--;
-  }
-  if (len == 0) {
-    len = strlen(exe);
-  } else {
-    len--;
-  }
-  exe[len] = '\0';
-  return exe;
-}
-
-/**
  * @brief The file name of a path, the part behind the last separator
  *
  * @param path_utf8 the path to look at, UTF-8, NULL is allowed

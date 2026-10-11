@@ -46,17 +46,6 @@ bool ui_run(struct options const *const options, struct settings const *const se
 bool ui_activate_running_window(struct ov_error *const err);
 
 /**
- * @brief The headline of the result dialog
- *
- * It says what the run did; the name of the program is the title bar already, so it is not
- * repeated here.
- *
- * @param outcome what came of the run
- * @return the translated sentence, UTF-8
- */
-char const *ui_result_headline(enum repair_outcome outcome);
-
-/**
  * @brief Does the window close itself when the run is done
  *
  * Only a run nobody is watching may do that -- a scheduled run has nobody to read the
@@ -132,18 +121,6 @@ char const *ui_auto_run_sentence(enum device_state state);
  * @return true when the person should be asked first
  */
 bool ui_asks_before_close(bool faulted);
-
-/**
- * @brief Does a press of the button find a device the tool cannot handle
- *
- * A device with a problem this tool cannot cure, a device that is not there and a state
- * nobody can decide from have no run to walk through: the press is answered with a dialog
- * instead of a run.
- *
- * @param state the state the last refresh saw
- * @return true when the press is answered with a dialog instead of a run
- */
-bool ui_state_is_not_repairable(enum device_state state);
 
 /**
  * @brief The two lines of that question

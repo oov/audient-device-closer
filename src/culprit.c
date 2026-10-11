@@ -273,7 +273,7 @@ static bool read_attr(char const *const xml, char const *const name, char *const
  * @param out filled in when the event names a process; the strings become the caller's
  * @return false when the event carries no readable process id, true otherwise
  */
-bool culprit_parse_xml(char const *const xml_utf8, struct culprit *const out) {
+static bool culprit_parse_xml(char const *const xml_utf8, struct culprit *const out) {
   char text[64];
   char time_value[64];
   uint64_t pid = 0;
@@ -292,7 +292,6 @@ bool culprit_parse_xml(char const *const xml_utf8, struct culprit *const out) {
   out->pid = (uint32_t)pid;
 
   out->path = READ_DATA_DUP(xml_utf8, "ProcessName");
-  out->command_line = READ_DATA_DUP(xml_utf8, "CommandLine");
   out->device_instance = READ_DATA_DUP(xml_utf8, "DeviceInstance");
   if (out->device_instance != NULL) {
     char *const nl = strpbrk(out->device_instance, "\r\n");
@@ -307,7 +306,6 @@ bool culprit_parse_xml(char const *const xml_utf8, struct culprit *const out) {
 cleanup:
   if (out->pid == 0) {
     OV_FREE(&out->path);
-    OV_FREE(&out->command_line);
     OV_FREE(&out->device_instance);
     memset(out, 0, sizeof(*out));
     return false;
@@ -375,7 +373,6 @@ void culprit_prune(struct culprit **const list, long long const since_ms) {
 cleanup:
   for (size_t i = kept; i < n; i++) {
     OV_FREE(&(*list)[i].path);
-    OV_FREE(&(*list)[i].command_line);
     OV_FREE(&(*list)[i].device_instance);
     (*list)[i].pid = 0;
   }
@@ -435,7 +432,6 @@ void culprit_drop_pids(struct culprit **const list, uint32_t const *const pids, 
   OV_ARRAY_SET_LENGTH(*list, kept);
   for (size_t i = kept; i < n; i++) {
     OV_FREE(&(*list)[i].path);
-    OV_FREE(&(*list)[i].command_line);
     OV_FREE(&(*list)[i].device_instance);
     (*list)[i].pid = 0;
   }
@@ -456,7 +452,6 @@ void culprit_clear(struct culprit **const list) {
   size_t const n = OV_ARRAY_LENGTH(*list);
   for (size_t i = 0; i < n; i++) {
     OV_FREE(&(*list)[i].path);
-    OV_FREE(&(*list)[i].command_line);
     OV_FREE(&(*list)[i].device_instance);
     (*list)[i].pid = 0;
   }
@@ -475,7 +470,6 @@ void culprit_destroy_list(struct culprit **const list) {
   size_t const n = OV_ARRAY_LENGTH(*list);
   for (size_t i = 0; i < n; i++) {
     OV_FREE(&(*list)[i].path);
-    OV_FREE(&(*list)[i].command_line);
     OV_FREE(&(*list)[i].device_instance);
   }
   OV_ARRAY_DESTROY(list);
@@ -530,7 +524,6 @@ harvest_event(EVT_HANDLE const event, wchar_t **const xml, char **const utf8, st
 cleanup:
   if (!success) {
     OV_FREE(&item.path);
-    OV_FREE(&item.command_line);
     OV_FREE(&item.device_instance);
   }
   return success;

@@ -10,7 +10,6 @@
 struct settings {
   char *ks_service;                // required: DEVPKEY_Device_Service of the KS devnode
   char *ks_instance_prefix;        // optional: instance path prefix, NULL = no prefix filter
-  char *endpoint_name_pattern;     // optional: FriendlyName match for the post-repair check
   char *veto_log_name;             // required: event log holding the veto record
   char *veto_provider_name;        // required: provider name of that record
   unsigned long veto_event_id;     // required: event id of that record
@@ -20,19 +19,6 @@ struct settings {
   unsigned long auto_run_delay_ms; // optional: delay before probing in auto-run mode, milliseconds
   bool use_theme;                  // optional: draw the windows with the theme of this program, default true
 };
-
-/**
- * @brief Fill the settings from the text of the file
- *
- * Nothing is read from disk here.  Required keys must be strings, veto_event_id must
- * be a number in 1..65535.
- *
- * @param json_utf8 the contents of the settings file, UTF-8
- * @param out filled in and owned by the caller afterwards; release with settings_release
- * @param err receives the first problem of the file
- * @return false when the text does not describe settings this program can run with
- */
-bool settings_apply_json(char const *const json_utf8, struct settings *const out, struct ov_error *const err);
 
 /**
  * @brief Read the settings file and fill the settings from it

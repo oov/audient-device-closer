@@ -28,7 +28,7 @@ static GUID const kKsCategoryCapture = {0x65e8773e, 0x8f56, 0x11d0, {0xa3, 0xb9,
  * @param capture_registered interfaces of the capture category that are registered
  * @return the state the dialog shows
  */
-enum device_state device_evaluate(
+static enum device_state device_evaluate(
     unsigned long problem_code, size_t render_present, size_t render_registered, size_t capture_present, size_t capture_registered) {
   bool const present = (render_present > 0) || (capture_present > 0);
   bool const registered = (render_registered > 0) || (capture_registered > 0);

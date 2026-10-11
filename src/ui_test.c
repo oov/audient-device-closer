@@ -9,6 +9,8 @@
  */
 #include <ovtest.h>
 
+#include "layout.c"
+
 #include <string.h>
 
 #include <windows.h>

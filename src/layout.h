@@ -229,14 +229,6 @@ int layout_min_client_width(int settings_min_w, UINT dpi);
 void layout_window_rect(int client_width, int client_height, UINT dpi, DWORD style, DWORD ex_style, RECT *out);
 
 /**
- * @brief The height argument of CreateFontW, which is negative for a character height
- *
- * @param dpi the dpi of the window, 0 falls back to the base of 96
- * @return the height to give to CreateFontW
- */
-int layout_font_height(UINT const dpi);
-
-/**
  * @brief The font the controls of a window draw with, made for one dpi
  *
  * Every window owns its font and deletes it with the window.

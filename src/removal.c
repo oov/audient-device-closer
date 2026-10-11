@@ -22,7 +22,7 @@
  * @param cr the CONFIGRET the call answered with
  * @return the result the caller acts on
  */
-enum removal_result removal_result_from_configret(unsigned long const cr) {
+static enum removal_result removal_result_from_configret(unsigned long const cr) {
   if (cr == CR_SUCCESS) {
     return REMOVAL_RESULT_OK;
   }
@@ -50,7 +50,7 @@ static void set_reason(enum removal_reason *const out_reason, enum removal_reaso
  * @param cr the CONFIGRET the call answered with
  * @return the reason the dialog can explain
  */
-enum removal_reason removal_reason_from_configret(unsigned long const cr) {
+static enum removal_reason removal_reason_from_configret(unsigned long const cr) {
   if (cr == CR_SUCCESS) {
     return REMOVAL_REASON_NONE;
   }
@@ -62,46 +62,6 @@ enum removal_reason removal_reason_from_configret(unsigned long const cr) {
     return REMOVAL_REASON_DEVICE_GONE;
   }
   return REMOVAL_REASON_FAILED;
-}
-
-/**
- * @brief Name of the reason, as the dialog offers it
- *
- * @param reason the reason to name
- * @return a static string
- */
-char const *removal_reason_name(enum removal_reason const reason) {
-  switch (reason) {
-  case REMOVAL_REASON_NONE:
-    return "none";
-  case REMOVAL_REASON_ACCESS_DENIED:
-    return "access denied";
-  case REMOVAL_REASON_CALL_FAILED:
-    return "the removal call failed";
-  case REMOVAL_REASON_DEVICE_GONE:
-    return "the device is gone";
-  case REMOVAL_REASON_FAILED:
-    break;
-  }
-  return "the system refused";
-}
-
-/**
- * @brief Name of the result, as the log records it
- *
- * @param result the result to name
- * @return a static string
- */
-char const *removal_result_name(enum removal_result const result) {
-  switch (result) {
-  case REMOVAL_RESULT_OK:
-    return "ok";
-  case REMOVAL_RESULT_VETO:
-    return "veto";
-  case REMOVAL_RESULT_FAILED:
-    return "failed";
-  }
-  return "unknown";
 }
 
 /**

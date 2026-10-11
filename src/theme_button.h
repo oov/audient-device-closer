@@ -19,11 +19,4 @@
  */
 void theme_button_attach(HWND const button);
 
-/**
- * @brief Give the painting of a push button back to comctl32
- *
- * @param button the button to detach from, NULL is allowed
- */
-void theme_button_detach(HWND const button);
-
 #endif /* ADC_THEME_BUTTON_H */

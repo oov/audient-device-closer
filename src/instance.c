@@ -6,8 +6,6 @@
 
 HANDLE instance_take(wchar_t const *const mutex_name, bool *const out_other_running, struct ov_error *const err) {
   HANDLE mutex = NULL;
-  bool other_running = false;
-
   if ((mutex_name == NULL) || (out_other_running == NULL)) {
     OV_ERROR_SET_GENERIC(err, ov_error_generic_invalid_argument);
     return NULL;
@@ -20,8 +18,7 @@ HANDLE instance_take(wchar_t const *const mutex_name, bool *const out_other_runn
   }
   // GetLastError names the answer of the create alone: it is read before any other call
   // can replace it, and only the existing mutex is of interest here
-  other_running = (GetLastError() == ERROR_ALREADY_EXISTS);
-  *out_other_running = other_running;
+  *out_other_running = (GetLastError() == ERROR_ALREADY_EXISTS);
   return mutex;
 }
 

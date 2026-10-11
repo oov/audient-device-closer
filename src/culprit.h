@@ -12,20 +12,8 @@ struct culprit {
   long long event_time_ms; // epoch milliseconds, UTC, 0 when unknown
   uint32_t pid;
   char *path;            // UTF-8, as reported by the veto event (\Device\HarddiskVolumeN\...)
-  char *command_line;    // UTF-8
   char *device_instance; // UTF-8, the device whose removal was stopped
 };
-
-/**
- * @brief Parse one rendered event into a record
- *
- * The input is one rendered event (EvtRenderEventXml).
- *
- * @param xml_utf8 the event as EvtRenderEventXml produced it, UTF-8
- * @param out filled in when the event names a process; the strings become the caller's
- * @return false when the event carries no readable process id, true otherwise
- */
-bool culprit_parse_xml(char const *const xml_utf8, struct culprit *const out);
 
 /**
  * @brief Read the veto events of the last 24 hours

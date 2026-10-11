@@ -219,7 +219,6 @@ static void test_take_and_close(void) {
   PROCESS_INFORMATION pi;
   struct mixer_target target;
   bool found = false;
-  bool gone = false;
   long long event_time = 0;
 
   memset(&pi, 0, sizeof(pi));
@@ -244,10 +243,8 @@ static void test_take_and_close(void) {
     goto cleanup;
   }
   TEST_CHECK(target.pid == 0);
-  TEST_CHECK(process_wait((uint32_t)pi.dwProcessId, 5000, &gone, &err) == true);
-  TEST_CHECK(gone == true);
-
   if (pi.hProcess != NULL) {
+    TEST_CHECK(WaitForSingleObject(pi.hProcess, 5000) == WAIT_OBJECT_0);
     WaitForSingleObject(pi.hProcess, 5000);
   }
 

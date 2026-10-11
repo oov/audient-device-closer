@@ -2,6 +2,8 @@
  * Tests for the log: the record format, the trim decisions and the real file next to the
  * executable.  Nothing here reads a file it did not write itself.
  */
+#include "logger.c"
+
 #include <ovtest.h>
 
 #include <windows.h>
@@ -12,7 +14,6 @@
 #include <ovarray.h>
 #include <ovprintf_ex.h>
 
-#include "logger.h"
 #include "paths.h"
 
 /**
@@ -123,52 +124,16 @@ static void test_sizes(void) {
 /**
  * @brief The trim decision
  *
- * Everything while it fits, start over when the record alone is too big, otherwise drop
- * the oldest records.
+ * Everything while it fits, start over when the record alone is too big, otherwise the
+ * size the file is cut down to, so the newest records survive a compaction.
  */
 static void test_trim_size(void) {
-  TEST_CHECK(logger_trim_size(0, 10) == 0);                      // nothing on disk
-  TEST_CHECK(logger_trim_size(LOGGER_MAX_BYTES - 10, 10) == 0);  // exactly full
-  TEST_CHECK(logger_trim_size(LOGGER_MAX_BYTES - 10, 11) == -1); // one byte too much
-  TEST_CHECK(logger_trim_size(LOGGER_MAX_BYTES * 2, 10) == -1);  // already over
-  TEST_CHECK(logger_trim_size(100, LOGGER_MAX_BYTES) == -1);     // the record alone is too big
-  TEST_CHECK(logger_trim_size(-5, 10) == 0);                     // a size that cannot be real
-}
-
-/**
- * @brief The kept tail starts at a line boundary and never reaches further back than it
- *        has to
- */
-static void test_keep_tail(void) {
-  char small[32];
-  char *big = NULL;
-  size_t keep = 0;
-  static size_t const total = LOGGER_KEEP_BYTES + 64;
-
-  TEST_CHECK(logger_keep_tail(NULL, 10) == 0);
-  TEST_CHECK(logger_keep_tail(small, 0) == 0);
-  memcpy(small, "one\ntwo\n", 9);
-  TEST_CHECK(logger_keep_tail(small, 9) == 5);
-  TEST_CHECK(logger_keep_tail(small, 4) == 0); // no boundary inside: nothing can be kept
-  TEST_CHECK(logger_keep_tail(small, 2) == 0);
-
-  if (!TEST_CHECK(OV_REALLOC(&big, total, sizeof(big[0])))) {
-    return;
-  }
-  memset(big, 'x', total);
-  big[10] = '\n';
-  big[LOGGER_KEEP_BYTES - 5] = '\n';
-  big[LOGGER_KEEP_BYTES + 5] = '\n';
-  big[total - 1] = '\n';
-  keep = logger_keep_tail(big, total);
-  TEST_CHECK(keep > 0);
-  TEST_CHECK(keep <= total);
-  TEST_CHECK(big[total - keep - 1] == '\n'); // the kept part starts after a boundary
-  TEST_CHECK(keep <= LOGGER_KEEP_BYTES);     // and it is the shorter part of the file
-
-  memset(big, 'y', total);
-  TEST_CHECK(logger_keep_tail(big, total) == 0);
-  OV_FREE(&big);
+  TEST_CHECK(logger_trim_size(0, 10) == 0);                                     // nothing on disk
+  TEST_CHECK(logger_trim_size(LOGGER_MAX_BYTES - 10, 10) == 0);                 // exactly full
+  TEST_CHECK(logger_trim_size(LOGGER_MAX_BYTES - 10, 11) == LOGGER_KEEP_BYTES); // one byte too much
+  TEST_CHECK(logger_trim_size(LOGGER_MAX_BYTES * 2, 10) == LOGGER_KEEP_BYTES);  // already over
+  TEST_CHECK(logger_trim_size(100, LOGGER_MAX_BYTES) == -1);                    // the record alone is too big
+  TEST_CHECK(logger_trim_size(-5, 10) == 0);                                    // a size that cannot be real
 }
 
 /**
@@ -674,7 +639,6 @@ TEST_LIST = {
     {"error_fields", test_error_fields},
     {"sizes", test_sizes},
     {"trim_size", test_trim_size},
-    {"keep_tail", test_keep_tail},
     {"path_for_exe", test_path_for_exe},
     {"write_to_file", test_write_to_file},
     {"run_records", test_run_records},

@@ -43,15 +43,6 @@ struct repair_result {
 };
 
 /**
- * @brief Does the image path end with the given name
- *
- * @param path the path as reported by the veto event
- * @param name the image name to look for
- * @return true when the last component of path is name
- */
-bool repair_path_matches_name(char const *const path, char const *const name);
-
-/**
  * @brief The words of the setting that lets this tool close the mixer
  *
  * The window puts them on its checkbox and the log quotes them when a veto is left
@@ -71,22 +62,6 @@ void repair_option_mixer_label(struct settings const *const s, char *const out, 
  * @return the caption, UTF-8
  */
 char const *repair_option_audiodg_label(void);
-
-/**
- * @brief The sentence of a veto that closed nothing for lack of a blocker this run may close
- *
- * The state the reader is left with comes first: the device is still in use.  Then the
- * sentence names the one thing they can change -- option carries the words of the setting
- * that would have let this tool close the process, and NULL says the record named somebody
- * this tool never closes.  More than one blocker makes the sentence carry the number
- * instead: naming one of them would read as if it were the only one.
- *
- * @param option the words of the setting that stands in the way, or NULL
- * @param blockers how many distinct processes the records name
- * @param out receives the sentence, UTF-8
- * @param out_size room of out
- */
-void repair_blocked_sentence(char const *const option, size_t blockers, char *out, size_t out_size);
 
 /**
  * @brief The process the veto record names as a blocker this tool may close
@@ -125,27 +100,6 @@ struct repair_blockers {
  * Its image name is the same everywhere, so it is not part of the settings.
  */
 #define REPAIR_AUDIODG_NAME "audiodg.exe"
-
-/**
- * @brief Which blockers of a veto record this run may close
- *
- * mixer_name is the image name from the settings, REPAIR_AUDIODG_NAME is the audio engine;
- * the two allow_* flags are the user's decision to let this tool close them at all.  A run
- * that names more blockers than REPAIR_MAX_BLOCKERS of one image is refused instead of
- * being cut down: closing only the first ones would read as a repair that worked.
- *
- * @param culprits the records of the veto, may be NULL
- * @param mixer_name the image name the settings name
- * @param allow_mixer_close the user allowed closing the mixer
- * @param allow_audiodg_close the user allowed closing the audio engine
- * @param err receives the refusal when one image names more blockers than the run carries
- * @return the blockers to close, or a zeroed structure when the run was refused
- */
-struct repair_blockers repair_pick_blockers(struct culprit const *const culprits,
-                                            char const *const mixer_name,
-                                            bool const allow_mixer_close,
-                                            bool const allow_audiodg_close,
-                                            struct ov_error *const err);
 
 /**
  * @brief What the run is waiting for at the moment
@@ -209,19 +163,6 @@ bool repair_run(struct settings const *const s,
                 bool *const cancel,
                 struct repair_result *const out,
                 struct ov_error *const err);
-
-/**
- * @brief The pids of the blockers of a run
- *
- * The caller uses them to keep the processes it closed out of the list it shows.  It is
- * a separate function because that decision is worth a test of its own: a run that closed
- * something must not name it afterwards.
- *
- * @param blockers the blockers of the run
- * @param out receives the pids, capacity 2 (the mixer and audiodg)
- * @return how many pids were written
- */
-size_t repair_closed_pids(struct repair_blockers const *blockers, uint32_t *out);
 
 /**
  * @brief Release what a run collected

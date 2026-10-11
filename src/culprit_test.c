@@ -1,10 +1,10 @@
+#include "culprit.c"
+
 #include <ovtest.h>
 
 #include <string.h>
 
 #include <ovarray.h>
-
-#include "culprit.h"
 
 static char const kXmlOtherApp[] = "<Event xmlns='http://schemas.microsoft.com/win/2004/08/events/event'>"
                                    "<System><Provider Name='Microsoft-Windows-Kernel-PnP' Guid='{9c205a39-1250-487d-abd7-e831c6290539}'/>"
@@ -20,8 +20,6 @@ static char const kXmlOtherApp[] = "<Event xmlns='http://schemas.microsoft.com/w
                                    "<Data Name='ProcessName'>\\Device\\HarddiskVolume1\\Apps\\holder.exe</Data>"
                                    "<Data Name='DeviceInstanceLength'>35</Data>"
                                    "<Data Name='DeviceInstance'>USB\\VID_2708&amp;PID_0008\\6&amp;deadbee&amp;0&amp;2</Data>"
-                                   "<Data Name='CommandLineLength'>21</Data>"
-                                   "<Data Name='CommandLine'>&quot;C:\\Apps\\holder.exe&quot; </Data>"
                                    "<Data Name='VetoingDevicesLength'>36</Data>"
                                    "<Data Name='VetoingDevices'>USB\\VID_2708&amp;PID_0008\\6&amp;deadbee&amp;0&amp;2\n</Data>"
                                    "</EventData></Event>";
@@ -31,7 +29,6 @@ static char const kXmlAudiodg[] = "<Event><System><TimeCreated SystemTime='2000-
                                   "<Data Name='ProcessId'>5678</Data>"
                                   "<Data Name='ProcessName'>\\Device\\HarddiskVolume1\\Windows\\System32\\audiodg.exe</Data>"
                                   "<Data Name='DeviceInstance'>USB\\VID_2708&amp;PID_0008\\6&amp;deadbee&amp;0&amp;2</Data>"
-                                  "<Data Name='CommandLine'>C:\\WINDOWS\\system32\\AUDIODG.EXE 0x0000000000000000</Data>"
                                   "</EventData></Event>";
 
 /**
@@ -48,7 +45,6 @@ static void test_parse_fields(void) {
   TEST_CHECK(c.pid == 4321);
   TEST_CHECK(c.path != NULL && strcmp(c.path, "\\Device\\HarddiskVolume1\\Apps\\holder.exe") == 0);
   TEST_CHECK(c.device_instance != NULL && strcmp(c.device_instance, "USB\\VID_2708&PID_0008\\6&deadbee&0&2") == 0);
-  TEST_CHECK(c.command_line != NULL && strcmp(c.command_line, "\"C:\\Apps\\holder.exe\" ") == 0);
   TEST_CHECK(c.event_time_ms != 0);
   culprit_prune(NULL, 0);
   TEST_CHECK(OV_ARRAY_PUSH(&list, c));
@@ -100,10 +96,10 @@ static void test_parse_garbage(void) {
  * @brief A value is kept in full
  *
  * The parser carried every value through a fixed buffer on its way to the record, and a
- * command line longer than that buffer was cut without a word.
+ * device list longer than that buffer was cut without a word.
  */
 static void test_parse_long_value(void) {
-  static char const head[] = "<Event><EventData><Data Name='ProcessId'>7</Data><Data Name='CommandLine'>";
+  static char const head[] = "<Event><EventData><Data Name='ProcessId'>7</Data><Data Name='DeviceInstance'>";
   static char const tail[] = "</Data></EventData></Event>";
   struct culprit c;
   struct culprit *list = NULL;
@@ -117,12 +113,12 @@ static void test_parse_long_value(void) {
   if (!TEST_CHECK(culprit_parse_xml(xml, &c) == true)) {
     goto cleanup;
   }
-  if (TEST_CHECK(c.command_line != NULL)) {
-    if (!TEST_CHECK(strlen(c.command_line) == want)) {
-      TEST_MSG("want the command line to keep all %zu characters, got %zu", want, strlen(c.command_line));
+  if (TEST_CHECK(c.device_instance != NULL)) {
+    if (!TEST_CHECK(strlen(c.device_instance) == want)) {
+      TEST_MSG("want the device list to keep all %zu characters, got %zu", want, strlen(c.device_instance));
     }
-    TEST_CHECK(c.command_line[0] == 'x');
-    TEST_CHECK(c.command_line[want - 1] == 'x');
+    TEST_CHECK(c.device_instance[0] == 'x');
+    TEST_CHECK(c.device_instance[want - 1] == 'x');
   }
   TEST_CHECK(OV_ARRAY_PUSH(&list, c));
   memset(&c, 0, sizeof(c));

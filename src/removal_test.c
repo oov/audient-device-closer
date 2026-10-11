@@ -1,13 +1,12 @@
 #include <windows.h>
 
 #include <cfgmgr32.h>
+
+#include "removal.c"
+
 #include <ovtest.h>
 
-#include <string.h>
-
 #include <ovarray.h>
-
-#include "removal.h"
 
 /**
  * @brief The CONFIGRET of the removal call maps to the result the caller acts on
@@ -34,26 +33,6 @@ static void test_reason_from_configret(void) {
   TEST_CHECK(removal_reason_from_configret(CR_REMOVE_VETOED) == REMOVAL_REASON_FAILED);
   TEST_CHECK(removal_reason_from_configret(0xFFFFFFFF) == REMOVAL_REASON_FAILED);
   TEST_CHECK(removal_reason_from_configret(CR_OUT_OF_MEMORY) == REMOVAL_REASON_FAILED);
-}
-
-/**
- * @brief The reason names are the words the dialog shows
- */
-static void test_reason_name(void) {
-  TEST_CHECK(strcmp(removal_reason_name(REMOVAL_REASON_NONE), "none") == 0);
-  TEST_CHECK(strcmp(removal_reason_name(REMOVAL_REASON_ACCESS_DENIED), "access denied") == 0);
-  TEST_CHECK(strcmp(removal_reason_name(REMOVAL_REASON_CALL_FAILED), "the removal call failed") == 0);
-  TEST_CHECK(strcmp(removal_reason_name(REMOVAL_REASON_DEVICE_GONE), "the device is gone") == 0);
-  TEST_CHECK(strcmp(removal_reason_name(REMOVAL_REASON_FAILED), "the system refused") == 0);
-}
-
-/**
- * @brief The result names are the words the log records
- */
-static void test_result_name(void) {
-  TEST_CHECK(strcmp(removal_result_name(REMOVAL_RESULT_OK), "ok") == 0);
-  TEST_CHECK(strcmp(removal_result_name(REMOVAL_RESULT_VETO), "veto") == 0);
-  TEST_CHECK(strcmp(removal_result_name(REMOVAL_RESULT_FAILED), "failed") == 0);
 }
 
 /**
@@ -136,8 +115,6 @@ static void test_close_refuses_a_long_devnode(void) {
 TEST_LIST = {
     {"result_from_configret", test_result_from_configret},
     {"reason_from_configret", test_reason_from_configret},
-    {"reason_name", test_reason_name},
-    {"result_name", test_result_name},
     {"close_null", test_close_null},
     {"close_null_reason", test_close_null_reason},
     {"close_error_names_the_call_site", test_close_error_names_the_call_site},

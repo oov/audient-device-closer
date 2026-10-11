@@ -62,95 +62,6 @@ static void close_pi(PROCESS_INFORMATION *const pi) {
 }
 
 /**
- * @brief Is this pid in the list
- *
- * @param list the list to look through
- * @param pid the process to look for
- * @return true when the list names it
- */
-static bool list_contains(struct process_entry const *const list, uint32_t const pid) {
-  size_t const n = process_count(list);
-  for (size_t i = 0; i < n; i++) {
-    if (list[i].pid == pid) {
-      return true;
-    }
-  }
-  return false;
-}
-
-/**
- * @brief Reading our own command line proves the PEB path works without any external
- *        process
- */
-static void test_command_line_self(void) {
-  struct ov_error err = {0};
-  uint32_t const self = (uint32_t)GetCurrentProcessId();
-  char *cmd = process_command_line(self, &err);
-
-  if (!TEST_CHECK(cmd != NULL)) {
-    goto cleanup;
-  }
-  TEST_CHECK(strstr(cmd, "test_process.exe") != NULL);
-
-cleanup:
-  process_string_free(&cmd);
-  OV_ERROR_REPORT(&err, NULL);
-}
-
-/**
- * @brief A process that is running shows up in the list
- */
-static void test_list_self(void) {
-  struct ov_error err = {0};
-  struct process_entry *list = process_list(NULL, &err);
-
-  if (!TEST_CHECK(list != NULL)) {
-    goto cleanup;
-  }
-  TEST_CHECK(process_count(list) > 0);
-  TEST_CHECK(list_contains(list, (uint32_t)GetCurrentProcessId()));
-
-cleanup:
-  process_list_destroy(&list);
-  OV_ERROR_REPORT(&err, NULL);
-}
-
-/**
- * @brief The filter narrows the list to one image name
- */
-static void test_list_by_name(void) {
-  struct ov_error err = {0};
-  PROCESS_INFORMATION pi;
-  struct process_entry *list = NULL;
-  char *cmd = NULL;
-
-  memset(&pi, 0, sizeof(pi));
-  if (!spawn_dummy("cmd.exe /c ping -n 30 127.0.0.1 > nul", &pi)) {
-    TEST_SKIP("cannot spawn here");
-    goto cleanup;
-  }
-  list = process_list("cmd.exe", &err);
-  if (!TEST_CHECK(list != NULL)) {
-    goto cleanup;
-  }
-  TEST_CHECK(list_contains(list, (uint32_t)pi.dwProcessId));
-  cmd = process_command_line((uint32_t)pi.dwProcessId, &err);
-  if (TEST_CHECK(cmd != NULL)) {
-    TEST_CHECK(strstr(cmd, "ping") != NULL);
-  }
-
-cleanup:
-  process_string_free(&cmd);
-  process_list_destroy(&list);
-  if (pi.hProcess != NULL) {
-    TerminateProcess(pi.hProcess, 0);
-    WaitForSingleObject(pi.hProcess, 5000);
-    close_pi(&pi);
-  }
-  OV_ERROR_REPORT(&err, NULL);
-}
-
-/**
  * @brief Terminate a process we do not own, then wait for it
  *
  * The point of the module.
@@ -158,8 +69,6 @@ cleanup:
 static void test_terminate_and_wait(void) {
   struct ov_error err = {0};
   PROCESS_INFORMATION pi;
-  struct process_entry *list = NULL;
-  struct process_entry *after = NULL;
   struct process_ref ref;
   char *image = NULL;
   bool gone = false;
@@ -171,12 +80,6 @@ static void test_terminate_and_wait(void) {
     TEST_SKIP("cannot spawn here");
     goto cleanup;
   }
-  list = process_list("cmd.exe", &err);
-  if (!TEST_CHECK(list != NULL)) {
-    goto cleanup;
-  }
-  TEST_CHECK(list_contains(list, (uint32_t)pi.dwProcessId));
-
   if (!TEST_CHECK(process_ref_open(&ref, (uint32_t)pi.dwProcessId, true, &err) == true)) {
     goto cleanup;
   }
@@ -195,23 +98,9 @@ static void test_terminate_and_wait(void) {
     WaitForSingleObject(pi.hProcess, 5000);
   }
 
-  // The dummy is dead, but the pid stays reserved while this test holds the
-  // handles CreateProcess and process_ref_open gave it.  Some Windows builds
-  // still show such a corpse in the process list, so give the handles back
-  // before asking for the list again.
-  process_ref_close(&ref);
-  close_pi(&pi);
-
-  after = process_list("cmd.exe", &err);
-  if (TEST_CHECK(after != NULL)) {
-    TEST_CHECK(list_contains(after, (uint32_t)pi.dwProcessId) == false);
-  }
-
 cleanup:
   process_string_free(&image);
   process_ref_close(&ref);
-  process_list_destroy(&list);
-  process_list_destroy(&after);
   if (pi.hProcess != NULL) {
     TerminateProcess(pi.hProcess, 0);
     WaitForSingleObject(pi.hProcess, 5000);
@@ -241,27 +130,9 @@ cleanup:
 }
 
 /**
- * @brief Waiting on a pid that never existed reports it as gone, which is what the caller
- *        wants
- */
-static void test_wait_gone_process(void) {
-  struct ov_error err = {0};
-  bool gone = false;
-
-  if (!TEST_CHECK(process_wait(0xFFFFFFFFu, 10, &gone, &err) == true)) {
-    goto cleanup;
-  }
-  TEST_CHECK(gone == true);
-
-cleanup:
-  OV_ERROR_REPORT(&err, NULL);
-}
-
-/**
  * @brief The arguments may be absent
  */
 static void test_null_arguments(void) {
-  struct process_entry *list = NULL;
   char *text = NULL;
   struct process_ref ref;
   struct ov_error err = {0};
@@ -270,12 +141,9 @@ static void test_null_arguments(void) {
 
   memset(&ref, 0, sizeof(ref));
   ref.handle = NULL;
-  process_list_destroy(&list); // NULL array must be tolerated
-  process_string_free(&text);  // NULL string must be tolerated
-  process_ref_close(&ref);     // a ref that was never opened must be tolerated
-  TEST_CHECK(list == NULL);
+  process_string_free(&text); // NULL string must be tolerated
+  process_ref_close(&ref);    // a ref that was never opened must be tolerated
   TEST_CHECK(text == NULL);
-  TEST_CHECK(process_count(NULL) == 0);
   TEST_CHECK(process_ref_alive(&ref) == false);
   ok = process_ref_open(NULL, 1, false, &err);
   TEST_FAILED_WITH(ok, &err, ov_error_type_generic, ov_error_generic_invalid_argument);
@@ -324,35 +192,11 @@ static void test_path_matches_name(void) {
   TEST_CHECK(process_path_matches_name("iD.exe", "iD.exe") == true);
 }
 
-/**
- * @brief An image name that cannot be the name of a process is refused
- *
- * The filter is compared to the names of the snapshot, and a name that does not fit would
- * be cut into another one, so there is nothing to compare.
- */
-static void test_list_refuses_a_long_name(void) {
-  struct ov_error err = {0};
-  struct process_entry *list = NULL;
-  char name[MAX_PATH + 8];
-
-  memset(name, 'x', sizeof(name) - 1);
-  name[sizeof(name) - 1] = '\0';
-  list = process_list(name, &err);
-  TEST_CHECK(list == NULL);
-  TEST_CHECK(ov_error_is(&err, ov_error_type_generic, ov_error_generic_invalid_argument));
-  OV_ERROR_REPORT(&err, NULL);
-}
-
 TEST_LIST = {
-    {"command_line_self", test_command_line_self},
-    {"list_self", test_list_self},
-    {"list_by_name", test_list_by_name},
     {"terminate_and_wait", test_terminate_and_wait},
     {"terminate_unknown_pid", test_terminate_unknown_pid},
-    {"wait_gone_process", test_wait_gone_process},
     {"start_matches_event_time", test_start_matches_event_time},
     {"path_matches_name", test_path_matches_name},
     {"null_arguments", test_null_arguments},
-    {"list_refuses_a_long_name", test_list_refuses_a_long_name},
     {NULL, NULL},
 };

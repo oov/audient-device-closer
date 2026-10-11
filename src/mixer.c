@@ -28,11 +28,8 @@ bool mixer_take(uint32_t const pid,
                 struct ov_error *const err) {
   bool success = false;
   struct process_ref ref;
-  struct ov_error cmd_err = {0};
   struct ov_error log_err = {0};
   char *image = NULL;
-  char *path = NULL;
-  char *command_line = NULL;
 
   memset(&ref, 0, sizeof(ref));
   ref.handle = NULL;
@@ -98,20 +95,9 @@ bool mixer_take(uint32_t const pid,
     success = true;
     goto cleanup;
   }
-  command_line = process_command_line(pid, &cmd_err);
-  if (command_line == NULL) {
-    OV_ERROR_REPORT(&cmd_err, NULL);
-  }
-  path = process_ref_image_path(&ref, err);
-  if (path == NULL) {
-    OV_ERROR_ADD_TRACE(err);
-    goto cleanup;
-  }
   out->pid = ref.pid;
-  out->path = path;
-  out->command_line = command_line;
-  path = NULL;
-  command_line = NULL;
+  out->path = image;
+  image = NULL;
   *out_found = true;
   if (!logger_writef("process",
                      &log_err,
@@ -124,8 +110,6 @@ bool mixer_take(uint32_t const pid,
   success = true;
 
 cleanup:
-  process_string_free(&command_line);
-  process_string_free(&path);
   process_string_free(&image);
   if (!success) {
     mixer_target_release(out);
@@ -233,6 +217,5 @@ void mixer_target_release(struct mixer_target *const target) {
     return;
   }
   process_string_free(&target->path);
-  process_string_free(&target->command_line);
   target->pid = 0;
 }
