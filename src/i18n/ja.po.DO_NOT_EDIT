@@ -156,6 +156,9 @@ msgstr ""
 msgid "This tool cannot handle the problem that was found."
 msgstr "このツールでは対応できない異常を検知しました。"
 
+msgid "Too many blocker processes are named in the record, more than this tool can close at once."
+msgstr "ブロック中のプロセスが多く、このツールで一度に終了できる上限を超えています。"
+
 msgid "Waiting..."
 msgstr "待機しています..."
 
