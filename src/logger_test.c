@@ -175,11 +175,13 @@ static void test_keep_tail(void) {
  * @brief The log path: next to the executable, same name with the extension replaced
  *
  * A copy in Program Files is the exception: the log of an installed copy goes into the
- * local application data of the user, because the folder of the executable is not
- * writable.
+ * machine-wide application data folder, because the account that repairs the device may be the
+ * one the task scheduler started rather than the person reading the answer afterwards.
  */
 static void test_path_for_exe(void) {
   struct ov_error err = {0};
+  char const *const installed_leaf = "\\AudientDeviceCloser\\audient-device-closer.log";
+  size_t const installed_leaf_len = strlen(installed_leaf);
   char *p = NULL;
 
   TEST_CASE("a portable copy keeps its log next to itself");
@@ -204,31 +206,28 @@ static void test_path_for_exe(void) {
     logger_string_free(&p);
   }
 
-  TEST_CASE("an installed copy writes into the local application data");
+  TEST_CASE("an installed copy writes into the machine-wide application data");
   p = logger_path_for_exe("C:\\Program Files\\audient-device-closer\\audient-device-closer.exe", &err);
   if (!TEST_CHECK(p != NULL)) {
     TEST_MSG("want a path, got NULL");
     goto cleanup;
   }
   {
-    char const *const leaf = "\\audient-device-closer\\audient-device-closer.log";
     size_t const n = strlen(p);
-    TEST_CHECK(n > strlen(leaf));
-    TEST_CHECK(strcmp(&p[n - strlen(leaf)], leaf) == 0);
+    TEST_CHECK(n > installed_leaf_len);
+    TEST_CHECK(strcmp(&p[n - installed_leaf_len], installed_leaf) == 0);
     logger_string_free(&p);
   }
   p = logger_path_for_exe("C:\\PROGRAM FILES (X86)\\audient\\adc.exe", &err);
   if (TEST_CHECK(p != NULL)) {
-    char const *const leaf = "\\audient-device-closer\\audient-device-closer.log";
     size_t const n = strlen(p);
-    TEST_CHECK(strcmp(&p[n - strlen(leaf)], leaf) == 0);
+    TEST_CHECK(strcmp(&p[n - installed_leaf_len], installed_leaf) == 0);
     logger_string_free(&p);
   }
   p = logger_path_for_exe("D:\\Program Files\\adc\\app.exe", &err);
   if (TEST_CHECK(p != NULL)) {
-    char const *const leaf = "\\audient-device-closer\\audient-device-closer.log";
     size_t const n = strlen(p);
-    TEST_CHECK(strcmp(&p[n - strlen(leaf)], leaf) == 0);
+    TEST_CHECK(strcmp(&p[n - installed_leaf_len], installed_leaf) == 0);
     logger_string_free(&p);
   }
 

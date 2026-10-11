@@ -8,6 +8,7 @@ INSTALL_TOOLS=1
 REBUILD=0
 SKIP_TESTS=0
 CREATE_ZIP=0
+CREATE_INSTALLER=0
 CMAKE_BUILD_TYPE=Release
 
 while [[ $# -gt 0 ]]; do
@@ -29,6 +30,11 @@ while [[ $# -gt 0 ]]; do
       shift
       ;;
     -z | --zip)
+      CREATE_ZIP=1
+      shift
+      ;;
+    -i | --installer)
+      CREATE_INSTALLER=1
       CREATE_ZIP=1
       shift
       ;;
@@ -82,6 +88,28 @@ if [ "${CREATE_ZIP}" -eq 1 ]; then
   rm -f "${zippath}"
   (cd "${destdir}/bin" && cmake -E tar cf "${zippath}" --format=zip .)
   echo "zip: ${zippath}"
+fi
+
+# The installer is compiled with the Inno Setup of the host: ISCC.exe sits in "Program
+# Files (x86)" of a machine-wide install, in "AppData\Local\Programs" of a per-user one,
+# and the search of PATH finds it on a machine that has either on it.
+if [ "${CREATE_INSTALLER}" -eq 1 ]; then
+  iscc=""
+  if command -v ISCC.exe > /dev/null 2>&1; then
+    iscc="ISCC.exe"
+  elif [ -e "/c/Program Files (x86)/Inno Setup 6/ISCC.exe" ]; then
+    iscc="/c/Program Files (x86)/Inno Setup 6/ISCC.exe"
+  elif [ -e "${LOCALAPPDATA}/Programs/Inno Setup 6/ISCC.exe" ]; then
+    iscc="${LOCALAPPDATA}/Programs/Inno Setup 6/ISCC.exe"
+  fi
+  if [ -z "${iscc}" ]; then
+    echo "error: Inno Setup 6 is not installed; ISCC.exe is not on PATH" >&2
+    exit 1
+  fi
+  # MSYS would turn /DADC_VERSION=... into a path of its own, which the compiler then
+  # takes for a second script name: the switch is kept out of that conversion
+  MSYS2_ARG_CONV_EXCL="/D" "${iscc}" "/DADC_VERSION=${ADC_VERSION:-dev}" "${PWD}/installer.iss"
+  echo "installer: ${PWD}/build/Release/dist/audient-device-closer_${ADC_VERSION:-dev}_setup.exe"
 fi
 
 cd "${CUR_DIR}"

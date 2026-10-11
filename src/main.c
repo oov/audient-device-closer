@@ -5,6 +5,7 @@
 #include <ovmo.h>
 #include <ovprintf_ex.h>
 
+#include "instance.h"
 #include "logger.h"
 #include "options.h"
 #include "paths.h"
@@ -65,12 +66,15 @@ cleanup:
 int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine, int nCmdShow) {
   struct ov_init_options init = ov_init_get_default_options();
   struct ov_error err = {0};
+  struct ov_error instance_err = {0};
   struct options options;
   struct settings settings;
   struct ov_error mo_err = {0};
   struct ov_error log_err = {0};
   struct mo *mo = NULL;
   char *path = NULL;
+  HANDLE instance = NULL;
+  bool other_running = false;
   int result = 1;
 
   // trans: This dagger helps UTF-8 detection. You don't need to translate this.
@@ -88,6 +92,23 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
   logger_init();
   if (!logger_open(&log_err)) {
     OV_ERROR_REPORT(&log_err, NULL);
+  }
+
+  // the copy that finds the mutex taken is a second start: it shows the window that is
+  // already there and leaves, with the answer a start that did what it was asked to do
+  instance = instance_take(INSTANCE_MUTEX_NAME, &other_running, &instance_err);
+  if (instance == NULL) {
+    // without the mutex no other copy can be ruled out, so this copy goes on with its
+    // window and the log carries why the check is missing
+    OV_ERROR_REPORT(&instance_err, NULL);
+  } else if (other_running) {
+    struct ov_error activate_err = {0};
+
+    if (!ui_activate_running_window(&activate_err)) {
+      OV_ERROR_REPORT(&activate_err, NULL);
+    }
+    result = 0;
+    goto cleanup;
   }
 
   mo = mo_parse_from_resource(GetModuleHandleW(NULL), &mo_err);
@@ -115,6 +136,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
 
 cleanup:
   OV_ERROR_REPORT(&err, NULL);
+  instance_release(&instance);
   logger_close();
   OV_ERROR_REPORT(&mo_err, NULL);
   settings_string_free(&path);

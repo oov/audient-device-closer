@@ -49,9 +49,11 @@ char const *paths_file_name(char const *const path_utf8);
 /**
  * @brief Is the executable installed under one of the Program Files folders
  *
- * A copy in Program Files shares the folder with the system and every other program, so a
- * user process cannot write its log there.  The check is case-insensitive and looks for
- * the folder name behind a separator, so "C:\\Program Files\\..." and
+ * A copy that sits in Program Files belongs to the machine rather than to the person who
+ * unpacked it, and the run that repairs the device is often the one the task scheduler
+ * started, not the one at the screen: the log of such a copy therefore goes to
+ * paths_log_folder instead of next to the executable.  The check is case-insensitive and
+ * looks for the folder name behind a separator, so "C:\\Program Files\\..." and
  * "C:\\Program Files (x86)\\..." both match whatever drive they sit on.  A folder of the
  * same name somewhere else in the path matches as well, which is fine: a folder that
  * calls itself Program Files asks for the same treatment.
@@ -64,15 +66,31 @@ bool paths_is_in_program_files(char const *const exe_path);
 /**
  * @brief The folder the log of an installed copy writes into
  *
- * The folder is the local application data folder of the user plus audient-device-closer,
- * and it is created when it is not there, so the caller can put the log into it right
- * away.
+ * The folder is the machine-wide application data folder plus AudientDeviceCloser.  Only the name
+ * is built here, nothing on the disk is touched: see paths_create_folder for making the folder
+ * exist, which the log does when it opens.
  *
- * @param err receives the failure of the lookup or of the creation
+ * It is the machine-wide folder rather than a person's own because a copy in Program Files is run
+ * both by the person at the screen and by the task scheduler as the system account: the
+ * application data of the system account is a folder nobody opens afterwards, and the answer of a
+ * repair that happened while nobody was signed in is meant to be read.
+ *
+ * @param err receives the failure of the lookup
  * @return the folder in UTF-8 without a trailing separator, NULL when it could not be built
  * @note Release with paths_string_free.
  */
 char *paths_log_folder(struct ov_error *const err);
+
+/**
+ * @brief Make the folder of this name exist
+ *
+ * A folder that is already there is the answer the caller wanted, so this is not a failure.
+ *
+ * @param folder_utf8 the folder to make, UTF-8, NULL is refused
+ * @param err receives the failure of the create
+ * @return false when the folder could not be made
+ */
+bool paths_create_folder(char const *const folder_utf8, struct ov_error *const err);
 
 /**
  * @brief The path of a file that sits next to an executable under the same name

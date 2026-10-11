@@ -97,6 +97,7 @@ add_library(adc_core STATIC
   removal.c
   repair.c
   task.c
+  instance.c
 )
 # ovbase reaches our public headers, so it must be PUBLIC.
 target_link_libraries(adc_core PUBLIC ovbase)
@@ -187,11 +188,13 @@ add_custom_command(TARGET adc POST_BUILD
           -P "${PROJECT_SOURCE_DIR}/cmake/copy-settings.cmake"
   VERBATIM
 )
-# The readmes describe the program that sits in this folder, so a build leaves them beside
-# it: a folder taken away from a build explains itself.  This is a rule of its own rather
-# than a post build step of the program, so that a changed readme is copied without relinking
-# the program and the program is relinked without copying an unchanged readme.
-set(adc_readmes "README.md" "README-jp.md")
+# The readmes, the license and the agreement describe the program that sits in this folder,
+# so a build leaves them beside it: a folder taken away from a build explains itself, and the
+# zip made from this folder carries the papers the program is given with.  This is a rule of
+# its own rather than a post build step of the program, so that a changed document is copied
+# without relinking the program and the program is relinked without copying an unchanged
+# document.
+set(adc_readmes "README.md" "README-jp.md" "PRIVILEGES.txt" "PRIVILEGES-jp.txt" "LICENSE")
 set(adc_readme_inputs "")
 set(adc_readme_outputs "")
 foreach(adc_readme IN LISTS adc_readmes)
@@ -251,7 +254,7 @@ add_test(NAME ui COMMAND test_ui)
 
 # Unit tests: the pure decision logic of each module, no real device needed.  A test that
 # writes a file next to itself (logger, mixer) cleans up after itself.
-foreach(adc_test device removal culprit process mixer settings repair options layout loggate logger paths task)
+foreach(adc_test device removal culprit process mixer settings repair options layout loggate logger paths task instance)
   add_executable(test_${adc_test} ${adc_test}_test.c)
   target_link_libraries(test_${adc_test} PRIVATE adc_core ovbase adc_intf)
   add_test(NAME ${adc_test} COMMAND test_${adc_test})
@@ -263,7 +266,7 @@ if(TARGET ${PROJECT_NAME}-format)
   foreach(adc_target adc_core adc test_dummy)
     add_dependencies(${adc_target} ${PROJECT_NAME}-format)
   endforeach()
-  foreach(adc_test device removal culprit process mixer settings repair options layout loggate logger paths task)
+  foreach(adc_test device removal culprit process mixer settings repair options layout loggate logger paths task instance)
     add_dependencies(test_${adc_test} ${PROJECT_NAME}-format)
   endforeach()
   add_dependencies(test_ui ${PROJECT_NAME}-format)

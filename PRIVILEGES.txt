@@ -1,0 +1,19 @@
+Privilege elevation
+
+This program clears the state where the Audient device stops working when the computer comes
+back from sleep or hibernation. Some of the work that clears it, and the registration of the
+task that runs it after a resume, need administrator privileges. Without them most of what this
+program does would fail, so the program is set to ask Windows to elevate it when it starts.
+
+With the elevation the program does three things:
+
+  - It releases the Audient device named in the settings file.
+  - It ends the applications that hold the device, and only those the settings allow:
+      iD.exe - enabled by default. Ended without saving; started again by
+        AudientAppLauncher.exe when the device returns.
+      audiodg.exe - disabled by default. Ended without saving; started again by Audiosrv,
+        and its restart affects every audio device.
+  - It registers or removes the scheduled task when the register or remove button is pressed.
+
+The program has no networking code, writes nothing to the registry, installs no driver, and does
+not stay resident.

@@ -1718,6 +1718,77 @@ cleanup:
   theme_release();
 }
 
+/**
+ * @brief A second start reaches the window of the copy that is already running
+ *
+ * The call is what a person who pressed the icon twice gets instead of a second window: the
+ * window that is there, in front.  Without such a window the call says that nobody runs.
+ */
+static void test_activate_reaches_the_window_of_the_running_copy(void) {
+  char service_name[] = "adc-ui-test-no-such-service";
+  struct settings settings;
+  struct options options;
+  struct adc_ui_result result;
+  struct adc_ui_thread job;
+  thrd_t thread = {0};
+  struct ov_error err = {0};
+  bool started = false;
+  HWND top = NULL;
+  DWORD const start = GetTickCount();
+
+  memset(&settings, 0, sizeof(settings));
+  memset(&result, 0, sizeof(result));
+  options_default(&options);
+  settings.ks_service = service_name;
+  settings.use_theme = true;
+
+  TEST_CASE("no copy is running yet");
+  if (find_own_window(UI_MAIN_WINDOW_CLASS) != NULL) {
+    TEST_SKIP("a window of this program is on the screen already");
+    goto cleanup;
+  }
+  TEST_FAILED_WITH(ui_activate_running_window(&err), &err, ov_error_type_generic, ov_error_generic_not_found);
+
+  TEST_CASE("the window of the running copy is reached");
+  job.options = &options;
+  job.settings = &settings;
+  job.out = &result;
+  cndvar_init(&job.done);
+  if (!TEST_CHECK(start_ui(&thread, &job))) {
+    goto cleanup;
+  }
+  started = true;
+  while ((GetTickCount() - start) < ADC_UI_TEST_TIMEOUT_MS) {
+    top = find_own_window(UI_MAIN_WINDOW_CLASS);
+    if (top != NULL) {
+      break;
+    }
+    Sleep(ADC_UI_TEST_POLL_MS);
+  }
+  if (!TEST_CHECK(top != NULL)) {
+    result.timed_out = true;
+    goto cleanup;
+  }
+  SendMessageW(top, WM_NULL, 0, 0);
+  if (!TEST_SUCCEEDED(ui_activate_running_window(&err), &err)) {
+    goto cleanup;
+  }
+
+  PostMessageW(top, WM_CLOSE, 0, 0);
+  started = false;
+  TEST_CHECK(join_ui(&thread, &job.done));
+  TEST_CASE_(NULL);
+
+cleanup:
+  if (started) {
+    TEST_CHECK(join_ui(&thread, &job.done));
+    started = false;
+  }
+  OV_ERROR_REPORT(&err, NULL);
+  OV_ERROR_REPORT(&result.err, NULL);
+  cndvar_exit(&job.done);
+}
+
 TEST_LIST = {
     {"every_control_carries_the_font", test_every_control_carries_the_font_of_the_window},
     {"window_without_the_theme_is_traditional", test_window_without_the_theme_is_traditional},
@@ -1733,6 +1804,7 @@ TEST_LIST = {
     {"auto_run_acts_on_the_state", test_auto_run_acts_on_the_state_it_is_for},
     {"auto_run_says_the_state", test_auto_run_says_the_state_it_found},
     {"confirm_dialog", test_confirm_dialog},
+    {"activate_reaches_the_running_copy", test_activate_reaches_the_window_of_the_running_copy},
     {"result_headline", test_result_headline},
     {"result_dialog_lines_differ", test_result_dialog_lines_differ},
     {NULL, NULL},

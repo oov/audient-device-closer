@@ -152,6 +152,7 @@ static void test_pick_blockers(void) {
   TEST_CASE("more blockers than this tool carries are refused");
   {
     struct culprit *many = NULL;
+    struct repair_blockers picked;
     size_t i = 0;
     for (i = 0; i <= REPAIR_MAX_BLOCKERS; i++) {
       c.pid = (uint32_t)(700 + i);
@@ -161,10 +162,10 @@ static void test_pick_blockers(void) {
         goto cleanup;
       }
     }
-    TEST_FAILED_WITH(repair_pick_blockers(many, "iD.exe", false, true, &err).audiodg_count == (size_t)-1,
-                     &err,
-                     ov_error_type_generic,
-                     ov_error_generic_fail);
+    picked = repair_pick_blockers(many, "iD.exe", false, true, &err);
+    TEST_CHECK(picked.audiodg_count == 0);
+    TEST_CHECK(picked.audiodg[0].pid == 0);
+    TEST_FAILED_WITH(picked.audiodg_count != 0, &err, ov_error_type_generic, ov_error_generic_fail);
     OV_ARRAY_DESTROY(&many);
   }
 

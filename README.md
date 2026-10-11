@@ -77,6 +77,18 @@ A rough outline of what this tool actually does:
 6. Try closing the device once more; if that succeeds, exit
 7. If it still fails, show a list of the applications that caused the problem
 
+## Administrator privileges
+
+Recovering the device after sleep means releasing it and having Windows detect it again, which
+Windows allows only to an administrator; the program therefore asks for elevation every time it
+starts. With elevation it releases and re-detects the Audient device named in its settings, ends
+the application holding it (iD.exe, or audiodg.exe when that is enabled), and registers a task
+that runs it as the system account on resume. It connects to no network, installs no driver, and
+does not stay resident.
+
+The same text is shown on a page of the installer, and an installed copy carries it beside the
+program as PRIVILEGES.txt.
+
 ## Credits
 
 audient-device-closer is made possible by the following open source softwares.

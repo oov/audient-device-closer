@@ -127,31 +127,54 @@ bool paths_is_in_program_files(char const *const exe_path) {
 }
 
 char *paths_log_folder(struct ov_error *const err) {
-  wchar_t *local = NULL;
+  wchar_t *shared = NULL;
   char *result = NULL;
   char *joined = NULL;
-  wchar_t *folder = NULL;
   bool success = false;
-  HRESULT const hr = SHGetKnownFolderPath(&FOLDERID_LocalAppData, 0, NULL, &local);
+  HRESULT const hr = SHGetKnownFolderPath(&FOLDERID_ProgramData, 0, NULL, &shared);
 
   if (FAILED(hr)) {
     OV_ERROR_SET_HRESULT(err, hr);
     goto cleanup;
   }
-  if (!ov_sprintf_char(&result, err, NULL, "%ls", local)) {
+  if (!ov_sprintf_char(&result, err, NULL, "%ls", shared)) {
     OV_ERROR_ADD_TRACE(err);
     goto cleanup;
   }
-  joined = paths_join(result, "audient-device-closer", err);
+  joined = paths_join(result, "AudientDeviceCloser", err);
   if (joined == NULL) {
     OV_ERROR_ADD_TRACE(err);
     goto cleanup;
   }
-  if (!ov_sprintf_wchar(&folder, err, NULL, L"%s", joined)) {
+  success = true;
+
+cleanup:
+  if (shared != NULL) {
+    CoTaskMemFree(shared);
+  }
+  paths_string_free(&result);
+  if (!success) {
+    if (joined != NULL) {
+      OV_ARRAY_DESTROY(&joined); // made by paths_join
+    }
+    return NULL;
+  }
+  return joined;
+}
+
+bool paths_create_folder(char const *const folder_utf8, struct ov_error *const err) {
+  bool success = false;
+  wchar_t *wide = NULL;
+
+  if (folder_utf8 == NULL) {
+    OV_ERROR_SET_GENERIC(err, ov_error_generic_invalid_argument);
+    return false;
+  }
+  if (!ov_sprintf_wchar(&wide, err, NULL, L"%s", folder_utf8)) {
     OV_ERROR_ADD_TRACE(err);
     goto cleanup;
   }
-  if (!CreateDirectoryW(folder, NULL)) {
+  if (!CreateDirectoryW(wide, NULL)) {
     DWORD const last_error = GetLastError();
     if (last_error != ERROR_ALREADY_EXISTS) {
       OV_ERROR_SET_HRESULT(err, HRESULT_FROM_WIN32(last_error));
@@ -161,20 +184,10 @@ char *paths_log_folder(struct ov_error *const err) {
   success = true;
 
 cleanup:
-  if (local != NULL) {
-    CoTaskMemFree(local);
+  if (wide != NULL) {
+    OV_ARRAY_DESTROY(&wide); // made by ov_sprintf_wchar
   }
-  paths_string_free(&result);
-  if (folder != NULL) {
-    OV_ARRAY_DESTROY(&folder); // made by ov_sprintf_wchar
-  }
-  if (!success) {
-    if (joined != NULL) {
-      OV_ARRAY_DESTROY(&joined); // made by paths_join
-    }
-    return NULL;
-  }
-  return joined;
+  return success;
 }
 
 /**

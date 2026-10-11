@@ -33,6 +33,12 @@ jobs:
           name: build-artifacts
           path: |
             build/Release/dist/
+      - name: Upload binary tree for the installer
+        uses: actions/upload-artifact@v7
+        with:
+          name: build-bin
+          path: |
+            build/Release/x86_64/bin/
       - name: Attest build artifacts
         if: ${{ !github.event.repository.private }}
         id: attest-zip
@@ -54,15 +60,44 @@ jobs:
           path: attestations/
           retention-days: 1
 
+  installer:
+    runs-on: windows-latest
+    needs: build
+    outputs:
+      version: ${{ needs.build.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+      - name: Download build binaries
+        uses: actions/download-artifact@v8
+        with:
+          name: build-bin
+          path: build/Release/x86_64/bin/
+      - name: Compile the installer
+        shell: bash
+        env:
+          ADC_VERSION: ${{ github.ref_name }}
+        run: bash build.bash --no-install-tools --skip-tests --installer
+      - name: Upload installer artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: installer-artifacts
+          path: |
+            build/Release/dist/
+
   release:
     runs-on: ubuntu-latest
-    needs: build
+    needs: [build, installer]
     steps:
       - uses: actions/checkout@v7
       - name: Download build artifacts
         uses: actions/download-artifact@v8
         with:
           name: build-artifacts
+          path: build/Release/dist/
+      - name: Download installer artifact
+        uses: actions/download-artifact@v8
+        with:
+          name: installer-artifacts
           path: build/Release/dist/
       - name: Download attestation for zip
         if: ${{ !github.event.repository.private }}
@@ -82,7 +117,7 @@ jobs:
             sed -n '1,/^### Changes$/p' .github/RELEASE_TEMPLATE.md
             .github/extract-changelog.sh "${VERSION}"
           } | envsubst > release_notes.md
-          files=("build/Release/dist/audient-device-closer_${VERSION}.zip")
+          files=("build/Release/dist/audient-device-closer_${VERSION}.zip" "build/Release/dist/audient-device-closer_${VERSION}_setup.exe")
           if compgen -G "attestations/*.attestation.jsonl" > /dev/null; then
             files+=("attestations/audient-device-closer_${VERSION}.zip.attestation.jsonl")
           fi

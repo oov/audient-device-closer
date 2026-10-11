@@ -1303,6 +1303,42 @@ static LRESULT CALLBACK wnd_proc(HWND const hwnd, UINT const msg, WPARAM const w
 }
 
 /**
+ * @brief Bring the window of the copy that is already running to the front
+ *
+ * The window is looked for by its class, in the whole desktop: the copy at the screen is
+ * another process, and this is exactly the one a second start has to reach.  Failing to
+ * make it the foreground window is written to the log only, because the answer the caller
+ * needs is whether a copy runs at all.
+ *
+ * @param err receives the failure of the search
+ * @return false when no window of this program was found
+ */
+bool ui_activate_running_window(struct ov_error *const err) {
+  bool success = false;
+  HWND hwnd = NULL;
+
+  hwnd = FindWindowW(UI_MAIN_WINDOW_CLASS, NULL);
+  if (hwnd == NULL) {
+    OV_ERROR_SET_GENERIC(err, ov_error_generic_not_found);
+    goto cleanup;
+  }
+  if (IsIconic(hwnd)) {
+    ShowWindowAsync(hwnd, SW_RESTORE);
+  }
+  BringWindowToTop(hwnd);
+  if (SetForegroundWindow(hwnd) == 0) {
+    struct ov_error foreground_err = {0};
+
+    OV_ERROR_SET_HRESULT(&foreground_err, HRESULT_FROM_WIN32(GetLastError()));
+    OV_ERROR_REPORT(&foreground_err, NULL);
+  }
+  success = true;
+
+cleanup:
+  return success;
+}
+
+/**
  * @brief Make the window and run the message loop of the program
  *
  * @param options what this run was asked to do
@@ -1348,7 +1384,7 @@ bool ui_run(struct options const *const options, struct settings const *const se
   wc.hInstance = GetModuleHandleW(NULL);
   wc.hCursor = LoadCursorW(NULL, (LPCWSTR)IDC_ARROW);
   wc.hbrBackground = theme_class_brush();
-  wc.lpszClassName = L"audient_device_closer_main";
+  wc.lpszClassName = UI_MAIN_WINDOW_CLASS;
   wc.hIcon = LoadIconW(NULL, (LPCWSTR)IDI_APPLICATION);
   atom = RegisterClassExW(&wc);
   if (atom == 0) {

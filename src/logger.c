@@ -263,10 +263,40 @@ void logger_string_free(char **const value) {
 }
 
 /**
+ * @brief Make the folder an installed copy writes its log into
+ *
+ * The name of the log is built without touching the disk, so the machine-wide folder is made
+ * here, at the moment the log is opened.  A portable copy needs nothing: its folder is the one
+ * the executable already sits in.  Failing to make the folder is written where the answer of the
+ * open goes, and the open is still tried, because the open carries the error the caller reports.
+ *
+ * @param exe_path the executable the log belongs to, UTF-8
+ */
+static void logger_make_folder(char const *const exe_path) {
+  struct ov_error err = {0};
+  char *folder = NULL;
+
+  if (!paths_is_in_program_files(exe_path)) {
+    return;
+  }
+  folder = paths_log_folder(&err);
+  if (folder == NULL) {
+    OV_ERROR_REPORT(&err, NULL);
+    return;
+  }
+  if (!paths_create_folder(folder, &err)) {
+    OV_ERROR_REPORT(&err, NULL);
+  }
+  paths_string_free(&folder);
+}
+
+/**
  * @brief The log an executable writes next to itself
  *
  * The name is the name of the executable with its extension replaced, which is the same
- * computation the settings file goes through: see paths_replace_extension.
+ * computation the settings file goes through: see paths_replace_extension.  An installed copy
+ * keeps its log under its own name in the folder paths_log_folder gives, because that copy is
+ * run both by the person at the screen and by the task scheduler.
  *
  * @param exe_path the executable the log belongs to, UTF-8
  * @param err receives the failure of the build
@@ -491,6 +521,7 @@ bool logger_open(struct ov_error *const err) {
     OV_ERROR_ADD_TRACE(err);
     goto cleanup;
   }
+  logger_make_folder(exe);
   {
     int const n = OV_SNPRINTF(wide, sizeof(wide) / sizeof(wide[0]), NULL, L"%s", path);
     if ((n < 0) || ((size_t)n >= (sizeof(wide) / sizeof(wide[0])))) {
