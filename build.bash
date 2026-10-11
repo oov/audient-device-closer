@@ -7,6 +7,7 @@ cd "$(dirname "${BASH_SOURCE:-$0}")"
 INSTALL_TOOLS=1
 REBUILD=0
 SKIP_TESTS=0
+SKIP_BUILD=0
 CREATE_ZIP=0
 CREATE_INSTALLER=0
 CMAKE_BUILD_TYPE=Release
@@ -35,7 +36,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     -i | --installer)
       CREATE_INSTALLER=1
-      CREATE_ZIP=1
+      shift
+      ;;
+    -b | --skip-build)
+      SKIP_BUILD=1
       shift
       ;;
     -* | --*)
@@ -48,16 +52,21 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-# ovbase's setup script is downloaded to the project root and fetches the toolchain
-# into ./build/tools.  Sourcing it puts cmake / ninja / llvm-mingw / gettext into this
-# shell's PATH, and it writes ./env-<platform>.sh next to itself.
-if [ "${INSTALL_TOOLS}" -eq 1 ]; then
-  mkdir -p "build/tools"
-  if [ ! -e "${PWD}/setup-llvm-mingw.sh" ]; then
-    OVBASE_COMMIT_HASH=$(grep 'set(OVBASE_COMMIT_HASH' "${PWD}/src/CMakeLists.txt" | sed -E 's/.*"([^"]+)".*/\1/')
-    curl -o "${PWD}/setup-llvm-mingw.sh" -sOL "https://raw.githubusercontent.com/oov/ovbase/${OVBASE_COMMIT_HASH}/setup-llvm-mingw.sh"
+# A host that only packs what a build already made must not compile anything, and
+# must not fetch a toolchain for it either: cmake would take whatever clang sits on
+# PATH first, and the warning flags of this project are pinned to the llvm-mingw one.
+if [ "${SKIP_BUILD}" -eq 0 ]; then
+  # ovbase's setup script is downloaded to the project root and fetches the toolchain
+  # into ./build/tools.  Sourcing it puts cmake / ninja / llvm-mingw / gettext into this
+  # shell's PATH, and it writes ./env-<platform>.sh next to itself.
+  if [ "${INSTALL_TOOLS}" -eq 1 ]; then
+    mkdir -p "build/tools"
+    if [ ! -e "${PWD}/setup-llvm-mingw.sh" ]; then
+      OVBASE_COMMIT_HASH=$(grep 'set(OVBASE_COMMIT_HASH' "${PWD}/src/CMakeLists.txt" | sed -E 's/.*"([^"]+)".*/\1/')
+      curl -o "${PWD}/setup-llvm-mingw.sh" -sOL "https://raw.githubusercontent.com/oov/ovbase/${OVBASE_COMMIT_HASH}/setup-llvm-mingw.sh"
+    fi
+    . "${PWD}/setup-llvm-mingw.sh" --dir "${PWD}/build/tools"
   fi
-  . "${PWD}/setup-llvm-mingw.sh" --dir "${PWD}/build/tools"
 fi
 
 # Run command with progress indicator (prints . every second)
@@ -162,33 +171,35 @@ destdir="${PWD}/build/${CMAKE_BUILD_TYPE}/${ARCHDIR}"
 build_log="${destdir}/build.log"
 test_log="${destdir}/test.log"
 
-if [ "${REBUILD}" -eq 1 ] || [ ! -e "${destdir}/CMakeCache.txt" ]; then
-  rm -rf "${destdir}"
-  cmake -S "${PWD}" -B "${destdir}" --preset default \
-    -DCMAKE_BUILD_TYPE="${CMAKE_BUILD_TYPE}" \
-    -DCMAKE_TOOLCHAIN_FILE="${PWD}/cmake/llvm-mingw.cmake" \
-    -DCMAKE_C_COMPILER="${CMAKE_C_COMPILER:-clang}" \
-    -DCMAKE_C_COMPILER_TARGET="${CMAKE_C_COMPILER_TARGET:-x86_64-w64-mingw32}"
-fi
-# ovbase has no switch to disable its own test targets, so its tests are built and run
-# together with ours.  Everything is built: the application, the tests, the diagnostic
-# tools and the clang-format pass.  A narrow --target build would silently skip the rest.
-if ! run_with_progress "Building" "${build_log}" cmake --build "${destdir}"; then
-  echo ""
-  echo "Build failed:"
-  show_error_log "${build_log}"
-  exit 1
-fi
-if [ "${SKIP_TESTS}" -eq 0 ]; then
-  if ! run_with_progress "Testing" "${test_log}" ctest --test-dir "${destdir}" --output-on-failure --output-junit testlog.xml; then
+if [ "${SKIP_BUILD}" -eq 0 ]; then
+  if [ "${REBUILD}" -eq 1 ] || [ ! -e "${destdir}/CMakeCache.txt" ]; then
+    rm -rf "${destdir}"
+    cmake -S "${PWD}" -B "${destdir}" --preset default \
+      -DCMAKE_BUILD_TYPE="${CMAKE_BUILD_TYPE}" \
+      -DCMAKE_TOOLCHAIN_FILE="${PWD}/cmake/llvm-mingw.cmake" \
+      -DCMAKE_C_COMPILER="${CMAKE_C_COMPILER:-clang}" \
+      -DCMAKE_C_COMPILER_TARGET="${CMAKE_C_COMPILER_TARGET:-x86_64-w64-mingw32}"
+  fi
+  # ovbase has no switch to disable its own test targets, so its tests are built and run
+  # together with ours.  Everything is built: the application, the tests, the diagnostic
+  # tools and the clang-format pass.  A narrow --target build would silently skip the rest.
+  if ! run_with_progress "Building" "${build_log}" cmake --build "${destdir}"; then
     echo ""
-    echo "Tests failed:"
-    show_test_log "${test_log}"
+    echo "Build failed:"
+    show_error_log "${build_log}"
     exit 1
   fi
-fi
+  if [ "${SKIP_TESTS}" -eq 0 ]; then
+    if ! run_with_progress "Testing" "${test_log}" ctest --test-dir "${destdir}" --output-on-failure --output-junit testlog.xml; then
+      echo ""
+      echo "Tests failed:"
+      show_test_log "${test_log}"
+      exit 1
+    fi
+  fi
 
-echo "built: ${destdir}/bin/audient-device-closer.exe"
+  echo "built: ${destdir}/bin/audient-device-closer.exe"
+fi
 
 # Extracts the privilege-elevation section between the PRIVILEGES BEGIN/END
 # markers from a README and writes it as plain text for the installer.  Headings

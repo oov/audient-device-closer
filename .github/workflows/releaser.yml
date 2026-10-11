@@ -76,13 +76,33 @@ jobs:
         shell: bash
         env:
           ADC_VERSION: ${{ github.ref_name }}
-        run: bash build.bash --no-install-tools --skip-tests --installer
+        run: bash build.bash --skip-build --skip-tests --installer
       - name: Upload installer artifact
         uses: actions/upload-artifact@v7
         with:
           name: installer-artifacts
           path: |
             build/Release/dist/
+      - name: Attest installer
+        if: ${{ !github.event.repository.private }}
+        id: attest-setup
+        uses: actions/attest-build-provenance@v4
+        with:
+          subject-path: "build/Release/dist/audient-device-closer_${{ github.ref_name }}_setup.exe"
+      - name: Prepare attestation for upload
+        if: ${{ !github.event.repository.private }}
+        shell: bash
+        run: |
+          VERSION="${{ github.ref_name }}"
+          mkdir -p attestations
+          cp "${{ steps.attest-setup.outputs.bundle-path }}" "attestations/audient-device-closer_${VERSION}_setup.exe.attestation.jsonl"
+      - name: Upload attestation for installer
+        if: ${{ !github.event.repository.private }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: attestation-setup
+          path: attestations/
+          retention-days: 1
 
   release:
     runs-on: ubuntu-latest
@@ -105,6 +125,12 @@ jobs:
         with:
           name: attestation-zip
           path: attestations/
+      - name: Download attestation for installer
+        if: ${{ !github.event.repository.private }}
+        uses: actions/download-artifact@v8
+        with:
+          name: attestation-setup
+          path: attestations/
       - name: Create Release
         env:
           GH_TOKEN: ${{ secrets.CREATE_RELEASE_SECRET || github.token }}
@@ -118,9 +144,10 @@ jobs:
             .github/extract-changelog.sh "${VERSION}"
           } | envsubst > release_notes.md
           files=("build/Release/dist/audient-device-closer_${VERSION}.zip" "build/Release/dist/audient-device-closer_${VERSION}_setup.exe")
-          if compgen -G "attestations/*.attestation.jsonl" > /dev/null; then
-            files+=("attestations/audient-device-closer_${VERSION}.zip.attestation.jsonl")
-          fi
+          for f in attestations/*.attestation.jsonl; do
+            [ -e "$f" ] || continue
+            files+=("$f")
+          done
           gh release create "${VERSION}" \
             --draft \
             --title "${VERSION}" \
