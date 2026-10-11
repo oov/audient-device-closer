@@ -282,10 +282,16 @@ static char *logger_path_for_exe(char const *const exe_path, struct ov_error *co
 
   if (exe_path == NULL) {
     OV_ERROR_SET_GENERIC(err, ov_error_generic_invalid_argument);
-    return NULL;
+    goto cleanup;
   }
   if (!paths_is_in_program_files(exe_path)) {
-    return paths_replace_extension(exe_path, ".log", err); // a portable copy keeps its log next to itself
+    result = paths_replace_extension(exe_path, ".log", err); // a portable copy keeps its log next to itself
+    if (result == NULL) {
+      OV_ERROR_ADD_TRACE(err);
+      goto cleanup;
+    }
+    success = true;
+    goto cleanup;
   }
   folder = paths_log_folder(err);
   if (folder == NULL) {
@@ -316,9 +322,8 @@ cleanup:
     if (result != NULL) {
       OV_FREE(&result);
     }
-    return NULL;
   }
-  return result;
+  return success ? result : NULL;
 }
 
 /**
@@ -529,27 +534,30 @@ cleanup:
 static bool
 logger_write_level(enum ov_error_severity const level, char const *const tag, char const *const message, struct ov_error *const err) {
   bool success = false;
+  bool locked = false;
   char line[LOGGER_LINE_BYTES];
   LARGE_INTEGER size;
   long long trim_to = 0;
 
   if ((tag == NULL) || (message == NULL)) {
     OV_ERROR_SET_GENERIC(err, ov_error_generic_invalid_argument);
-    return false;
+    goto cleanup;
   }
   if (!logger_is_open()) {
-    return true; // no log wanted: reporting is not a failure
+    success = true; // no log wanted: reporting is not a failure
+    goto cleanup;
   }
   if (logger_format_line(line, sizeof(line), process_now_ms(), level, tag, message) == 0) {
     OV_ERROR_SET_GENERIC(err, ov_error_generic_unexpected);
-    return false;
+    goto cleanup;
   }
   if (g_lock_ready) {
     mtx_lock(&g_lock);
+    locked = true;
   }
   if (!GetFileSizeEx(g_file, &size)) {
     OV_ERROR_SET_HRESULT(err, HRESULT_FROM_WIN32(GetLastError()));
-    goto cleanup_unlock;
+    goto cleanup;
   }
   trim_to = logger_trim_size(size.QuadPart, strlen(line) + 1);
   if (trim_to < 0) {
@@ -557,22 +565,22 @@ logger_write_level(enum ov_error_severity const level, char const *const tag, ch
     zero.QuadPart = 0;
     if (!SetFilePointerEx(g_file, zero, NULL, FILE_BEGIN) || !SetEndOfFile(g_file)) {
       OV_ERROR_SET_HRESULT(err, HRESULT_FROM_WIN32(GetLastError()));
-      goto cleanup_unlock;
+      goto cleanup;
     }
   } else if (trim_to > 0) {
     if (!trim(g_file, trim_to, err)) {
       OV_ERROR_ADD_TRACE(err);
-      goto cleanup_unlock;
+      goto cleanup;
     }
   }
   if (!write_line(g_file, line, err)) {
     OV_ERROR_ADD_TRACE(err);
-    goto cleanup_unlock;
+    goto cleanup;
   }
   success = true;
 
-cleanup_unlock:
-  if (g_lock_ready) {
+cleanup:
+  if (locked) {
     mtx_unlock(&g_lock);
   }
   return success;
@@ -623,12 +631,40 @@ bool logger_writef(char const *const tag, struct ov_error *const err, char const
 }
 
 /**
+ * @brief Write one record for a message that carries numbers, reporting a failure itself
+ *
+ * @param tag the module the record belongs to, UTF-8, must not be NULL
+ * @param reference the pattern of the message, and its reference
+ * @param ... the values the pattern names
+ */
+void logger_notef(char const *const tag, char const *const reference, ...) {
+  char message[LOGGER_LINE_BYTES];
+  struct ov_error err = {0};
+  va_list ap;
+  int n = -1;
+
+  if (!logger_is_open()) {
+    return; // no log wanted: reporting is not a failure
+  }
+  va_start(ap, reference);
+  n = OV_VSNPRINTF(message, sizeof(message), reference, reference, ap);
+  va_end(ap);
+  if (n < 0) {
+    return;
+  }
+  if (!logger_write(tag, message, &err)) {
+    OV_ERROR_REPORT(&err, NULL);
+  }
+}
+
+/**
  * @brief Write the record that starts a run
  *
- * @param err receives the failure of the write
- * @return false when the record did not reach the file
+ * The records that frame a run are read by a person who looks the run up afterwards, so a
+ * failure to write one is reported where it stands and nowhere else: a caller that has to
+ * react to a missing record uses logger_write.
  */
-bool logger_log_run_start(struct ov_error *const err) { return logger_write("run", "=== start ===", err); }
+void logger_log_run_start(void) { logger_notef("run", "=== start ==="); }
 
 /**
  * @brief Write the sentence of a run and the record that ends it
@@ -638,16 +674,12 @@ bool logger_log_run_start(struct ov_error *const err) { return logger_write("run
  * the record that ends it.
  *
  * @param sentence the sentence of the run, may be NULL when it has nothing to say
- * @param err receives the failure of the write
- * @return false when a record did not reach the file
  */
-bool logger_log_run_end(char const *const sentence, struct ov_error *const err) {
+void logger_log_run_end(char const *const sentence) {
   if ((sentence != NULL) && (sentence[0] != '\0')) {
-    if (!logger_write("run", sentence, err)) {
-      return false;
-    }
+    logger_notef("run", "%hs", sentence);
   }
-  return logger_write("run", "=== end ===", err);
+  logger_notef("run", "=== end ===");
 }
 
 /**

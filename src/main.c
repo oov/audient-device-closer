@@ -66,11 +66,8 @@ cleanup:
 int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine, int nCmdShow) {
   struct ov_init_options init = ov_init_get_default_options();
   struct ov_error err = {0};
-  struct ov_error instance_err = {0};
   struct options options;
   struct settings settings;
-  struct ov_error mo_err = {0};
-  struct ov_error log_err = {0};
   struct mo *mo = NULL;
   char *path = NULL;
   HANDLE instance = NULL;
@@ -90,17 +87,23 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
     return 2;
   }
   logger_init();
-  if (!logger_open(&log_err)) {
-    OV_ERROR_REPORT(&log_err, NULL);
+  {
+    // a log that cannot be opened is worth a report and nothing more: without it the
+    // summaries of everything below simply have nowhere to go
+    struct ov_error log_err = {0};
+
+    if (!logger_open(&log_err)) {
+      OV_ERROR_REPORT(&log_err, NULL);
+    }
   }
 
   // the copy that finds the mutex taken is a second start: it shows the window that is
   // already there and leaves, with the answer a start that did what it was asked to do
-  instance = instance_take(INSTANCE_MUTEX_NAME, &other_running, &instance_err);
+  instance = instance_take(INSTANCE_MUTEX_NAME, &other_running, &err);
   if (instance == NULL) {
     // without the mutex no other copy can be ruled out, so this copy goes on with its
     // window and the log carries why the check is missing
-    OV_ERROR_REPORT(&instance_err, NULL);
+    OV_ERROR_REPORT(&err, NULL);
   } else if (other_running) {
     struct ov_error activate_err = {0};
 
@@ -111,7 +114,12 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
     goto cleanup;
   }
 
-  mo = mo_parse_from_resource(GetModuleHandleW(NULL), &mo_err);
+  {
+    struct ov_error mo_err = {0};
+
+    mo = mo_parse_from_resource(GetModuleHandleW(NULL), &mo_err);
+    OV_ERROR_REPORT(&mo_err, NULL);
+  }
   if (mo != NULL) {
     mo_set_default(mo);
   }
@@ -138,7 +146,6 @@ cleanup:
   OV_ERROR_REPORT(&err, NULL);
   instance_release(&instance);
   logger_close();
-  OV_ERROR_REPORT(&mo_err, NULL);
   settings_string_free(&path);
   settings_release(&settings);
   if (mo != NULL) {

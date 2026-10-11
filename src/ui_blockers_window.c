@@ -357,11 +357,11 @@ bool ui_blockers_window_show(HWND const owner, struct culprit const *const culpr
 
   if (owner == NULL) {
     OV_ERROR_SET_GENERIC(err, ov_error_generic_invalid_argument);
-    return false;
+    goto cleanup;
   }
   if (!blockers_register_class(err)) {
     OV_ERROR_ADD_TRACE(err);
-    return false;
+    goto cleanup;
   }
   dpi = (int)GetDpiForWindow(owner);
   OV_SNPRINTF(title, sizeof(title) / sizeof(WCHAR), ph, ph, gettext("The device cannot be closed because it is in use"));

@@ -28,70 +28,53 @@ bool mixer_take(uint32_t const pid,
                 struct ov_error *const err) {
   bool success = false;
   struct process_ref ref;
-  struct ov_error log_err = {0};
   char *image = NULL;
 
   memset(&ref, 0, sizeof(ref));
   ref.handle = NULL;
+  memset(out, 0, sizeof(*out));
   if ((exe_name == NULL) || (out_found == NULL) || (out == NULL) || (pid == 0)) {
     OV_ERROR_SET_GENERIC(err, ov_error_generic_invalid_argument);
-    return false;
+    goto cleanup;
   }
-  memset(out, 0, sizeof(*out));
   *out_found = false;
 
   if (!process_ref_open(&ref, pid, false, err)) {
-    if (!logger_writef(
-            "process", &log_err, "reject pid=%lu start=0 image=(unknown) reason=the process could not be opened", (unsigned long)pid)) {
-      OV_ERROR_REPORT(&log_err, NULL);
-    }
+    logger_notef("process", "reject pid=%lu start=0 image=(unknown) reason=the process could not be opened", (unsigned long)pid);
     OV_ERROR_REPORT(err, NULL);
-    return true;
+    success = true; // a process that cannot be opened is no blocker, not a hard failure
+    goto cleanup;
   }
   if (!process_ref_alive(&ref)) {
-    if (!logger_writef("process",
-                       &log_err,
-                       "reject pid=%lu start=%lld image=(unknown) reason=the process is already gone",
-                       (unsigned long)pid,
-                       ref.start_ms_utc)) {
-      OV_ERROR_REPORT(&log_err, NULL);
-    }
+    logger_notef(
+        "process", "reject pid=%lu start=%lld image=(unknown) reason=the process is already gone", (unsigned long)pid, ref.start_ms_utc);
     success = true;
     goto cleanup;
   }
   image = process_ref_image_path(&ref, err);
   if (image == NULL) {
-    if (!logger_writef("process",
-                       &log_err,
-                       "reject pid=%lu start=%lld image=(unreadable) reason=the image of the process could not be read",
-                       (unsigned long)pid,
-                       ref.start_ms_utc)) {
-      OV_ERROR_REPORT(&log_err, NULL);
-    }
+    logger_notef("process",
+                 "reject pid=%lu start=%lld image=(unreadable) reason=the image of the process could not be read",
+                 (unsigned long)pid,
+                 ref.start_ms_utc);
     OV_ERROR_ADD_TRACE(err);
     goto cleanup;
   }
   if (!process_path_matches_name(image, exe_name)) {
-    if (!logger_writef("process",
-                       &log_err,
-                       "reject pid=%lu start=%lld image=%s reason=the image name is not the one the caller asked for",
-                       (unsigned long)pid,
-                       ref.start_ms_utc,
-                       image)) {
-      OV_ERROR_REPORT(&log_err, NULL);
-    }
+    logger_notef("process",
+                 "reject pid=%lu start=%lld image=%s reason=the image name is not the one the caller asked for",
+                 (unsigned long)pid,
+                 ref.start_ms_utc,
+                 image);
     success = true;
     goto cleanup;
   }
   if (!process_start_matches_event_time(ref.start_ms_utc, event_time_ms)) {
-    if (!logger_writef("process",
-                       &log_err,
-                       "reject pid=%lu start=%lld image=%s reason=the process is younger than the event, so the pid was reused",
-                       (unsigned long)pid,
-                       ref.start_ms_utc,
-                       image)) {
-      OV_ERROR_REPORT(&log_err, NULL);
-    }
+    logger_notef("process",
+                 "reject pid=%lu start=%lld image=%s reason=the process is younger than the event, so the pid was reused",
+                 (unsigned long)pid,
+                 ref.start_ms_utc,
+                 image);
     success = true;
     goto cleanup;
   }
@@ -99,14 +82,11 @@ bool mixer_take(uint32_t const pid,
   out->path = image;
   image = NULL;
   *out_found = true;
-  if (!logger_writef("process",
-                     &log_err,
-                     "accept pid=%lu start=%lld image=%s reason=the event names this instance",
-                     (unsigned long)pid,
-                     ref.start_ms_utc,
-                     image)) {
-    OV_ERROR_REPORT(&log_err, NULL);
-  }
+  logger_notef("process",
+               "accept pid=%lu start=%lld image=%s reason=the event names this instance",
+               (unsigned long)pid,
+               ref.start_ms_utc,
+               out->path);
   success = true;
 
 cleanup:
@@ -131,7 +111,6 @@ cleanup:
 bool mixer_close(struct mixer_target *const target, struct ov_error *const err) {
   bool success = false;
   bool gone = false;
-  struct ov_error log_err = {0};
   struct process_ref ref;
   char *image = NULL;
 
@@ -139,17 +118,14 @@ bool mixer_close(struct mixer_target *const target, struct ov_error *const err) 
   ref.handle = NULL;
   if ((target == NULL) || (target->pid == 0)) {
     OV_ERROR_SET_GENERIC(err, ov_error_generic_invalid_argument);
-    return false;
+    goto cleanup;
   }
 
   if (!process_ref_open(&ref, target->pid, true, err)) {
-    if (!logger_writef("process",
-                       &log_err,
-                       "reject pid=%lu start=0 image=%s reason=the process could not be opened for termination",
-                       (unsigned long)target->pid,
-                       target->path ? target->path : "(unknown)")) {
-      OV_ERROR_REPORT(&log_err, NULL);
-    }
+    logger_notef("process",
+                 "reject pid=%lu start=0 image=%s reason=the process could not be opened for termination",
+                 (unsigned long)target->pid,
+                 target->path ? target->path : "(unknown)");
     OV_ERROR_ADD_TRACE(err);
     goto cleanup;
   }
@@ -159,14 +135,11 @@ bool mixer_close(struct mixer_target *const target, struct ov_error *const err) 
     goto cleanup;
   }
   if ((target->path != NULL) && (_stricmp(image, target->path) != 0)) {
-    if (!logger_writef("process",
-                       &log_err,
-                       "reject pid=%lu start=%lld image=%s reason=the handle belongs to another image than the one taken",
-                       (unsigned long)target->pid,
-                       ref.start_ms_utc,
-                       image)) {
-      OV_ERROR_REPORT(&log_err, NULL);
-    }
+    logger_notef("process",
+                 "reject pid=%lu start=%lld image=%s reason=the handle belongs to another image than the one taken",
+                 (unsigned long)target->pid,
+                 ref.start_ms_utc,
+                 image);
     OV_ERROR_SETF(err,
                   ov_error_type_generic,
                   ov_error_generic_fail,
@@ -176,14 +149,11 @@ bool mixer_close(struct mixer_target *const target, struct ov_error *const err) 
     goto cleanup;
   }
   if (!process_ref_terminate(&ref, err)) {
-    if (!logger_writef("process",
-                       &log_err,
-                       "reject pid=%lu start=%lld image=%s reason=the termination was refused",
-                       (unsigned long)target->pid,
-                       ref.start_ms_utc,
-                       image)) {
-      OV_ERROR_REPORT(&log_err, NULL);
-    }
+    logger_notef("process",
+                 "reject pid=%lu start=%lld image=%s reason=the termination was refused",
+                 (unsigned long)target->pid,
+                 ref.start_ms_utc,
+                 image);
     OV_ERROR_ADD_TRACE(err);
     goto cleanup;
   }
@@ -195,9 +165,7 @@ bool mixer_close(struct mixer_target *const target, struct ov_error *const err) 
     OV_ERROR_SET(err, ov_error_type_generic, ov_error_generic_fail, "the process did not exit within 5 seconds");
     goto cleanup;
   }
-  if (!logger_writef("process", &log_err, "closed pid=%lu start=%lld image=%s", (unsigned long)target->pid, ref.start_ms_utc, image)) {
-    OV_ERROR_REPORT(&log_err, NULL);
-  }
+  logger_notef("process", "closed pid=%lu start=%lld image=%s", (unsigned long)target->pid, ref.start_ms_utc, image);
   target->pid = 0;
   success = true;
 

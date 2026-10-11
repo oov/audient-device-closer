@@ -277,9 +277,10 @@ static bool culprit_parse_xml(char const *const xml_utf8, struct culprit *const 
   char text[64];
   char time_value[64];
   uint64_t pid = 0;
+  bool success = false;
 
   if ((xml_utf8 == NULL) || (out == NULL)) {
-    return false;
+    return false; // nothing to write the record into, the cleanup would touch it
   }
   memset(out, 0, sizeof(*out));
 
@@ -302,15 +303,16 @@ static bool culprit_parse_xml(char const *const xml_utf8, struct culprit *const 
   if (read_attr(xml_utf8, "SystemTime=", time_value, sizeof(time_value))) {
     out->event_time_ms = parse_system_time_ms(time_value);
   }
+  success = true;
 
 cleanup:
-  if (out->pid == 0) {
+  if (!success || (out->pid == 0)) {
     OV_FREE(&out->path);
     OV_FREE(&out->device_instance);
     memset(out, 0, sizeof(*out));
-    return false;
+    success = false;
   }
-  return true;
+  return success;
 }
 
 /**
@@ -669,7 +671,7 @@ culprit_read(char const *const log_name, char const *const provider_name, unsign
 
   if ((log_name == NULL) || (provider_name == NULL)) {
     OV_ERROR_SET_GENERIC(err, ov_error_generic_invalid_argument);
-    return NULL;
+    goto cleanup;
   }
   if (!ov_sprintf_wchar(&channel, err, NULL, L"%s", log_name)) {
     OV_ERROR_ADD_TRACE(err);

@@ -363,10 +363,10 @@ static void test_run_records(void) {
   if (!TEST_CHECK(logger_open(&err) == true)) {
     goto cleanup;
   }
-  TEST_CHECK(logger_log_run_start(&err) == true);
-  TEST_CHECK(logger_log_run_end(NULL, &err) == true);
-  TEST_CHECK(logger_log_run_end("No Audient device was found.", &err) == true);
-  TEST_CHECK(logger_log_run_end("The device could not be released.", &err) == true);
+  logger_log_run_start();
+  logger_log_run_end(NULL);
+  logger_log_run_end("No Audient device was found.");
+  logger_log_run_end("The device could not be released.");
   logger_close();
 
   if (!TEST_CHECK(read_log_file(&text, &err))) {

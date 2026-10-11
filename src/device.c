@@ -386,12 +386,13 @@ cleanup:
 static bool on_devnode_copy(WCHAR const *const devnode, void *const ctx_void, struct ov_error *const err) {
   struct found_ctx *ctx = (struct found_ctx *)ctx_void;
   bool success = false;
+  bool matched = false;
   char *utf8 = NULL;
 
   if (ctx->found) {
-    return true;
+    success = true; // the device was found already, nothing else has to be looked at
+    goto cleanup;
   }
-  bool matched = false;
   if (!prefix_matches(devnode, ctx->instance_prefix, &matched, err)) {
     OV_ERROR_ADD_TRACE(err);
     goto cleanup;
@@ -485,15 +486,16 @@ struct probe_ctx {
 static bool on_devnode_probe(WCHAR const *const devnode, void *const ctx_void, struct ov_error *const err) {
   struct probe_ctx *ctx = (struct probe_ctx *)ctx_void;
   bool success = false;
+  bool matched = false;
   DEVINST devinst = 0;
   ULONG status = 0;
   ULONG problem = 0;
   CONFIGRET cr = 0;
 
   if (ctx->evaluated) {
-    return true;
+    success = true; // the device was measured already, nothing else has to be looked at
+    goto cleanup;
   }
-  bool matched = false;
   if (!prefix_matches(devnode, ctx->instance_prefix, &matched, err)) {
     OV_ERROR_ADD_TRACE(err);
     goto cleanup;
@@ -554,7 +556,7 @@ enum device_state device_probe(char const *const service, char const *const inst
 
   if (!service) {
     OV_ERROR_SET_GENERIC(err, ov_error_generic_invalid_argument);
-    return DEVICE_STATE_UNKNOWN;
+    goto cleanup;
   }
   ctx.instance_prefix = instance_prefix;
   ctx.problem_code = 0;
@@ -565,7 +567,7 @@ enum device_state device_probe(char const *const service, char const *const inst
   ctx.evaluated = false;
   if (!foreach_devnode(service, on_devnode_probe, &ctx, err)) {
     OV_ERROR_ADD_TRACE(err);
-    return DEVICE_STATE_UNKNOWN;
+    goto cleanup;
   }
   if (!ctx.evaluated) {
     OV_ERROR_SETF(err,
@@ -574,7 +576,8 @@ enum device_state device_probe(char const *const service, char const *const inst
                   "no devnode of service %1$s is registered",
                   "no devnode of service %1$s is registered",
                   service);
-    return DEVICE_STATE_ABSENT;
+    state = DEVICE_STATE_ABSENT;
+    goto cleanup;
   }
   state = device_evaluate(ctx.problem_code, ctx.render_present, ctx.render_registered, ctx.capture_present, ctx.capture_registered);
   if (state == DEVICE_STATE_PROBLEM) {
@@ -593,5 +596,7 @@ enum device_state device_probe(char const *const service, char const *const inst
                   "no KS interface of service %1$s is registered",
                   service);
   }
+
+cleanup:
   return state;
 }

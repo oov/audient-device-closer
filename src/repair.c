@@ -171,23 +171,6 @@ static void report_stage(repair_progress_fn const progress, void *const userdata
 static bool cancel_requested(bool const *const cancel) { return (cancel != NULL) && *cancel; }
 
 /**
- * @brief One line about what the run is doing, in the log
- *
- * The UI stays free of the technical detail, and the detail is worthless when it is
- * nowhere.  A record that cannot be written is reported where it stands.
- *
- * @param tag the module the record belongs to
- * @param text the record itself, UTF-8
- */
-static void log_note(char const *const tag, char const *const text) {
-  struct ov_error err = {0};
-
-  if (!logger_write(tag, text, &err)) {
-    OV_ERROR_REPORT(&err, NULL);
-  }
-}
-
-/**
  * @brief Fold the abort into the result
  *
  * The sentence says who stopped the run: only a person at the progress window can, whether
@@ -385,12 +368,9 @@ static bool close_blocking_process(struct repair_blocker const *const blocker,
                                    struct ov_error *const err) {
   bool found = false;
   bool success = false;
-  struct ov_error log_err = {0};
 
   report_stage(progress, progress_userdata, stage, ++(*step));
-  if (!logger_writef("close", &log_err, "%s pid=%lu event_time=%lld", name, (unsigned long)blocker->pid, blocker->event_time_ms)) {
-    OV_ERROR_REPORT(&log_err, NULL);
-  }
+  logger_notef("close", "%s pid=%lu event_time=%lld", name, (unsigned long)blocker->pid, blocker->event_time_ms);
   if (!mixer_take(blocker->pid, name, blocker->event_time_ms, &found, target, err)) {
     OV_ERROR_ADD_TRACE(err);
     out->outcome = REPAIR_OUTCOME_FAILED;
@@ -398,10 +378,7 @@ static bool close_blocking_process(struct repair_blocker const *const blocker,
     goto cleanup;
   }
   if (!found) {
-    if (!logger_writef(
-            "close", &log_err, "%s pid=%lu was not closed: it is not the instance the record named", name, (unsigned long)blocker->pid)) {
-      OV_ERROR_REPORT(&log_err, NULL);
-    }
+    logger_notef("close", "%s pid=%lu was not closed: it is not the instance the record named", name, (unsigned long)blocker->pid);
     sayf(out, "%1$hs is no longer running.", name);
     success = true;
     goto cleanup;
@@ -458,7 +435,6 @@ bool repair_run(struct settings const *const s,
   struct culprit *current = NULL;
   struct ov_error removal_err = {0};
   struct ov_error read_err = {0};
-  struct ov_error log_err = {0};
   size_t step = 0;
 
   if ((s == NULL) || (out == NULL)) {
@@ -512,9 +488,7 @@ bool repair_run(struct settings const *const s,
   }
 
   since = process_now_ms();
-  if (!logger_writef("remove", &log_err, "first attempt, device=%s since=%lld", devnode, since)) {
-    OV_ERROR_REPORT(&log_err, NULL);
-  }
+  logger_notef("remove", "first attempt, device=%s since=%lld", devnode, since);
   if (cancel_requested(cancel)) {
     say_aborted(out);
     success = true;
@@ -525,7 +499,7 @@ bool repair_run(struct settings const *const s,
   if (removal == REMOVAL_RESULT_OK) {
     out->outcome = REPAIR_OUTCOME_CLOSED;
     say(out, "The device was released.");
-    log_note("remove", "The device was released on the first attempt.");
+    logger_notef("remove", "The device was released on the first attempt.");
     culprit_clear(&out->culprits); // nothing blocks the device any more
     success = true;
     goto cleanup;
@@ -549,9 +523,7 @@ bool repair_run(struct settings const *const s,
     success = true;
     goto cleanup;
   }
-  if (!logger_writef("veto", &log_err, "the removal was vetoed by %u record(s)", (unsigned)culprit_count(out->culprits))) {
-    OV_ERROR_REPORT(&log_err, NULL);
-  }
+  logger_notef("veto", "the removal was vetoed by %u record(s)", (unsigned)culprit_count(out->culprits));
 
   picked = repair_pick_blockers(out->culprits, s->mixer_process_name, allow_mixer_close, allow_audiodg_close, err);
   if (picked.mixer_count == 0 && picked.audiodg_count == 0) {
@@ -623,15 +595,13 @@ bool repair_run(struct settings const *const s,
     goto cleanup;
   }
   since = process_now_ms();
-  if (!logger_writef("remove", &log_err, "second attempt, device=%s since=%lld", devnode, since)) {
-    OV_ERROR_REPORT(&log_err, NULL);
-  }
+  logger_notef("remove", "second attempt, device=%s since=%lld", devnode, since);
   report_stage(progress, progress_userdata, REPAIR_STAGE_REMOVE, ++step);
   removal = removal_close(devnode, &removal_reason, err);
   if (removal == REMOVAL_RESULT_OK) {
     out->outcome = REPAIR_OUTCOME_CLOSED;
     say(out, "The device was released.");
-    log_note("remove", "The device was released on the second attempt.");
+    logger_notef("remove", "The device was released on the second attempt.");
     culprit_clear(&out->culprits); // nothing blocks the device any more
     success = true;
     goto cleanup;
@@ -660,7 +630,7 @@ bool repair_run(struct settings const *const s,
   drop_closed(&out->culprits, &picked);
   out->outcome = REPAIR_OUTCOME_VETOED;
   say(out, "The device is still in use.");
-  log_note("remove", "The blockers were closed but the device is still blocked.");
+  logger_notef("remove", "The blockers were closed but the device is still blocked.");
   success = true;
 
 cleanup:

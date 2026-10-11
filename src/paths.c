@@ -135,7 +135,7 @@ bool paths_create_folder(char const *const folder_utf8, struct ov_error *const e
 
   if (folder_utf8 == NULL) {
     OV_ERROR_SET_GENERIC(err, ov_error_generic_invalid_argument);
-    return false;
+    goto cleanup;
   }
   if (!ov_sprintf_wchar(&wide, err, NULL, L"%s", folder_utf8)) {
     OV_ERROR_ADD_TRACE(err);
@@ -168,16 +168,25 @@ cleanup:
  */
 char *paths_join(char const *const directory, char const *const name, struct ov_error *const err) {
   char *result = NULL;
+  bool success = false;
 
   if ((directory == NULL) || (name == NULL)) {
     OV_ERROR_SET_GENERIC(err, ov_error_generic_invalid_argument);
-    return NULL;
+    goto cleanup;
   }
   if (!ov_sprintf_char(&result, err, NULL, "%hs\\%hs", directory, name)) {
     OV_ERROR_ADD_TRACE(err);
-    return NULL;
+    goto cleanup;
   }
-  return result;
+  success = true;
+
+cleanup:
+  if (!success) {
+    if (result != NULL) {
+      OV_ARRAY_DESTROY(&result);
+    }
+  }
+  return success ? result : NULL;
 }
 
 /**
@@ -195,10 +204,11 @@ char *paths_replace_extension(char const *const exe_path, char const *const exte
   size_t dot = 0;
   size_t sep = 0;
   size_t ext_len = 0;
+  bool success = false;
 
   if ((exe_path == NULL) || (extension == NULL)) {
     OV_ERROR_SET_GENERIC(err, ov_error_generic_invalid_argument);
-    return NULL;
+    goto cleanup;
   }
   len = strlen(exe_path);
   ext_len = strlen(extension);
@@ -215,9 +225,17 @@ char *paths_replace_extension(char const *const exe_path, char const *const exte
   }
   if (!OV_REALLOC(&result, dot + ext_len + 1, sizeof(result[0]))) {
     OV_ERROR_SET_GENERIC(err, ov_error_generic_out_of_memory);
-    return NULL;
+    goto cleanup;
   }
   memcpy(result, exe_path, dot);
   memcpy(&result[dot], extension, ext_len + 1); // the terminator comes along with the extension
-  return result;
+  success = true;
+
+cleanup:
+  if (!success) {
+    if (result != NULL) {
+      OV_FREE(&result);
+    }
+  }
+  return success ? result : NULL;
 }

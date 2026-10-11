@@ -527,7 +527,7 @@ static bool task_install_document(struct settings const *const settings, char co
 
   if ((settings == NULL) || (settings->task_name == NULL) || (xml == NULL)) {
     OV_ERROR_SET_GENERIC(err, ov_error_generic_invalid_argument);
-    return false;
+    goto cleanup;
   }
   if (!task_split_path(settings->task_name, folder_name, sizeof(folder_name), name, sizeof(name))) {
     OV_ERROR_SETF(err,
@@ -536,7 +536,7 @@ static bool task_install_document(struct settings const *const settings, char co
                   "%1$hs",
                   gettext("The name of the scheduled task is not valid."),
                   NULL);
-    return false;
+    goto cleanup;
   }
   if (!com_ready(err)) {
     goto cleanup;
@@ -658,10 +658,11 @@ bool task_uninstall(struct settings const *const settings, struct ov_error *cons
 
   if ((settings == NULL) || (settings->task_name == NULL)) {
     OV_ERROR_SET_GENERIC(err, ov_error_generic_invalid_argument);
-    return false;
+    goto cleanup;
   }
   if (!task_split_path(settings->task_name, folder_name, sizeof(folder_name), name, sizeof(name))) {
-    return true;
+    success = true; // a name that names no task is a task that is not there
+    goto cleanup;
   }
   if (!com_ready(err)) {
     goto cleanup;

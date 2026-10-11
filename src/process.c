@@ -214,7 +214,7 @@ bool process_ref_open(struct process_ref *const out, uint32_t const pid, bool co
 
   if (out == NULL) {
     OV_ERROR_SET_GENERIC(err, ov_error_generic_invalid_argument);
-    return false;
+    goto cleanup;
   }
   memset(out, 0, sizeof(*out));
   out->handle = INVALID_HANDLE_VALUE;
@@ -275,21 +275,30 @@ char *process_ref_image_path(struct process_ref const *const ref, struct ov_erro
   char *result = NULL;
   wchar_t buf[512];
   DWORD chars = (DWORD)(sizeof(buf) / sizeof(buf[0]));
+  bool success = false;
 
   if ((ref == NULL) || (ref->handle == NULL) || (ref->handle == INVALID_HANDLE_VALUE)) {
     OV_ERROR_SET_GENERIC(err, ov_error_generic_invalid_argument);
-    return NULL;
+    goto cleanup;
   }
   if (!QueryFullProcessImageNameW((HANDLE)ref->handle, 0, buf, &chars) || (chars == 0)) {
     DWORD const le = (GetLastError() != 0) ? GetLastError() : ERROR_NOT_FOUND;
     OV_ERROR_SET_HRESULT(err, HRESULT_FROM_WIN32(le));
-    return NULL;
+    goto cleanup;
   }
   if (!ov_sprintf_char(&result, err, NULL, "%ls", buf)) {
     OV_ERROR_ADD_TRACE(err);
-    return NULL;
+    goto cleanup;
   }
-  return result;
+  success = true;
+
+cleanup:
+  if (!success) {
+    if (result != NULL) {
+      OV_ARRAY_DESTROY(&result);
+    }
+  }
+  return success ? result : NULL;
 }
 
 /**
@@ -300,15 +309,20 @@ char *process_ref_image_path(struct process_ref const *const ref, struct ov_erro
  * @return false when the process could not be terminated
  */
 bool process_ref_terminate(struct process_ref const *const ref, struct ov_error *const err) {
+  bool success = false;
+
   if ((ref == NULL) || (ref->handle == NULL) || (ref->handle == INVALID_HANDLE_VALUE)) {
     OV_ERROR_SET_GENERIC(err, ov_error_generic_invalid_argument);
-    return false;
+    goto cleanup;
   }
   if (!TerminateProcess((HANDLE)ref->handle, 0)) {
     OV_ERROR_SET_HRESULT(err, HRESULT_FROM_WIN32(GetLastError()));
-    return false;
+    goto cleanup;
   }
-  return true;
+  success = true;
+
+cleanup:
+  return success;
 }
 
 /**
@@ -321,27 +335,33 @@ bool process_ref_terminate(struct process_ref const *const ref, struct ov_error 
  * @return false when the wait could not be answered
  */
 bool process_ref_wait(struct process_ref const *const ref, uint32_t const timeout_ms, bool *const out_gone, struct ov_error *const err) {
+  bool success = false;
   DWORD wait = WAIT_FAILED;
 
   if ((ref == NULL) || (ref->handle == NULL) || (ref->handle == INVALID_HANDLE_VALUE) || (out_gone == NULL)) {
     OV_ERROR_SET_GENERIC(err, ov_error_generic_invalid_argument);
-    return false;
+    goto cleanup;
   }
   *out_gone = false;
   if (!process_ref_alive(ref)) {
     *out_gone = true;
-    return true;
+    success = true;
+    goto cleanup;
   }
   wait = WaitForSingleObject((HANDLE)ref->handle, timeout_ms);
   if (wait == WAIT_OBJECT_0) {
     *out_gone = true;
-    return true;
+    success = true;
+    goto cleanup;
   }
   if (wait == WAIT_TIMEOUT) {
-    return true;
+    success = true;
+    goto cleanup;
   }
   OV_ERROR_SET_HRESULT(err, HRESULT_FROM_WIN32(GetLastError()));
-  return false;
+
+cleanup:
+  return success;
 }
 
 /**

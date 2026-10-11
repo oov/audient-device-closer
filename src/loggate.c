@@ -7,19 +7,24 @@
  */
 bool loggate_should_emit(struct loggate *const gate, char const *const text) {
   size_t len = 0;
+  bool emit = true; // nothing to compare against, report rather than hide
 
   if ((gate == NULL) || (text == NULL)) {
-    return true; // nothing to compare against, report rather than hide
+    goto cleanup;
   }
   if ((gate->last != NULL) && (0 == strcmp(gate->last, text))) {
-    return false; // the same failure as the previous poll
+    emit = false; // the same failure as the previous poll
+    goto cleanup;
   }
   len = strlen(text) + 1;
   if (!OV_REALLOC(&gate->last, len, sizeof(gate->last[0]))) {
-    return true; // out of memory: repeating a message is safer than swallowing one
+    emit = true; // out of memory: repeating a message is safer than swallowing one
+    goto cleanup;
   }
   memcpy(gate->last, text, len);
-  return true;
+
+cleanup:
+  return emit;
 }
 
 /**

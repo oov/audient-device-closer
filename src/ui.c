@@ -767,12 +767,9 @@ static void repair_progress(enum repair_stage const stage, size_t const step, si
 static int repair_thread(void *const userdata) {
   struct repair_job *const job = (struct repair_job *)(void *)userdata;
   struct ov_error probe_err = {0};
-  struct ov_error log_err = {0};
   enum device_state state = DEVICE_STATE_UNKNOWN;
 
-  if (!logger_log_run_start(&log_err)) {
-    OV_ERROR_REPORT(&log_err, NULL);
-  }
+  logger_log_run_start();
   if (job->wait_first) {
     report_step(job, REPAIR_STAGE_WAIT, 1);
     if (job->settings) {
@@ -785,16 +782,12 @@ static int repair_thread(void *const userdata) {
   OV_ERROR_REPORT(&probe_err, NULL);
   if (ui_auto_run_action(job->wait_first, state) == UI_AUTO_RUN_LEAVE) {
     job->leave = true;
-    if (!logger_log_run_end(ui_auto_run_sentence(state), &log_err)) {
-      OV_ERROR_REPORT(&log_err, NULL);
-    }
+    logger_log_run_end(ui_auto_run_sentence(state));
   } else {
     job->ok = repair_run(
         job->settings, job->allow_mixer_close, job->allow_audiodg_close, repair_progress, job, &job->cancel, &job->result, &job->err);
     OV_ERROR_REPORT(&job->err, NULL);
-    if (!logger_log_run_end(job->result.message, &log_err)) {
-      OV_ERROR_REPORT(&log_err, NULL);
-    }
+    logger_log_run_end(job->result.message);
   }
   PostMessageW(job->hwnd, WM_ADC_DONE, 0, 0);
   return 0;

@@ -100,18 +100,29 @@ void logger_output(enum ov_error_severity const severity, char const *const str)
 bool logger_writef(char const *const tag, struct ov_error *const err, char const *const reference, ...);
 
 /**
+ * @brief Write one record for a message that carries numbers, reporting a failure itself
+ *
+ * The note records a step of a run, where the answer to a missing record is nothing more
+ * than a report: the log is the reader of these lines, so a failure to write one is
+ * reported there and nowhere else.  A caller that has to react to a missing record uses
+ * logger_writef and gives it an error of its own.
+ *
+ * @param tag the module the record belongs to, UTF-8, must not be NULL
+ * @param reference the pattern of the message, and its reference
+ * @param ... the values the pattern names
+ */
+void logger_notef(char const *const tag, char const *const reference, ...);
+
+/**
  * @brief Write the record that starts a run
  *
  * The records that frame one run of the repair: "=== start ===" and "=== end ===", which
  * say nothing but themselves.  The detail of the steps and the sentence of the run hang
  * between them, so a run with nothing to do still leaves a trace, and a reader who looks for
  * the close of a run finds the same line every time.  Without an open log all of these are
- * no-ops that report success.
- *
- * @param err receives the failure of the write
- * @return false when the record did not reach the file
+ * no-ops.  A failure to write one is reported where it stands.
  */
-bool logger_log_run_start(struct ov_error *const err);
+void logger_log_run_start(void);
 
 /**
  * @brief Write the sentence of a run and the record that ends it
@@ -121,7 +132,5 @@ bool logger_log_run_start(struct ov_error *const err);
  * that ends it, and the close of a run always reads the same.
  *
  * @param sentence the sentence of the run, may be NULL when it has nothing to say
- * @param err receives the failure of the write
- * @return false when a record did not reach the file
  */
-bool logger_log_run_end(char const *const sentence, struct ov_error *const err);
+void logger_log_run_end(char const *const sentence);
