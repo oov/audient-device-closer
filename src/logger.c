@@ -237,27 +237,35 @@ static void logger_string_free(char **const value) {
  *
  * The name of the log is built without touching the disk, so the machine-wide folder is made
  * here, at the moment the log is opened.  A portable copy needs nothing: its folder is the one
- * the executable already sits in.  Failing to make the folder is written where the answer of the
- * open goes, and the open is still tried, because the open carries the error the caller reports.
+ * the executable already sits in.  Without the folder the open cannot succeed either, so a
+ * failure here is the failure of the open.
  *
  * @param exe_path the executable the log belongs to, UTF-8
+ * @param err receives the failure of the folder
+ * @return false when the folder could not be made
  */
-static void logger_make_folder(char const *const exe_path) {
-  struct ov_error err = {0};
+static bool logger_make_folder(char const *const exe_path, struct ov_error *const err) {
   char *folder = NULL;
+  bool success = false;
 
   if (!paths_is_in_program_files(exe_path)) {
-    return;
+    success = true; // a portable copy writes next to itself, its folder exists already
+    goto cleanup;
   }
-  folder = paths_log_folder(&err);
+  folder = paths_log_folder(err);
   if (folder == NULL) {
-    OV_ERROR_REPORT(&err, NULL);
-    return;
+    OV_ERROR_ADD_TRACE(err);
+    goto cleanup;
   }
-  if (!paths_create_folder(folder, &err)) {
-    OV_ERROR_REPORT(&err, NULL);
+  if (!paths_create_folder(folder, err)) {
+    OV_ERROR_ADD_TRACE(err);
+    goto cleanup;
   }
+  success = true;
+
+cleanup:
   paths_string_free(&folder);
+  return success;
 }
 
 /**
@@ -432,19 +440,20 @@ static bool write_line(HANDLE const h, char const *const line, struct ov_error *
 /**
  * @brief Write the note that tells a reader of the file that its beginning was dropped
  *
- * A failure here is not worth an error of its own: the log is already short of records.
- *
  * @param h the file to append to
+ * @param err receives the failure of the write
+ * @return false when the note did not reach the file
  */
-static void write_trim_note(HANDLE const h) {
+static bool write_trim_note(HANDLE const h, struct ov_error *const err) {
   char note[128];
-  struct ov_error err = {0};
 
   if (OV_SNPRINTF(note, sizeof(note), NULL, "the log exceeded %d bytes, the oldest records were dropped", LOGGER_MAX_BYTES) > 0) {
-    if (!write_line(h, note, &err)) {
-      OV_ERROR_REPORT(&err, NULL);
+    if (!write_line(h, note, err)) {
+      OV_ERROR_ADD_TRACE(err);
+      return false;
     }
   }
+  return true;
 }
 
 /**
@@ -479,7 +488,10 @@ bool logger_open(struct ov_error *const err) {
     OV_ERROR_ADD_TRACE(err);
     goto cleanup;
   }
-  logger_make_folder(exe);
+  if (!logger_make_folder(exe, err)) {
+    OV_ERROR_ADD_TRACE(err);
+    goto cleanup;
+  }
   {
     int const n = OV_SNPRINTF(wide, sizeof(wide) / sizeof(wide[0]), NULL, L"%s", path);
     if ((n < 0) || ((size_t)n >= (sizeof(wide) / sizeof(wide[0])))) {
@@ -501,7 +513,10 @@ bool logger_open(struct ov_error *const err) {
       OV_ERROR_ADD_TRACE(err);
       goto cleanup;
     }
-    write_trim_note(h);
+    if (!write_trim_note(h, err)) {
+      OV_ERROR_ADD_TRACE(err);
+      goto cleanup;
+    }
   }
   zero.QuadPart = 0;
   if (!SetFilePointerEx(h, zero, NULL, FILE_END)) {

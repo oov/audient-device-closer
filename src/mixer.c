@@ -39,10 +39,11 @@ bool mixer_take(uint32_t const pid,
   }
   *out_found = false;
 
-  if (!process_ref_open(&ref, pid, false, err)) {
+  if (!process_ref_open(&ref, pid, false, NULL)) {
+    // a pid the record named may well be gone by now: that is not the failure of the
+    // caller, so the reason goes to the log and the answer stays "no blocker here"
     logger_notef("process", "reject pid=%lu start=0 image=(unknown) reason=the process could not be opened", (unsigned long)pid);
-    OV_ERROR_REPORT(err, NULL);
-    success = true; // a process that cannot be opened is no blocker, not a hard failure
+    success = true;
     goto cleanup;
   }
   if (!process_ref_alive(&ref)) {
@@ -51,13 +52,13 @@ bool mixer_take(uint32_t const pid,
     success = true;
     goto cleanup;
   }
-  image = process_ref_image_path(&ref, err);
+  image = process_ref_image_path(&ref, NULL);
   if (image == NULL) {
     logger_notef("process",
                  "reject pid=%lu start=%lld image=(unreadable) reason=the image of the process could not be read",
                  (unsigned long)pid,
                  ref.start_ms_utc);
-    OV_ERROR_ADD_TRACE(err);
+    success = true;
     goto cleanup;
   }
   if (!process_path_matches_name(image, exe_name)) {

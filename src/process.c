@@ -150,42 +150,49 @@ cleanup:
  * @brief Open a process, with SeDebugPrivilege when a plain open is refused
  *
  * Opens the process, and when the refusal is a plain access denial, tries the same open
- * once more with SeDebugPrivilege enabled.  out_error carries the reason of the last try.
+ * once more with SeDebugPrivilege enabled.
  *
  * @param pid the process to open
  * @param access what OpenProcess should be asked for
- * @param out_error receives the reason of the last refusal
- * @return the handle, INVALID_HANDLE_VALUE when the process could not be opened
+ * @param err receives the reason of the last refusal
+ * @return the handle, NULL when the process could not be opened
  */
-static HANDLE open_with_debug_privilege(uint32_t const pid, DWORD const access, DWORD *const out_error) {
+static HANDLE open_with_debug_privilege(uint32_t const pid, DWORD const access, struct ov_error *const err) {
   HANDLE h = NULL;
-  struct ov_error err = {0};
   bool was_on = false;
   bool changed = false;
+  DWORD last_error = ERROR_SUCCESS;
 
   h = OpenProcess(access, FALSE, pid);
   if (h != NULL) {
     return h;
   }
-  *out_error = GetLastError();
-  if (*out_error != ERROR_ACCESS_DENIED) {
+  last_error = GetLastError();
+  if (last_error != ERROR_ACCESS_DENIED) {
+    OV_ERROR_SET_HRESULT(err, HRESULT_FROM_WIN32(last_error));
     return NULL;
   }
-  if (!set_debug_privilege(true, &was_on, &err)) {
-    OV_ERROR_REPORT(&err, NULL);
+  if (!set_debug_privilege(true, &was_on, err)) {
+    // the privilege is what the retry needs, so its failure is the answer of the open
+    OV_ERROR_ADD_TRACE(err);
     return NULL;
   }
   changed = !was_on;
   h = OpenProcess(access, FALSE, pid);
   if (h == NULL) {
-    *out_error = GetLastError();
+    last_error = GetLastError();
   }
   if (changed) {
     bool ignored = false;
     struct ov_error restore_err = {0};
+    // the token is out of the picture either way: failing to put it back is worth a
+    // report and nothing more
     if (!set_debug_privilege(false, &ignored, &restore_err)) {
       OV_ERROR_REPORT(&restore_err, NULL);
     }
+  }
+  if (h == NULL) {
+    OV_ERROR_SET_HRESULT(err, HRESULT_FROM_WIN32(last_error));
   }
   return h;
 }
@@ -206,7 +213,6 @@ bool process_ref_open(struct process_ref *const out, uint32_t const pid, bool co
   bool success = false;
   DWORD const access = (need_terminate ? PROCESS_TERMINATE : 0) | PROCESS_QUERY_LIMITED_INFORMATION | SYNCHRONIZE;
   HANDLE h = NULL;
-  DWORD first_error = ERROR_SUCCESS;
   FILETIME creation;
   FILETIME exit;
   FILETIME kernel;
@@ -220,9 +226,9 @@ bool process_ref_open(struct process_ref *const out, uint32_t const pid, bool co
   out->handle = INVALID_HANDLE_VALUE;
   out->pid = pid;
 
-  h = open_with_debug_privilege(pid, access, &first_error);
+  h = open_with_debug_privilege(pid, access, err);
   if (h == NULL) {
-    OV_ERROR_SET_HRESULT(err, HRESULT_FROM_WIN32(first_error));
+    OV_ERROR_ADD_TRACE(err);
     goto cleanup;
   }
   memset(&creation, 0, sizeof(creation));
