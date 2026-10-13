@@ -80,17 +80,17 @@ static void test_terminate_and_wait(void) {
     TEST_SKIP("cannot spawn here");
     goto cleanup;
   }
-  if (!TEST_CHECK(process_ref_open(&ref, (uint32_t)pi.dwProcessId, true, &err) == true)) {
+  if (!TEST_SUCCEEDED(process_ref_open(&ref, (uint32_t)pi.dwProcessId, true, &err), &err)) {
     goto cleanup;
   }
   TEST_CHECK(process_ref_alive(&ref) == true);
   TEST_CHECK(ref.start_ms_utc > 0);
   image = process_ref_image_path(&ref, &err);
-  if (TEST_CHECK(image != NULL)) {
+  if (TEST_SUCCEEDED(image != NULL, &err)) {
     TEST_CHECK(process_path_matches_name(image, "cmd.exe") == true);
   }
-  TEST_CHECK(process_ref_terminate(&ref, &err) == true);
-  TEST_CHECK(process_ref_wait(&ref, 5000, &gone, &err) == true);
+  TEST_SUCCEEDED(process_ref_terminate(&ref, &err), &err);
+  TEST_SUCCEEDED(process_ref_wait(&ref, 5000, &gone, &err), &err);
   TEST_CHECK(gone == true);
   TEST_CHECK(process_ref_alive(&ref) == false);
 
@@ -106,7 +106,6 @@ cleanup:
     WaitForSingleObject(pi.hProcess, 5000);
     close_pi(&pi);
   }
-  OV_ERROR_REPORT(&err, NULL);
 }
 
 /**
@@ -115,18 +114,11 @@ cleanup:
 static void test_terminate_unknown_pid(void) {
   struct ov_error err = {0};
   struct process_ref ref;
-  int code = 0;
 
   memset(&ref, 0, sizeof(ref));
   ref.handle = NULL;
-  if (!TEST_CHECK(process_ref_open(&ref, 0xFFFFFFFFu, true, &err) == false)) {
-    goto cleanup;
-  }
-  TEST_CHECK(ov_error_get_code(&err, ov_error_type_hresult, &code));
-
-cleanup:
-  process_ref_close(&ref);
-  OV_ERROR_REPORT(&err, NULL);
+  TEST_FAILED_WITH(
+      process_ref_open(&ref, 0xFFFFFFFFu, true, &err), &err, ov_error_type_hresult, (int)HRESULT_FROM_WIN32(ERROR_INVALID_PARAMETER));
 }
 
 /**

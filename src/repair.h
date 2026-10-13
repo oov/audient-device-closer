@@ -6,6 +6,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "device.h"
 #include "removal.h"
 
 struct settings;
@@ -33,13 +34,14 @@ enum repair_outcome {
  *
  * The outcome of the run and, when the system refused the removal, why.  The sentences
  * themselves are chosen by the UI, next to the dialog that shows them; the numbers stay in
- * the log.
+ * the log.  The reason of a refusal is carried as the code of the removal error, 0 when
+ * the outcome is not a refusal of the removal.
  */
 struct repair_result {
   enum repair_outcome outcome;
-  enum removal_reason removal_reason; // REMOVAL_REASON_NONE unless the removal was refused
-  struct culprit *culprits;           // ovarray or NULL.  released by repair_result_release
-  char message[512];                  // UTF-8, meant for the UI log
+  enum removal_error_code removal_error; // 0 unless the removal was refused
+  struct culprit *culprits;              // ovarray or NULL.  released by repair_result_release
+  char message[512];                     // UTF-8, meant for the UI log
 };
 
 /**
@@ -55,6 +57,15 @@ struct repair_result {
  * @param out_size room of out
  */
 void repair_option_mixer_label(struct settings const *const s, char *const out, size_t const out_size);
+
+/**
+ * @brief The words the stage report shows while a mixer is being closed, same names as the option
+ *
+ * @param s the settings that name the mixer, may be NULL for the defaults
+ * @param out receives the caption, UTF-8, always terminated
+ * @param out_size room of out
+ */
+void repair_stage_mixer_caption(struct settings const *const s, char *const out, size_t const out_size);
 
 /**
  * @brief The words of the setting that lets this tool close the audio engine
@@ -74,12 +85,23 @@ struct repair_blocker {
   bool found; //!< false when the record names only blockers this tool may not close
   uint32_t pid;
   long long event_time_ms;
+  char const *name; //!< the mixer image name of the settings that matched, borrowed
 };
 
 /**
  * @brief Maximum number of blockers this tool will close at once
  */
-#define REPAIR_MAX_BLOCKERS 16
+#define REPAIR_MAX_BLOCKERS 32
+
+/**
+ * @brief How long the confirmation waits between two looks at a released device
+ *
+ * The release puts the device back on the bus, and the bus takes a moment to bring it up
+ * again.  The confirmation looks once a second, for as long as the settings let it wait:
+ * a device that is healthy within that window is found by it, and one that never comes
+ * back is reported as a failure the reason of which is not known.
+ */
+#define REPAIR_CONFIRM_POLL_INTERVAL_MS 1000
 
 /**
  * @brief The blockers the run may close, in the order they are closed
@@ -107,22 +129,26 @@ struct repair_blockers {
  * The caller can show it while it happens.
  */
 enum repair_stage {
-  REPAIR_STAGE_WAIT,       // the devices are still coming back on the bus
-  REPAIR_STAGE_PROBE,      // the state of the device is being determined
-  REPAIR_STAGE_REMOVE,     // the removal is with the system, waiting for its answer
-  REPAIR_STAGE_MIXER,      // the mixer is being closed and waited for
-  REPAIR_STAGE_AUDIODG,    // audiodg is being closed and waited for
-  REPAIR_STAGE_VETO_RECORD // the veto record is being waited for and read
+  REPAIR_STAGE_WAIT,        // the devices are still coming back on the bus
+  REPAIR_STAGE_PROBE,       // the state of the devices is being determined
+  REPAIR_STAGE_REMOVE,      // the removal is with the system, waiting for its answer
+  REPAIR_STAGE_MIXER,       // the mixer is being closed and waited for
+  REPAIR_STAGE_AUDIODG,     // audiodg is being closed and waited for
+  REPAIR_STAGE_VETO_RECORD, // the veto record is being waited for and read
+  REPAIR_STAGE_CONFIRM      // the released device is being asked whether it is an audio device again
 };
 
 /**
- * @brief The longest way through the run, in steps
+ * @brief The steps one device takes on the longest way through its repair
  *
- * Probe, remove, the veto record, the two closable blockers and then the second removal with
- * its veto record.  A shorter way stops early; step counts up to this total.  The wait a
- * scheduled run starts with is counted by the caller on top of these.
+ * Remove, the veto record, the two closable blockers, the second
+ * removal, the second veto record and the confirmation that the
+ * device came back as an audio device.  A shorter way stops early;
+ * the run counts up to this many steps for every device it repairs.
+ * The wait a scheduled run starts with and the probe of the devices
+ * are counted by the caller on top of these.
  */
-enum { REPAIR_STEPS_TOTAL = 7 };
+enum { REPAIR_STEPS_PER_TARGET = 7 };
 
 /**
  * @brief Reports the progress of a run
@@ -142,6 +168,8 @@ typedef void (*repair_progress_fn)(enum repair_stage const stage, size_t const s
  * settings.
  *
  * @param s the settings this run works for
+ * @param targets the devices to repair, NULL says the run looks for the faulted
+ *        devices itself; an empty list is the same as no device at all
  * @param allow_mixer_close the user allowed closing the mixer
  * @param allow_audiodg_close the user allowed closing the audio engine
  * @param progress may be NULL; it is called from the thread that runs the repair
@@ -156,6 +184,7 @@ typedef void (*repair_progress_fn)(enum repair_stage const stage, size_t const s
  *         starts, so err is only worth reading when the call returns false.
  */
 bool repair_run(struct settings const *const s,
+                struct device_target *const targets,
                 bool const allow_mixer_close,
                 bool const allow_audiodg_close,
                 repair_progress_fn const progress,

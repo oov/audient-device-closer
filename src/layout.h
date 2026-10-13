@@ -59,6 +59,18 @@ enum adc_layout {
   ADC_LAYOUT_PROGRESS_CANCEL_H = 26, /* the button that asks the run to stop */
   ADC_LAYOUT_PROGRESS_CANCEL_W = 120,
 
+  /* The window that asks which device to repair when none of the connected
+     devices is in the state this tool cures.  It holds the sentence that
+     says so, the combo of the connected devices under it and the two buttons
+     that answer the question.  Its least width is below; the window grows to
+     the widest line the combo holds, so no name is cut off. */
+  ADC_LAYOUT_PICKER_W = 360,         /* the least width the sentences read in */
+  ADC_LAYOUT_PICKER_LABEL_H = 40,    /* the two sentences that ask the question */
+  ADC_LAYOUT_PICKER_COMBO_H = 26,    /* the combo of the connected devices */
+  ADC_LAYOUT_PICKER_COMBO_INSET = 8, /* the frame and the padding the combo draws its line away from */
+  ADC_LAYOUT_PICKER_BUTTON_H = 26,   /* the two buttons that answer it */
+  ADC_LAYOUT_PICKER_BUTTON_W = 120,
+
   /* The window that shows the processes that block the close.  It holds the sentence
      that says why the close did not go through, the list of the veto records under it
      and the button that takes the window down.  Unlike the main window it is resizable:
@@ -186,6 +198,27 @@ struct progress_layout {
   RECT cancel;       /* the button that asks the run to stop */
   int needed_height; /* the client height the stack needs, the window is made that tall */
 };
+
+/**
+ * @brief Every rectangle of the window that asks which device to repair
+ *
+ * The stack is placed from the top edge the way the progress window is.
+ */
+struct picker_layout {
+  RECT label;  /* the sentence that asks the question */
+  RECT combo;  /* the connected devices, one line each */
+  RECT ok;     /* the button that repairs the chosen device */
+  RECT cancel; /* the button that answers nothing */
+};
+
+/**
+ * @brief Compute the geometry of the window that asks which device to repair
+ *
+ * @param width  the client width of the window in pixels
+ * @param dpi    the dpi of the window
+ * @param out    receives the geometry
+ */
+void layout_picker_compute(int const width, UINT const dpi, struct picker_layout *const out);
 
 /**
  * @brief Compute the geometry of the progress window

@@ -154,9 +154,11 @@ add_executable(adc
   main.c
   ui.c
   ui_blockers_window.c
+  ui_device_picker.c
   ui_progress_window.c
   theme.c
   theme_button.c
+  theme_combo.c
   theme_header.c
 )
 # The rc compiler picks the manifest by this define, so the debug build starts with the
@@ -233,6 +235,7 @@ add_executable(test_ui
   ui_progress_window.c
   theme.c
   theme_button.c
+  theme_combo.c
   theme_header.c
   app.rc
   "${CMAKE_CURRENT_BINARY_DIR}/i18n.rc"

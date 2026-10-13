@@ -99,6 +99,28 @@ enum ui_auto_run {
 enum ui_auto_run ui_auto_run_action(bool auto_run, enum device_state state);
 
 /**
+ * @brief What a press of the button does with the devices it finds
+ *
+ * The answer comes from the state the devices are in at the moment of the press, not from
+ * the state an earlier one saw: a run that repaired a device leaves it working, and the
+ * next press has to find that out for itself.
+ */
+enum ui_press {
+  UI_PRESS_NOT_REPAIRABLE, //!< no device is connected, or none this tool can handle
+  UI_PRESS_REPAIR,         //!< at least one device is faulted: repair those right away
+  UI_PRESS_ASK,            //!< every device works: ask which one to release
+};
+
+/**
+ * @brief What a press of the button does with the devices it finds
+ *
+ * @param targets the devices that are connected, the state each one is in
+ * @param target_count how many devices the list holds
+ * @return what the press should do
+ */
+enum ui_press ui_press_action(struct device_target const *const targets, size_t const target_count);
+
+/**
  * @brief What the run of the scheduler says about the state it found
  *
  * A run that found nothing to do leaves one sentence in the log, and the sentence is the
@@ -111,31 +133,6 @@ enum ui_auto_run ui_auto_run_action(bool auto_run, enum device_state state);
 char const *ui_auto_run_sentence(enum device_state state);
 
 /**
- * @brief Does a press of the close button have to ask before the run starts
- *
- * A device that is not in the faulty state does not need the close at all, and the close
- * of one that works is likely to be refused, so the reader is asked first.  The run nobody
- * is watching does not come through the button, so it is never asked.
- *
- * @param faulted the device is in the state this tool is for
- * @return true when the person should be asked first
- */
-bool ui_asks_before_close(bool faulted);
-
-/**
- * @brief The two lines of that question
- *
- * The headline names the state that was found, the body names the risk and asks.  Buffers
- * the caller owns, both UTF-8.
- *
- * @param headline receives the question, UTF-8
- * @param headline_size room of headline
- * @param body receives what the answer is about, UTF-8
- * @param body_size room of body
- */
-void ui_confirm_dialog_text(char *headline, size_t headline_size, char *body, size_t body_size);
-
-/**
  * @brief Both lines of the result dialog at once
  *
  * headline and body are UTF-8 buffers the caller owns.  This is what the dialog is handed,
@@ -146,11 +143,11 @@ void ui_confirm_dialog_text(char *headline, size_t headline_size, char *body, si
  * sentence for the log and has no way into the dialog.
  *
  * @param outcome what came of the run
- * @param reason why the removal was refused
+ * @param removal_error why the removal was refused, removal_error_none when it was for another reason
  * @param headline receives the verdict, UTF-8
  * @param headline_size room of headline
  * @param body receives what happened, UTF-8
  * @param body_size room of body
  */
 void ui_result_dialog_text(
-    enum repair_outcome outcome, enum removal_reason reason, char *headline, size_t headline_size, char *body, size_t body_size);
+    enum repair_outcome outcome, enum removal_error_code removal_error, char *headline, size_t headline_size, char *body, size_t body_size);

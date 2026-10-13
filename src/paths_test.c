@@ -97,15 +97,15 @@ static void test_files_beside_the_running_executable(void) {
   char *json = NULL;
 
   exe = paths_executable(&err);
-  if (!TEST_CHECK(exe != NULL)) {
+  if (!TEST_SUCCEEDED(exe != NULL, &err)) {
     goto cleanup;
   }
   log = paths_replace_extension(exe, kLog, &err);
-  if (!TEST_CHECK(log != NULL)) {
+  if (!TEST_SUCCEEDED(log != NULL, &err)) {
     goto cleanup;
   }
   json = paths_replace_extension(exe, kJson, &err);
-  if (!TEST_CHECK(json != NULL)) {
+  if (!TEST_SUCCEEDED(json != NULL, &err)) {
     goto cleanup;
   }
   if (!TEST_CHECK(ends_with(log, kLog) && ends_with(json, kJson))) {
@@ -126,7 +126,6 @@ cleanup:
   if (json != NULL) {
     OV_FREE(&json);
   }
-  OV_ERROR_REPORT(&err, NULL);
 }
 
 /**
@@ -162,7 +161,6 @@ static void test_log_folder_is_the_machines(void) {
 
 cleanup:
   paths_string_free(&folder);
-  OV_ERROR_REPORT(&err, NULL);
 }
 
 /**
@@ -183,10 +181,10 @@ static void test_create_folder(void) {
     TEST_SKIP("want a temporary folder to build in");
     return;
   }
-  if (!ov_sprintf_char(&folder, &err, NULL, "%ls\\adc-paths-test-%lu", tmp, (unsigned long)GetCurrentProcessId())) {
+  if (!TEST_SUCCEEDED(ov_sprintf_char(&folder, &err, NULL, "%ls\\adc-paths-test-%lu", tmp, (unsigned long)GetCurrentProcessId()), &err)) {
     goto cleanup;
   }
-  if (!ov_sprintf_wchar(&wide, &err, NULL, L"%s", folder)) {
+  if (!TEST_SUCCEEDED(ov_sprintf_wchar(&wide, &err, NULL, L"%s", folder), &err)) {
     goto cleanup;
   }
   RemoveDirectoryW(wide); // a run that left the folder behind must not decide the first case
@@ -208,7 +206,6 @@ cleanup:
     OV_ARRAY_DESTROY(&wide);
   }
   paths_string_free(&folder);
-  OV_ERROR_REPORT(&err, NULL);
 }
 
 TEST_LIST = {

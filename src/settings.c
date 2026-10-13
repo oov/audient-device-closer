@@ -21,6 +21,22 @@
 #include "paths.h"
 
 /**
+ * @brief The delay a run nobody is watching waits before it looks at the devices
+ *
+ * The settings file may say another value; this is the one the
+ * settings fall back to when the file does not say.
+ */
+enum { adc_settings_auto_run_delay_ms = 5000 };
+
+/**
+ * @brief How long the confirmation waits for a released device to come back
+ *
+ * The settings file may say another value; this is the one the settings fall back to when
+ * the file does not say.
+ */
+enum { adc_settings_confirm_max_wait_ms = 5000 };
+
+/**
  * @brief The allocator yyjson works through
  *
  * yyjson must go through the ovbase allocator, otherwise its blocks are invisible to the
@@ -239,6 +255,251 @@ static bool get_bool_optional(yyjson_val *const root, char const *const key, boo
 }
 
 /**
+ * @brief Add one image name of the mixer list to the growing list
+ *
+ * @param out the list to grow
+ * @param item one entry of the list
+ * @param err receives the problem of the entry
+ * @return false when the entry is refused or there is no memory for it
+ */
+static bool mixer_name_push(char ***const out, yyjson_val *const item, struct ov_error *const err) {
+  bool success = false;
+  char *name = NULL;
+
+  if (!yyjson_is_str(item)) {
+    OV_ERROR_SET(err, ov_error_type_generic, ov_error_generic_invalid_argument, "every mixer image name must be a string");
+    goto cleanup;
+  }
+  name = DUP_TEXT(yyjson_get_str(item));
+  if (name == NULL) {
+    OV_ERROR_SET_GENERIC(err, ov_error_generic_out_of_memory);
+    goto cleanup;
+  }
+  if (name[0] == '\0') {
+    OV_ERROR_SET(err, ov_error_type_generic, ov_error_generic_invalid_argument, "a mixer image name must not be empty");
+    goto cleanup;
+  }
+  if (!OV_ARRAY_PUSH(out, name)) {
+    OV_ERROR_SET_GENERIC(err, ov_error_generic_out_of_memory);
+    goto cleanup;
+  }
+  name = NULL;
+  success = true;
+
+cleanup:
+  if (name != NULL) {
+    OV_FREE(&name);
+  }
+  return success;
+}
+
+/**
+ * @brief Read one list of image names of the settings file
+ *
+ * The list holds the image names of the processes this program may close.
+ *
+ * @param root the object that holds the key
+ * @param key the key of the list
+ * @param required when true, a key that is not there is an error
+ * @param out receives the growing list, owned by the caller afterwards
+ * @param err receives the problem of the list
+ * @return false when the list is missing, of the wrong shape or out of memory
+ */
+static bool
+get_str_list(yyjson_val *const root, char const *const key, bool const required, char ***const out, struct ov_error *const err) {
+  yyjson_val *v = yyjson_obj_get(root, key);
+  size_t n = 0;
+  bool pushed_all = true;
+
+  if (v == NULL) {
+    if (required) {
+      OV_ERROR_SETF(
+          err, ov_error_type_generic, ov_error_generic_not_found, "the settings file has no %1$hs", "the settings file has no %1$hs", key);
+      return false;
+    }
+    return true;
+  }
+  if (!yyjson_is_arr(v)) {
+    OV_ERROR_SETF(err, ov_error_type_generic, ov_error_generic_invalid_argument, "%1$hs must be an array", "%1$hs must be an array", key);
+    return false;
+  }
+  n = yyjson_arr_size(v);
+  if (n == 0) {
+    OV_ERROR_SETF(err,
+                  ov_error_type_generic,
+                  ov_error_generic_invalid_argument,
+                  "%1$hs must name at least one image",
+                  "%1$hs must name at least one image",
+                  key);
+    return false;
+  }
+  for (size_t i = 0; i < n; ++i) {
+    if (!mixer_name_push(out, yyjson_arr_get(v, i), err)) {
+      pushed_all = false;
+      break;
+    }
+  }
+  if (!pushed_all) {
+    OV_ERROR_ADD_TRACE(err);
+    return false;
+  }
+  return true;
+}
+
+/**
+ * @brief Read one device of the device table and hand over its two strings
+ *
+ * The table is the name and the identifier of every device this program supports.  Both
+ * are required and neither may be empty.
+ *
+ * @param item one entry of the table
+ * @param out receives the entry, owned by the caller afterwards
+ * @param err receives the problem of the entry
+ * @return false when the entry is not a device this program can run with
+ */
+static bool device_entry_load(yyjson_val *const item, struct device_entry *const out, struct ov_error *const err) {
+  bool success = false;
+  char *name = NULL;
+  char *id = NULL;
+
+  if (!yyjson_is_obj(item)) {
+    OV_ERROR_SET(err, ov_error_type_generic, ov_error_generic_invalid_argument, "every device must be an object");
+    goto cleanup;
+  }
+  if (!get_str(item, "name", true, &name, err)) {
+    OV_ERROR_ADD_TRACE(err);
+    goto cleanup;
+  }
+  if (name[0] == '\0') {
+    OV_ERROR_SET(err, ov_error_type_generic, ov_error_generic_invalid_argument, "a device name must not be empty");
+    goto cleanup;
+  }
+  if (!get_str(item, "id", true, &id, err)) {
+    OV_ERROR_ADD_TRACE(err);
+    goto cleanup;
+  }
+  if (id[0] == '\0') {
+    OV_ERROR_SET(err, ov_error_type_generic, ov_error_generic_invalid_argument, "a device identifier must not be empty");
+    goto cleanup;
+  }
+  out->name = name;
+  name = NULL;
+  out->id = id;
+  id = NULL;
+  success = true;
+
+cleanup:
+  if (name) {
+    OV_FREE(&name);
+  }
+  if (id) {
+    OV_FREE(&id);
+  }
+  return success;
+}
+
+/**
+ * @brief Add one device of the table to the growing list
+ *
+ * @param out the list to grow
+ * @param item one entry of the table
+ * @param err receives the problem of the entry
+ * @return false when the entry is refused or there is no memory for it
+ */
+static bool device_push(struct device_entry **const out, yyjson_val *const item, struct ov_error *const err) {
+  bool success = false;
+  struct device_entry e;
+
+  memset(&e, 0, sizeof(e));
+  if (!device_entry_load(item, &e, err)) {
+    OV_ERROR_ADD_TRACE(err);
+    goto cleanup;
+  }
+  if (!OV_ARRAY_PUSH(out, e)) {
+    OV_ERROR_SET_GENERIC(err, ov_error_generic_out_of_memory);
+    goto cleanup;
+  }
+  success = true;
+
+cleanup:
+  if (!success) {
+    OV_FREE(&e.id);
+    OV_FREE(&e.name);
+  }
+  return success;
+}
+
+/**
+ * @brief Read the device table of the settings file
+ *
+ * The key is optional: a file that an older build wrote named the devices another way.
+ *
+ * @param root the object that holds the key
+ * @param out receives the growing list, owned by the caller afterwards
+ * @param err receives the problem of the table
+ * @return false when the table is not one this program can run with
+ */
+static bool get_devices(yyjson_val *const root, struct device_entry **const out, struct ov_error *const err) {
+  bool success = false;
+  yyjson_val *v = yyjson_obj_get(root, "devices");
+  size_t n = 0;
+  bool pushed_all = true;
+
+  if (v == NULL) {
+    success = true;
+    goto cleanup;
+  }
+  if (!yyjson_is_arr(v)) {
+    OV_ERROR_SET(err, ov_error_type_generic, ov_error_generic_invalid_argument, "devices must be an array");
+    goto cleanup;
+  }
+  n = yyjson_arr_size(v);
+  if (n == 0) {
+    OV_ERROR_SET(err, ov_error_type_generic, ov_error_generic_invalid_argument, "devices must name at least one device");
+    goto cleanup;
+  }
+  for (size_t i = 0; i < n; ++i) {
+    if (!device_push(out, yyjson_arr_get(v, i), err)) {
+      pushed_all = false;
+      break;
+    }
+  }
+  if (!pushed_all) {
+    OV_ERROR_ADD_TRACE(err);
+    goto cleanup;
+  }
+  success = true;
+
+cleanup:
+  return success;
+}
+
+/**
+ * @brief Read the device table this program looks at
+ *
+ * @param root the object that holds the keys
+ * @param out filled in and owned by the caller afterwards
+ * @param err receives the problem of the devices
+ * @return false when the table is missing or not one this program can run with
+ */
+static bool load_devices(yyjson_val *const root, struct settings *const out, struct ov_error *const err) {
+  if (!get_devices(root, &out->devices, err)) {
+    OV_ERROR_ADD_TRACE(err);
+    return false;
+  }
+  if (OV_ARRAY_LENGTH(out->devices) == 0) {
+    OV_ERROR_SETF(err,
+                  ov_error_type_generic,
+                  ov_error_generic_not_found,
+                  "the settings file has no %1$hs",
+                  "the settings file has no %1$hs",
+                  "devices");
+    return false;
+  }
+  return true;
+}
+
+/**
  * @brief Fill the settings from the text of the file
  *
  * Nothing is read from disk here.  Required keys must be strings, veto_event_id must
@@ -281,7 +542,7 @@ static bool settings_apply_json(char const *const json_utf8, struct settings *co
     OV_ERROR_ADD_TRACE(err);
     goto cleanup;
   }
-  if (!get_str(root, "ks_instance_prefix", false, &out->ks_instance_prefix, err)) {
+  if (!load_devices(root, out, err)) {
     OV_ERROR_ADD_TRACE(err);
     goto cleanup;
   }
@@ -297,7 +558,7 @@ static bool settings_apply_json(char const *const json_utf8, struct settings *co
     OV_ERROR_ADD_TRACE(err);
     goto cleanup;
   }
-  if (!get_str(root, "mixer_process_name", true, &out->mixer_process_name, err)) {
+  if (!get_str_list(root, "mixer_process_names", true, &out->mixer_process_names, err)) {
     OV_ERROR_ADD_TRACE(err);
     goto cleanup;
   }
@@ -305,18 +566,11 @@ static bool settings_apply_json(char const *const json_utf8, struct settings *co
     OV_ERROR_ADD_TRACE(err);
     goto cleanup;
   }
-  if (!get_str(root, "mixer_display_name", false, &out->mixer_display_name, err)) {
+  if (!get_ulong_full(root, "auto_run_delay_ms", false, 0, 600000, adc_settings_auto_run_delay_ms, &out->auto_run_delay_ms, err)) {
     OV_ERROR_ADD_TRACE(err);
     goto cleanup;
   }
-  if (out->mixer_display_name == NULL) {
-    out->mixer_display_name = DUP_TEXT("iD Mixer");
-    if (out->mixer_display_name == NULL) {
-      OV_ERROR_SET_GENERIC(err, ov_error_generic_out_of_memory);
-      goto cleanup;
-    }
-  }
-  if (!get_ulong_full(root, "auto_run_delay_ms", false, 0, 600000, 5000UL, &out->auto_run_delay_ms, err)) {
+  if (!get_ulong_full(root, "confirm_max_wait_ms", false, 0, 600000, adc_settings_confirm_max_wait_ms, &out->confirm_max_wait_ms, err)) {
     OV_ERROR_ADD_TRACE(err);
     goto cleanup;
   }
@@ -466,13 +720,51 @@ void settings_release(struct settings *const s) {
     return;
   }
   OV_FREE(&s->ks_service);
-  OV_FREE(&s->ks_instance_prefix);
+  if (s->devices != NULL) {
+    size_t const n = OV_ARRAY_LENGTH(s->devices);
+    for (size_t i = 0; i < n; ++i) {
+      OV_FREE(&s->devices[i].id);
+      OV_FREE(&s->devices[i].name);
+    }
+    OV_ARRAY_DESTROY(&s->devices);
+  }
   OV_FREE(&s->veto_log_name);
   OV_FREE(&s->veto_provider_name);
-  OV_FREE(&s->mixer_process_name);
-  OV_FREE(&s->mixer_display_name);
+  if (s->mixer_process_names != NULL) {
+    size_t const n = OV_ARRAY_LENGTH(s->mixer_process_names);
+    for (size_t i = 0; i < n; ++i) {
+      OV_FREE(&s->mixer_process_names[i]);
+    }
+    OV_ARRAY_DESTROY(&s->mixer_process_names);
+  }
   OV_FREE(&s->task_name);
   s->veto_event_id = 0;
+}
+
+/**
+ * @brief The mixer image names the settings carry, read only
+ *
+ * @param s the settings to read from, may be NULL
+ * @return the names as a flat read-only array, NULL when there is none
+ */
+char const *const *settings_mixer_names(struct settings const *const s) {
+  if ((s == NULL) || (s->mixer_process_names == NULL)) {
+    return NULL;
+  }
+  return (char const *const *)(void const *)s->mixer_process_names;
+}
+
+/**
+ * @brief How many mixer image names the settings carry
+ *
+ * @param s the settings to read from, may be NULL
+ * @return the count, 0 when there is none
+ */
+size_t settings_mixer_name_count(struct settings const *const s) {
+  if ((s == NULL) || (s->mixer_process_names == NULL)) {
+    return 0;
+  }
+  return OV_ARRAY_LENGTH(s->mixer_process_names);
 }
 
 /**

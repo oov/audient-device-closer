@@ -3,6 +3,7 @@
 #include "task.h"
 #include "theme.h"
 #include "ui_blockers_window.h"
+#include "ui_device_picker.h"
 #include "ui_progress_window.h"
 
 #include <windows.h>
@@ -38,12 +39,14 @@
 struct repair_job {
   HWND hwnd;
   struct settings const *settings;
+  struct device_target *targets; // the devices to repair, NULL says the run looks for them
   bool allow_mixer_close;
   bool allow_audiodg_close;
   bool wait_first; // the run of the scheduler: it waits for the devices before it looks
   bool cancel;     // the run quits between its steps when this is up; written by the UI thread only
   bool ok;
-  bool leave; // nothing to fix: the run leaves the window behind
+  bool leave;   // nothing to fix: the run leaves the window behind
+  size_t total; // how many steps the run says the longest way takes, 0 until it says
   struct repair_result result;
   struct ov_error err;
 };
@@ -72,8 +75,6 @@ struct ui_state {
   RECT install_caption_rc;
   int dpi;
   bool busy;
-  bool faulted;
-  enum device_state state;
   bool close_when_done;
   HWND progress;
   struct repair_job job;
@@ -176,18 +177,19 @@ static void stage_text(enum repair_stage const stage, struct settings const *con
     strncpy(out, gettext("Checking what is blocking the close..."), out_size - 1);
     out[out_size - 1] = '\0';
     return;
-  case REPAIR_STAGE_MIXER: {
-    char const *const display = (s != NULL && s->mixer_display_name != NULL) ? s->mixer_display_name : "iD Mixer";
-    char const *const exe = (s != NULL && s->mixer_process_name != NULL) ? s->mixer_process_name : "iD.exe";
-    OV_SNPRINTF(out, out_size, "%1$s%2$s", gettext("Closing %1$s (%2$s)..."), display, exe);
+  case REPAIR_STAGE_MIXER:
+    repair_stage_mixer_caption(s, out, out_size);
     return;
-  }
   case REPAIR_STAGE_AUDIODG:
     strncpy(out, gettext("Closing audiodg (audiodg.exe)..."), out_size - 1);
     out[out_size - 1] = '\0';
     return;
   case REPAIR_STAGE_REMOVE:
     break;
+  case REPAIR_STAGE_CONFIRM:
+    strncpy(out, gettext("Waiting for the device to come back..."), out_size - 1);
+    out[out_size - 1] = '\0';
+    return;
   }
   strncpy(out, default_stage_text(), out_size - 1);
   out[out_size - 1] = '\0';
@@ -273,81 +275,6 @@ static void remove_task(struct ui_state *const st, HWND const hwnd) {
 
   OV_ERROR_REPORT(&err, NULL);
   report_task_step(hwnd, ok, gettext("The scheduled task was removed."), gettext("The scheduled task could not be removed."));
-}
-
-/**
- * @brief Ask before the close when the device does not need it
- *
- * A healthy device does not need the close at all and the close of one that works is
- * likely to be refused, so that press is worth a question; the faulty one is the case this
- * tool exists for and starts at once.  The answer comes back as yes or no, and no leaves
- * the window as it was.
- *
- * @param owner the window that is asking
- * @return false when the person said no
- */
-static bool confirm_close(HWND const owner) {
-  TASKDIALOGCONFIG cfg;
-  wchar_t app[64];
-  wchar_t wheadline[256];
-  wchar_t wbody[512];
-  char headline[256];
-  char body[512];
-  int button = 0;
-
-  ui_confirm_dialog_text(headline, sizeof(headline), body, sizeof(body));
-  if ((headline[0] == '\0') || (body[0] == '\0')) {
-    return true;
-  }
-  if (OV_SNPRINTF(wheadline, sizeof(wheadline) / sizeof(WCHAR), ph, ph, headline) < 0) {
-    return true;
-  }
-  if (OV_SNPRINTF(wbody, sizeof(wbody) / sizeof(WCHAR), ph, ph, body) < 0) {
-    return true;
-  }
-  memset(&cfg, 0, sizeof(cfg));
-  OV_SNPRINTF(app, sizeof(app) / sizeof(WCHAR), ph, ph, gettext("Audient Device Closer"));
-  cfg.cbSize = sizeof(cfg);
-  cfg.hwndParent = owner;
-  cfg.dwFlags = TDF_ALLOW_DIALOG_CANCELLATION;
-  cfg.pszWindowTitle = app;
-  cfg.pszMainInstruction = wheadline;
-  cfg.pszContent = wbody;
-  cfg.dwCommonButtons = TDCBF_YES_BUTTON | TDCBF_NO_BUTTON;
-  cfg.nDefaultButton = IDNO; // a press of Enter follows the answer the reader likely meant
-  cfg.pszMainIcon = TD_WARNING_ICON;
-  if (TaskDialogIndirect(&cfg, &button, NULL, NULL) != S_OK) {
-    return MessageBoxW(owner, wbody, wheadline, MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2) == IDYES;
-  }
-  return button == IDYES;
-}
-
-enum { ADC_FONT_CHILD_COUNT = 7 };
-
-/**
- * @brief Every control that carries the font of the window
- *
- * The buffer of the caller is sized from ADC_FONT_CHILD_COUNT: a ninth control makes the
- * compiler complain about the extra initializer instead of silently dropping the last
- * entry at run time, which is how the remove button of the install group lost its font.
- *
- * @param st the window that holds the controls
- * @param out receives the controls
- * @param max room of out
- * @return how many controls were written
- */
-static size_t ui_children(struct ui_state *const st, HWND *const out, size_t const max) {
-  HWND const kids[ADC_FONT_CHILD_COUNT] = {
-      st->close_btn, st->chk_mixer, st->chk_audiodg, st->group_settings, st->group_install, st->task_install, st->task_remove};
-  size_t n = 0;
-  size_t i = 0;
-
-  for (i = 0; i < (sizeof(kids) / sizeof(kids[0])); i++) {
-    if (kids[i] != NULL && n < max) {
-      out[n++] = kids[i];
-    }
-  }
-  return n;
 }
 
 /**
@@ -666,9 +593,11 @@ static void apply_window_size(struct ui_state const *const st, HWND const hwnd, 
  * @param dpi the dpi to draw for
  */
 static void apply_dpi(struct ui_state *const st, HWND const hwnd, int const dpi) {
+  /* the controls the font of the window goes to: a control added
+   * here is one line, and the count is the array's own */
+  HWND const kids[] = {
+      st->close_btn, st->chk_mixer, st->chk_audiodg, st->group_settings, st->group_install, st->task_install, st->task_remove};
   HFONT stale = NULL;
-  HWND kids[ADC_FONT_CHILD_COUNT];
-  size_t n = 0;
   size_t i = 0;
   RECT rc;
   int settings_w = 0;
@@ -684,9 +613,10 @@ static void apply_dpi(struct ui_state *const st, HWND const hwnd, int const dpi)
     goto cleanup;
   }
   st->dpi = dpi;
-  n = ui_children(st, kids, (sizeof(kids) / sizeof(kids[0])));
-  for (i = 0; i < n; i++) {
-    SendMessageW(kids[i], WM_SETFONT, (WPARAM)st->font, TRUE);
+  for (i = 0; i < (sizeof(kids) / sizeof(kids[0])); i++) {
+    if (kids[i] != NULL) {
+      SendMessageW(kids[i], WM_SETFONT, (WPARAM)st->font, TRUE);
+    }
   }
   settings_w = settings_group_width(st, hwnd);
   apply_window_size(st, hwnd, settings_w);
@@ -702,26 +632,38 @@ cleanup:
 }
 
 /**
- * @brief Look at the device and set what the next press answers from
+ * @brief The state the reader has to hear about first
  *
- * Nothing on the screen shows the state; the button is what reads it.
+ * A problem outranks a state nobody knows, which outranks
+ * the fault this tool cures, which outranks a device that
+ * works.  A list that holds no device is the state of no
+ * device at all.
  *
- * @param st the window that carries the state
- * @return the state the device is in now
+ * @param targets the devices the walk found
+ * @param count how many devices the list holds
+ * @param faulted receives the answer: a device is in the state this tool cures
+ * @return the state the press answers from
  */
-static enum device_state refresh(struct ui_state *const st) {
-  enum device_state state = DEVICE_STATE_UNKNOWN;
-  struct ov_error err = {0};
+static enum device_state targets_state(struct device_target const *const targets, size_t const count, bool *const faulted) {
+  enum device_state state = DEVICE_STATE_ABSENT;
+  size_t i = 0;
 
-  if (st->busy) {
-    return DEVICE_STATE_UNKNOWN; // the run owns the screen while it acts by itself
-  }
-  state = device_probe(st->settings->ks_service, st->settings->ks_instance_prefix, &err);
-  st->state = state;
-  st->faulted = (state == DEVICE_STATE_FAULTED);
-  EnableWindow(st->close_btn, TRUE);
-  if ((state != DEVICE_STATE_FAULTED) && (state != DEVICE_STATE_HEALTHY)) {
-    OV_ERROR_REPORT(&err, NULL);
+  *faulted = false;
+  for (i = 0; i < count; i++) {
+    enum device_state const one = targets[i].state;
+
+    if (one == DEVICE_STATE_FAULTED) {
+      *faulted = true;
+    }
+    if (one == DEVICE_STATE_PROBLEM) {
+      state = DEVICE_STATE_PROBLEM; // not this tool's to cure
+    } else if ((one == DEVICE_STATE_UNKNOWN) && (state != DEVICE_STATE_PROBLEM)) {
+      state = DEVICE_STATE_UNKNOWN; // nobody knows, so nothing is trusted
+    } else if ((one == DEVICE_STATE_FAULTED) && (state != DEVICE_STATE_PROBLEM) && (state != DEVICE_STATE_UNKNOWN)) {
+      state = DEVICE_STATE_FAULTED; // the fault this tool cures
+    } else if ((one == DEVICE_STATE_HEALTHY) && (state == DEVICE_STATE_ABSENT)) {
+      state = DEVICE_STATE_HEALTHY; // a device is there, and it works
+    }
   }
   return state;
 }
@@ -751,7 +693,7 @@ static void report_step(struct repair_job *const job, enum repair_stage const st
 static void repair_progress(enum repair_stage const stage, size_t const step, size_t const total, void *const userdata) {
   struct repair_job *const job = (struct repair_job *)(void *)userdata;
 
-  (void)total;
+  job->total = total;
   report_step(job, stage, step + (job->wait_first ? 1 : 0));
 }
 
@@ -767,26 +709,37 @@ static void repair_progress(enum repair_stage const stage, size_t const step, si
 static int repair_thread(void *const userdata) {
   struct repair_job *const job = (struct repair_job *)(void *)userdata;
   struct ov_error probe_err = {0};
+  struct device_target *targets = NULL;
   enum device_state state = DEVICE_STATE_UNKNOWN;
+  bool faulted = false;
 
   logger_log_run_start();
   if (job->wait_first) {
     report_step(job, REPAIR_STAGE_WAIT, 1);
-    if (job->settings) {
-      Sleep((DWORD)job->settings->auto_run_delay_ms);
-    } else {
-      Sleep(5000);
-    }
+    Sleep((DWORD)job->settings->auto_run_delay_ms);
   }
-  state = device_probe(job->settings->ks_service, job->settings->ks_instance_prefix, &probe_err);
+  if (device_probe_all(job->settings->ks_service, job->settings->devices, OV_ARRAY_LENGTH(job->settings->devices), &targets, &probe_err)) {
+    state = targets_state(targets, OV_ARRAY_LENGTH(targets), &faulted);
+  }
   OV_ERROR_REPORT(&probe_err, NULL);
-  if (ui_auto_run_action(job->wait_first, state) == UI_AUTO_RUN_LEAVE) {
+  device_targets_release(&targets);
+  // a run nobody is watching looks for the fault this tool cures: a device
+  // that works next to one that is stuck is a run that has work to do
+  if (ui_auto_run_action(job->wait_first, faulted ? DEVICE_STATE_FAULTED : state) == UI_AUTO_RUN_LEAVE) {
     job->leave = true;
     logger_log_run_end(ui_auto_run_sentence(state));
   } else {
-    job->ok = repair_run(
-        job->settings, job->allow_mixer_close, job->allow_audiodg_close, repair_progress, job, &job->cancel, &job->result, &job->err);
+    job->ok = repair_run(job->settings,
+                         job->targets,
+                         job->allow_mixer_close,
+                         job->allow_audiodg_close,
+                         repair_progress,
+                         job,
+                         &job->cancel,
+                         &job->result,
+                         &job->err);
     OV_ERROR_REPORT(&job->err, NULL);
+    device_targets_release(&job->targets);
     logger_log_run_end(job->result.message);
   }
   PostMessageW(job->hwnd, WM_ADC_DONE, 0, 0);
@@ -842,6 +795,25 @@ enum ui_auto_run ui_auto_run_action(bool const auto_run, enum device_state const
   return (state == DEVICE_STATE_FAULTED) ? UI_AUTO_RUN_REPAIR : UI_AUTO_RUN_LEAVE;
 }
 
+enum ui_press ui_press_action(struct device_target const *const targets, size_t const target_count) {
+  bool faulted = false;
+
+  if (target_count == 0) {
+    return UI_PRESS_NOT_REPAIRABLE; // nothing is connected, so the press has nothing to answer
+  }
+  switch (targets_state(targets, target_count, &faulted)) {
+  case DEVICE_STATE_FAULTED:
+    return UI_PRESS_REPAIR; // the fault this tool cures answers at once
+  case DEVICE_STATE_PROBLEM:
+  case DEVICE_STATE_UNKNOWN:
+    return UI_PRESS_NOT_REPAIRABLE; // not this tool's to cure, or nobody knows
+  case DEVICE_STATE_HEALTHY:
+  case DEVICE_STATE_ABSENT:
+    break;
+  }
+  return UI_PRESS_ASK; // every device works: the reader names the one to release
+}
+
 /**
  * @brief What a run nobody is watching says about the state it found
  *
@@ -869,63 +841,20 @@ char const *ui_auto_run_sentence(enum device_state const state) {
 }
 
 /**
- * @brief Does a press of the button have to ask first
- *
- * @param faulted the device is in the state this tool is for
- * @return true when the person should be asked first
- */
-bool ui_asks_before_close(bool const faulted) { return !faulted; }
-
-/**
- * @brief Does a press of the button find a device the tool cannot handle
- *
- * @param state the state the last refresh saw
- * @return true when the press is answered with a dialog instead of a run
- */
-static bool ui_state_is_not_repairable(enum device_state const state) {
-  return (state == DEVICE_STATE_PROBLEM) || (state == DEVICE_STATE_ABSENT) || (state == DEVICE_STATE_UNKNOWN);
-}
-
-/**
- * @brief The two lines of the question in front of a close the device does not need
- *
- * What the reader is asked is whether to go on, so the headline carries the question and
- * the body carries what the answer is about: what was found, and what follows from it.
- * The detail stays in the log.
- *
- * @param headline receives the question, UTF-8
- * @param headline_size room of headline
- * @param body receives what the answer is about, UTF-8
- * @param body_size room of body
- */
-void ui_confirm_dialog_text(char *const headline, size_t const headline_size, char *const body, size_t const body_size) {
-  if ((headline == NULL) || (headline_size == 0) || (body == NULL) || (body_size == 0)) {
-    return;
-  }
-  strncpy(headline, gettext("Do you really want to continue?"), headline_size - 1);
-  headline[headline_size - 1] = '\0';
-  strncpy(body,
-          gettext("No faulty Audient device was found.\n\n"
-                  "A device that is working normally is likely to fail to be closed."),
-          body_size - 1);
-  body[body_size - 1] = '\0';
-}
-
-/**
  * @brief The two lines of the result dialog
  *
  * The headline carries the verdict, the body the reason the run worked out.  Both are
  * sentences of the translation; what a run leaves in repair_result.message goes to the log.
  *
  * @param outcome what came of the run
- * @param reason why the removal was refused
+ * @param removal_error why the removal was refused, 0 when it was for another reason
  * @param headline receives the verdict, UTF-8
  * @param headline_size room of headline
  * @param body receives what happened, UTF-8
  * @param body_size room of body
  */
 void ui_result_dialog_text(enum repair_outcome const outcome,
-                           enum removal_reason const reason,
+                           enum removal_error_code const removal_error,
                            char *const headline,
                            size_t const headline_size,
                            char *const body,
@@ -936,17 +865,18 @@ void ui_result_dialog_text(enum repair_outcome const outcome,
     return;
   }
   if (outcome == REPAIR_OUTCOME_FAILED) {
-    switch (reason) {
-    case REMOVAL_REASON_ACCESS_DENIED:
+    switch (removal_error) {
+    case removal_error_access_denied:
       text = gettext("This program is not allowed to close the device.\n\n"
                      "Run it as an administrator, then close the device again.");
       break;
-    case REMOVAL_REASON_DEVICE_GONE:
+    case removal_error_device_gone:
       text = gettext("The device was already gone.");
       break;
-    case REMOVAL_REASON_CALL_FAILED:
-    case REMOVAL_REASON_FAILED:
-    case REMOVAL_REASON_NONE:
+    case removal_error_veto:
+    case removal_error_call_failed:
+    case removal_error_refused:
+    case 0:
       break;
     }
   } else {
@@ -981,15 +911,15 @@ void ui_result_dialog_text(enum repair_outcome const outcome,
  *
  * @param hwnd the window that is asking
  * @param outcome what came of the run
- * @param reason why the removal was refused
+ * @param removal_error why the removal was refused, 0 when it was for another reason
  */
-static void show_result_dialog(HWND const hwnd, enum repair_outcome const outcome, enum removal_reason const reason) {
+static void show_result_dialog(HWND const hwnd, enum repair_outcome const outcome, enum removal_error_code const removal_error) {
   wchar_t wheadline[256];
   wchar_t wbody[1600];
   char headline[256];
   char body[1600];
 
-  ui_result_dialog_text(outcome, reason, headline, sizeof(headline), body, sizeof(body));
+  ui_result_dialog_text(outcome, removal_error, headline, sizeof(headline), body, sizeof(body));
   if (headline[0] == '\0') {
     return;
   }
@@ -1034,7 +964,7 @@ static void finish_repair(struct ui_state *const st, HWND const hwnd) {
   }
   enable_actions(st, true); // a run that leaves the window open leaves it usable
   if (!job->ok) {
-    show_result_dialog(hwnd, REPAIR_OUTCOME_FAILED, REMOVAL_REASON_NONE);
+    show_result_dialog(hwnd, REPAIR_OUTCOME_FAILED, removal_error_none);
     goto cleanup;
   }
   post_close = ui_closes_itself_when_done(st->options->auto_run, job->result.outcome);
@@ -1043,13 +973,12 @@ static void finish_repair(struct ui_state *const st, HWND const hwnd) {
 
     if (!ui_blockers_window_show(hwnd, job->result.culprits, &berr)) {
       OV_ERROR_REPORT(&berr, NULL);
-      show_result_dialog(hwnd, job->result.outcome, job->result.removal_reason);
+      show_result_dialog(hwnd, job->result.outcome, job->result.removal_error);
     }
-    refresh(st);
     goto cleanup;
   }
   if (ui_shows_result_dialog(st->options->auto_run, job->result.outcome)) {
-    show_result_dialog(hwnd, job->result.outcome, job->result.removal_reason);
+    show_result_dialog(hwnd, job->result.outcome, job->result.removal_error);
   }
 
 cleanup:
@@ -1066,12 +995,13 @@ cleanup:
  * @param hwnd the window the job reports to
  * @param wait_first the run waits for the devices before it looks at them
  */
-static void do_repair(struct ui_state *const st, HWND const hwnd, bool const wait_first) {
+static void do_repair(struct ui_state *const st, HWND const hwnd, bool const wait_first, struct device_target *const targets) {
   thrd_t thread;
 
   memset(&st->job, 0, sizeof(st->job));
   st->job.hwnd = hwnd;
   st->job.settings = st->settings;
+  st->job.targets = targets;
   st->job.wait_first = wait_first;
   st->job.allow_mixer_close = (SendMessageW(st->chk_mixer, BM_GETCHECK, 0, 0) == BST_CHECKED);
   st->job.allow_audiodg_close = (SendMessageW(st->chk_audiodg, BM_GETCHECK, 0, 0) == BST_CHECKED);
@@ -1085,7 +1015,7 @@ static void do_repair(struct ui_state *const st, HWND const hwnd, bool const wai
     widest_stage_text(st, hwnd, widest_buf, sizeof(widest_buf));
     if (!ui_progress_window_create(hwnd,
                                    st->dpi,
-                                   ui_progress_window_steps(st->job.wait_first),
+                                   ui_progress_window_steps(st->job.wait_first, 1),
                                    &st->job.cancel,
                                    wait_first ? wait_buf : default_stage_text(),
                                    widest_buf,
@@ -1104,6 +1034,35 @@ static void do_repair(struct ui_state *const st, HWND const hwnd, bool const wai
     return;
   }
   thrd_detach(thread);
+}
+
+/**
+ * @brief Ask which device to release when none of them is faulted
+ *
+ * None of the connected devices is in the state this tool
+ * cures, so the press has nothing to do on its own: the
+ * reader names the device to release, and the run repairs
+ * that one.  A window that could not be made is written to
+ * the log only: the press has no other answer to give.
+ *
+ * @param st the state of the window
+ * @param hwnd the window that asks
+ * @param targets the devices that are connected, the press releases the list
+ */
+static void ask_which_device(struct ui_state *const st, HWND const hwnd, struct device_target *targets) {
+  struct device_target *picked = NULL;
+  struct ov_error perr = {0};
+
+  if (!ui_device_picker_show(hwnd, st->settings, targets, &picked, &perr)) {
+    OV_ERROR_REPORT(&perr, NULL);
+    goto cleanup;
+  }
+  if (picked != NULL) {
+    do_repair(st, hwnd, false, picked);
+  }
+
+cleanup:
+  device_targets_release(&targets);
 }
 
 /**
@@ -1226,9 +1185,8 @@ static LRESULT CALLBACK wnd_proc(HWND const hwnd, UINT const msg, WPARAM const w
     }
     SendMessageW(st->chk_mixer, BM_SETCHECK, st->options->close_mixer ? BST_CHECKED : BST_UNCHECKED, 0);
     SendMessageW(st->chk_audiodg, BM_SETCHECK, st->options->close_audiodg ? BST_CHECKED : BST_UNCHECKED, 0);
-    refresh(st);
     if (st->options->auto_run) {
-      do_repair(st, hwnd, true);
+      do_repair(st, hwnd, true, NULL);
     }
     return 0;
   case WM_SIZE: {
@@ -1251,10 +1209,29 @@ static LRESULT CALLBACK wnd_proc(HWND const hwnd, UINT const msg, WPARAM const w
   }
   case WM_COMMAND:
     if ((HIWORD(wparam) == BN_CLICKED) && (LOWORD(wparam) == (WORD)IDC_CLOSE_BTN) && !st->busy) {
-      if (ui_state_is_not_repairable(st->state)) {
+      // the press looks at the devices for itself: the answer of an earlier run
+      // says nothing about the state they are in now
+      struct device_target *targets = NULL;
+      struct ov_error perr = {0};
+
+      if (!device_probe_all(st->settings->ks_service, st->settings->devices, OV_ARRAY_LENGTH(st->settings->devices), &targets, &perr)) {
+        OV_ERROR_REPORT(&perr, NULL);
         report_not_repairable(hwnd);
-      } else if (!ui_asks_before_close(st->faulted) || confirm_close(hwnd)) {
-        do_repair(st, hwnd, false);
+        return 0;
+      }
+      switch (ui_press_action(targets, OV_ARRAY_LENGTH(targets))) {
+      case UI_PRESS_NOT_REPAIRABLE:
+        report_not_repairable(hwnd);
+        break;
+      case UI_PRESS_REPAIR:
+        device_targets_keep_faulted(&targets);
+        do_repair(st, hwnd, false, targets);
+        break;
+      case UI_PRESS_ASK:
+        // none of the connected devices is faulted, so the press has nothing
+        // to do on its own: the reader names the device to release
+        ask_which_device(st, hwnd, targets);
+        break;
       }
     }
     if ((HIWORD(wparam) == BN_CLICKED) && (LOWORD(wparam) == (WORD)IDC_TASK_INSTALL)) {
@@ -1267,8 +1244,10 @@ static LRESULT CALLBACK wnd_proc(HWND const hwnd, UINT const msg, WPARAM const w
   case WM_ADC_STAGE:
     if (st->busy) {
       char stage_buf[256];
+      size_t const steps =
+          (st->job.total != 0) ? (st->job.total + (st->job.wait_first ? 1 : 0)) : ui_progress_window_steps(st->job.wait_first, 1);
       stage_text((enum repair_stage)wparam, st->settings, stage_buf, sizeof(stage_buf));
-      ui_progress_window_report(st->progress, (size_t)lparam, stage_buf, ui_progress_window_steps(st->job.wait_first));
+      ui_progress_window_report(st->progress, (size_t)lparam, stage_buf, steps);
     }
     return 0;
   case WM_ADC_DONE:

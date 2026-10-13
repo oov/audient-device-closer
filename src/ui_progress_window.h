@@ -75,4 +75,4 @@ void ui_progress_window_report(HWND const progress, size_t const step, char cons
  * @param wait_first the run waits for the devices before it looks at them
  * @return the number of steps to show
  */
-size_t ui_progress_window_steps(bool const wait_first);
+size_t ui_progress_window_steps(bool const wait_first, size_t const targets);

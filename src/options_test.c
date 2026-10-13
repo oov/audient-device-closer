@@ -111,13 +111,7 @@ static void test_auto_close_follows_the_mode_of_the_run(void) {
 static void test_parse_null_out(void) {
   struct ov_error err = {0};
 
-  if (!TEST_CHECK(options_parse(L"-auto-run", NULL, &err) == false)) {
-    goto cleanup;
-  }
-  TEST_CHECK(ov_error_is(&err, ov_error_type_generic, ov_error_generic_invalid_argument));
-
-cleanup:
-  OV_ERROR_REPORT(&err, NULL);
+  TEST_FAILED_WITH(options_parse(L"-auto-run", NULL, &err), &err, ov_error_type_generic, ov_error_generic_invalid_argument);
 }
 
 TEST_LIST = {

@@ -17,14 +17,13 @@ static void test_arguments_carry_the_switches_only(void) {
   char *args = NULL;
 
   args = task_build_arguments(true, false, &err);
-  if (!TEST_CHECK(args != NULL)) {
+  if (!TEST_SUCCEEDED(args != NULL, &err)) {
     goto cleanup;
   }
   TEST_CHECK(strcmp(args, "-auto-run -close-mixer -no-close-audiodg") == 0);
   TEST_MSG("want -auto-run -close-mixer -no-close-audiodg, got %hs", args);
 
 cleanup:
-  OV_ERROR_REPORT(&err, NULL);
   OV_ARRAY_DESTROY(&args);
 }
 
@@ -41,7 +40,7 @@ static void test_arguments_carry_both_boxes(void) {
 
   on = task_build_arguments(true, true, &err);
   off = task_build_arguments(false, false, &err);
-  if (!TEST_CHECK(on != NULL) || !TEST_CHECK(off != NULL)) {
+  if (!TEST_SUCCEEDED(on != NULL, &err) || !TEST_SUCCEEDED(off != NULL, &err)) {
     goto cleanup;
   }
   TEST_CHECK(strstr(on, "-close-mixer") != NULL);
@@ -52,7 +51,6 @@ static void test_arguments_carry_both_boxes(void) {
   TEST_CHECK(strstr(off, "-no-close-audiodg") != NULL);
 
 cleanup:
-  OV_ERROR_REPORT(&err, NULL);
   OV_ARRAY_DESTROY(&on);
   OV_ARRAY_DESTROY(&off);
 }
@@ -69,7 +67,7 @@ static void test_xml_escapes_what_it_has_to(void) {
   char *xml = NULL;
 
   xml = task_build_xml("C:\\a&b\\adc.exe", "\"C:\\a&b\\adc.exe\" -auto-run -close-mixer -close-audiodg", NULL, &err);
-  if (!TEST_CHECK(xml != NULL)) {
+  if (!TEST_SUCCEEDED(xml != NULL, &err)) {
     goto cleanup;
   }
   TEST_CHECK(strstr(xml, "C:\\a&amp;b\\adc.exe") != NULL);
@@ -78,7 +76,6 @@ static void test_xml_escapes_what_it_has_to(void) {
   TEST_CHECK(strstr(xml, "</Task>") != NULL);
 
 cleanup:
-  OV_ERROR_REPORT(&err, NULL);
   OV_ARRAY_DESTROY(&xml);
 }
 
@@ -93,7 +90,7 @@ static void test_xml_states_the_trigger_and_the_principal(void) {
   char *xml = NULL;
 
   xml = task_build_xml("adc.exe", "-auto-run", NULL, &err);
-  if (!TEST_CHECK(xml != NULL)) {
+  if (!TEST_SUCCEEDED(xml != NULL, &err)) {
     goto cleanup;
   }
   TEST_CHECK(strstr(xml, "<EventTrigger>") != NULL);
@@ -112,7 +109,6 @@ static void test_xml_states_the_trigger_and_the_principal(void) {
   TEST_CHECK(strstr(xml, "<QueryList>") == NULL);
 
 cleanup:
-  OV_ERROR_REPORT(&err, NULL);
   OV_ARRAY_DESTROY(&xml);
 }
 
@@ -127,14 +123,13 @@ static void test_xml_quotes_the_command(void) {
   char *xml = NULL;
 
   xml = task_build_xml("C:\\a b\\adc.exe", "-auto-run", NULL, &err);
-  if (!TEST_CHECK(xml != NULL)) {
+  if (!TEST_SUCCEEDED(xml != NULL, &err)) {
     goto cleanup;
   }
   TEST_CHECK(strstr(xml, "<Command>&quot;C:\\a b\\adc.exe&quot;</Command>") != NULL);
   TEST_CHECK(strstr(xml, "<Arguments>-auto-run</Arguments>") != NULL);
 
 cleanup:
-  OV_ERROR_REPORT(&err, NULL);
   OV_ARRAY_DESTROY(&xml);
 }
 
@@ -149,7 +144,7 @@ static void test_xml_describes_what_the_task_is_for(void) {
   char *xml = NULL;
 
   xml = task_build_xml("adc.exe", "-auto-run", NULL, &err);
-  if (!TEST_CHECK(xml != NULL)) {
+  if (!TEST_SUCCEEDED(xml != NULL, &err)) {
     goto cleanup;
   }
   TEST_CHECK(strstr(xml, "<Description>") != NULL);
@@ -157,7 +152,6 @@ static void test_xml_describes_what_the_task_is_for(void) {
   TEST_CHECK(strstr(xml, "resumes from sleep") != NULL);
 
 cleanup:
-  OV_ERROR_REPORT(&err, NULL);
   OV_ARRAY_DESTROY(&xml);
 }
 
@@ -172,14 +166,13 @@ static void test_xml_takes_the_description_it_is_given(void) {
   char *xml = NULL;
 
   xml = task_build_xml("adc.exe", "-auto-run", "one & <two>", &err);
-  if (!TEST_CHECK(xml != NULL)) {
+  if (!TEST_SUCCEEDED(xml != NULL, &err)) {
     goto cleanup;
   }
   TEST_CHECK(strstr(xml, "<Description>one &amp; &lt;two&gt;</Description>") != NULL);
   TEST_CHECK(strstr(xml, "<Description>one & <two>") == NULL);
 
 cleanup:
-  OV_ERROR_REPORT(&err, NULL);
   OV_ARRAY_DESTROY(&xml);
 }
 

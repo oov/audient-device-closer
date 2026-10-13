@@ -22,10 +22,10 @@ static void test_take_marks_the_first_copy(void) {
   HANDLE second = NULL;
   bool other_running = true;
 
-  TEST_CASE("the first copy finds nobody");
+  TEST_CASE_("the first copy finds nobody");
   other_running = true;
   first = instance_take(test_mutex, &other_running, &err);
-  if (!TEST_CHECK(first != NULL)) {
+  if (!TEST_SUCCEEDED(first != NULL, &err)) {
     goto cleanup;
   }
   TEST_CHECK(other_running == false);
@@ -33,7 +33,7 @@ static void test_take_marks_the_first_copy(void) {
   TEST_CASE("the copy that comes after finds the first one");
   other_running = false;
   second = instance_take(test_mutex, &other_running, &err);
-  if (!TEST_CHECK(second != NULL)) {
+  if (!TEST_SUCCEEDED(second != NULL, &err)) {
     goto cleanup;
   }
   TEST_CHECK(other_running == true);
@@ -43,7 +43,7 @@ static void test_take_marks_the_first_copy(void) {
   instance_release(&first);
   other_running = true;
   first = instance_take(test_mutex, &other_running, &err);
-  if (!TEST_CHECK(first != NULL)) {
+  if (!TEST_SUCCEEDED(first != NULL, &err)) {
     goto cleanup;
   }
   TEST_CHECK(other_running == false);
@@ -53,7 +53,6 @@ static void test_take_marks_the_first_copy(void) {
 cleanup:
   instance_release(&second);
   instance_release(&first);
-  OV_ERROR_REPORT(&err, NULL);
 }
 
 /**
@@ -70,7 +69,6 @@ static void test_refused_arguments(void) {
   TEST_FAILED_WITH(instance_take(NULL, &other_running, &err) != NULL, &err, ov_error_type_generic, ov_error_generic_invalid_argument);
 
   TEST_CASE_(NULL);
-  OV_ERROR_REPORT(&err, NULL);
 }
 
 /**

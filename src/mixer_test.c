@@ -107,7 +107,7 @@ static wchar_t *copy_dummy(wchar_t const *const dir, wchar_t const *const src, c
     return NULL;
   }
   if (!CopyFileW(src, dst, FALSE)) {
-    OV_ERROR_DESTROY(err);
+    OV_ERROR_SET_HRESULT(err, HRESULT_FROM_WIN32(GetLastError()));
     OV_ARRAY_DESTROY(&dst); // made by ov_sprintf_wchar
     return NULL;
   }
@@ -167,16 +167,14 @@ static void close_pi(PROCESS_INFORMATION *const pi) {
  * @return true while it is alive
  */
 static bool is_running(uint32_t const pid) {
-  struct ov_error err = {0};
   struct process_ref ref;
   bool alive = false;
 
   memset(&ref, 0, sizeof(ref));
   ref.handle = NULL;
-  if (process_ref_open(&ref, pid, false, &err)) {
+  if (process_ref_open(&ref, pid, false, NULL)) {
     alive = process_ref_alive(&ref);
   }
-  OV_ERROR_REPORT(&err, NULL);
   process_ref_close(&ref);
   return alive;
 }
@@ -229,17 +227,17 @@ static void test_take_and_close(void) {
     goto cleanup;
   }
 
-  if (!TEST_CHECK(event_time_of(&pi, &event_time, &err) == true)) {
+  if (!TEST_SUCCEEDED(event_time_of(&pi, &event_time, &err), &err)) {
     goto cleanup;
   }
-  if (!TEST_CHECK(mixer_take((uint32_t)pi.dwProcessId, DUMMY_NAME, event_time, &found, &target, &err) == true)) {
+  if (!TEST_SUCCEEDED(mixer_take((uint32_t)pi.dwProcessId, DUMMY_NAME, event_time, &found, &target, &err), &err)) {
     goto cleanup;
   }
   TEST_CHECK(found == true);
   TEST_CHECK(target.pid == (uint32_t)pi.dwProcessId);
   TEST_CHECK(target.path != NULL && (strstr(target.path, DUMMY_NAME) != NULL));
 
-  if (!TEST_CHECK(mixer_close(&target, &err) == true)) {
+  if (!TEST_SUCCEEDED(mixer_close(&target, &err), &err)) {
     goto cleanup;
   }
   TEST_CHECK(target.pid == 0);
@@ -251,7 +249,6 @@ static void test_take_and_close(void) {
   TEST_CHECK(target.path != NULL && (strstr(target.path, DUMMY_NAME) != NULL));
 
 cleanup:
-  OV_ERROR_REPORT(&err, NULL);
   mixer_target_release(&target);
   if (pi.hProcess != NULL) {
     TerminateProcess(pi.hProcess, 0);
@@ -295,10 +292,10 @@ static void test_same_name_elsewhere_is_not_touched(void) {
     goto cleanup;
   }
   TEST_CASE("a pid from another record does not reach the copy");
-  if (!TEST_CHECK(event_time_of(&victim, &event_time, &err) == true)) {
+  if (!TEST_SUCCEEDED(event_time_of(&victim, &event_time, &err), &err)) {
     goto cleanup;
   }
-  if (!TEST_CHECK(mixer_take((uint32_t)victim.dwProcessId, DUMMY_NAME, event_time, &found, &target, &err) == true)) {
+  if (!TEST_SUCCEEDED(mixer_take((uint32_t)victim.dwProcessId, DUMMY_NAME, event_time, &found, &target, &err), &err)) {
     goto cleanup;
   }
   TEST_CHECK(found == true);
@@ -309,7 +306,7 @@ static void test_same_name_elsewhere_is_not_touched(void) {
   TEST_CASE("a record that is older than the process is refused");
   found = false;
   mixer_target_release(&target);
-  if (!TEST_CHECK(mixer_take((uint32_t)other.dwProcessId, DUMMY_NAME, event_time, &found, &target, &err) == true)) {
+  if (!TEST_SUCCEEDED(mixer_take((uint32_t)other.dwProcessId, DUMMY_NAME, event_time, &found, &target, &err), &err)) {
     goto cleanup;
   }
   TEST_CHECK(found == false);
@@ -318,7 +315,6 @@ static void test_same_name_elsewhere_is_not_touched(void) {
   TEST_CASE_(NULL);
 
 cleanup:
-  OV_ERROR_REPORT(&err, NULL);
   mixer_target_release(&target);
   if (victim.hProcess != NULL) {
     TerminateProcess(victim.hProcess, 0);
@@ -370,10 +366,10 @@ static void test_wrong_name_is_refused(void) {
     TEST_SKIP("cannot start the dummy here");
     goto cleanup;
   }
-  if (!TEST_CHECK(event_time_of(&pi, &event_time, &err) == true)) {
+  if (!TEST_SUCCEEDED(event_time_of(&pi, &event_time, &err), &err)) {
     goto cleanup;
   }
-  if (!TEST_CHECK(mixer_take((uint32_t)pi.dwProcessId, DUMMY_NAME, event_time, &found, &target, &err) == true)) {
+  if (!TEST_SUCCEEDED(mixer_take((uint32_t)pi.dwProcessId, DUMMY_NAME, event_time, &found, &target, &err), &err)) {
     goto cleanup;
   }
   TEST_CHECK(found == false);
@@ -381,7 +377,6 @@ static void test_wrong_name_is_refused(void) {
   TEST_CHECK(is_running((uint32_t)pi.dwProcessId) == true);
 
 cleanup:
-  OV_ERROR_REPORT(&err, NULL);
   mixer_target_release(&target);
   if (pi.hProcess != NULL) {
     TerminateProcess(pi.hProcess, 0);
@@ -420,14 +415,13 @@ static void test_unknown_event_time_is_refused(void) {
     TEST_SKIP("cannot start the dummy process here");
     goto cleanup;
   }
-  if (!TEST_CHECK(mixer_take((uint32_t)pi.dwProcessId, DUMMY_NAME, 0, &found, &target, &err) == true)) {
+  if (!TEST_SUCCEEDED(mixer_take((uint32_t)pi.dwProcessId, DUMMY_NAME, 0, &found, &target, &err), &err)) {
     goto cleanup;
   }
   TEST_CHECK(found == false);
   TEST_CHECK(is_running((uint32_t)pi.dwProcessId) == true);
 
 cleanup:
-  OV_ERROR_REPORT(&err, NULL);
   mixer_target_release(&target);
   if (pi.hProcess != NULL) {
     TerminateProcess(pi.hProcess, 0);
@@ -459,21 +453,20 @@ static void test_gone_process_is_not_found(void) {
     TEST_SKIP("cannot start the dummy process here");
     goto cleanup;
   }
-  if (!TEST_CHECK(event_time_of(&pi, &event_time, &err) == true)) {
+  if (!TEST_SUCCEEDED(event_time_of(&pi, &event_time, &err), &err)) {
     goto cleanup;
   }
   TerminateProcess(pi.hProcess, 0);
   WaitForSingleObject(pi.hProcess, 5000);
   close_pi(&pi);
 
-  if (!TEST_CHECK(mixer_take((uint32_t)pi.dwProcessId, DUMMY_NAME, event_time, &found, &target, &err) == true)) {
+  if (!TEST_SUCCEEDED(mixer_take((uint32_t)pi.dwProcessId, DUMMY_NAME, event_time, &found, &target, &err), &err)) {
     goto cleanup;
   }
   TEST_CHECK(found == false);
   TEST_CHECK(target.pid == 0);
 
 cleanup:
-  OV_ERROR_REPORT(&err, NULL);
   mixer_target_release(&target);
   if (pi.hProcess != NULL) {
     TerminateProcess(pi.hProcess, 0);

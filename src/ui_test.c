@@ -10,6 +10,7 @@
 #include <ovtest.h>
 
 #include "layout.c"
+#include "ui_device_picker.c"
 
 #include <string.h>
 
@@ -23,12 +24,14 @@
 #include <ovthreads.h>
 
 #include "culprit.h"
+#include "device.h"
 #include "layout.h"
 #include "options.h"
 #include "removal.h"
 #include "repair.h"
 #include "settings.h"
 #include "theme.h"
+#include "theme_internal.h"
 #include "ui.h"
 #include "ui_blockers_window.h"
 #include "ui_progress_window.h"
@@ -42,6 +45,8 @@ enum {
   ADC_UI_TEST_POLL_MS = 50,
   ADC_BLOCKERS_TEST_TIMER_ID = 1,
   ADC_BLOCKERS_TEST_TIMER_MS = 100,
+  ADC_PICKER_TEST_TIMER_ID = 2,
+  ADC_PICKER_TEST_TIMER_MS = 100,
   ADC_TEST_PROGRESS_SUGGEST_LEFT = 240, /* where the window goes when a monitor suggests it */
   ADC_TEST_PROGRESS_SUGGEST_TOP = 200,
   ADC_TEST_PROGRESS_SUGGEST_RIGHT = 900, /* a size the layout of the window does not ask for */
@@ -393,7 +398,7 @@ static void test_every_control_carries_the_font_of_the_window(void) {
   if (!TEST_CHECK(join_ui(&thread, &job.done))) {
     goto cleanup;
   }
-  TEST_CHECK(result.opened == true);
+  TEST_SUCCEEDED(result.opened, &result.err);
 
   TEST_CASE("the window can be opened a second time");
   {
@@ -416,7 +421,7 @@ static void test_every_control_carries_the_font_of_the_window(void) {
       PostMessageW(top, WM_CLOSE, 0, 0);
       started = false;
       TEST_CHECK(join_ui(&thread, &job.done));
-      TEST_CHECK(second.opened == true);
+      TEST_SUCCEEDED(second.opened, &second.err);
     }
   }
   TEST_CASE_(NULL);
@@ -429,8 +434,6 @@ cleanup:
     TEST_CHECK(join_ui(&thread, &job.done));
     started = false;
   }
-  OV_ERROR_REPORT(&result.err, NULL);
-  OV_ERROR_REPORT(&second.err, NULL);
   cndvar_exit(&job.done);
 }
 
@@ -570,7 +573,7 @@ static void test_window_without_the_theme_is_traditional(void) {
   if (!TEST_CHECK(join_ui(&thread, &job.done))) {
     goto cleanup;
   }
-  TEST_CHECK(result.opened == true);
+  TEST_SUCCEEDED(result.opened, &result.err);
 
 cleanup:
   if (top != NULL) {
@@ -580,7 +583,6 @@ cleanup:
     TEST_CHECK(join_ui(&thread, &job.done));
     started = false;
   }
-  OV_ERROR_REPORT(&result.err, NULL);
   cndvar_exit(&job.done);
 }
 
@@ -719,7 +721,7 @@ static void test_window_tells_that_it_waits(void) {
 
   started = false;
   TEST_CHECK(join_ui(&thread, &job.done));
-  TEST_CHECK(result.opened == true);
+  TEST_SUCCEEDED(result.opened, &result.err);
   TEST_CHECK(find_own_window(L"audient_device_closer_progress") == NULL);
   TEST_MSG("want the progress window to be gone when the run is over");
 
@@ -728,7 +730,6 @@ cleanup:
     TEST_CHECK(join_ui(&thread, &job.done));
     started = false;
   }
-  OV_ERROR_REPORT(&result.err, NULL);
   cndvar_exit(&job.done);
 }
 
@@ -745,23 +746,23 @@ static void test_result_headline(void) {
   char body[512];
 
   TEST_CASE("a closed device");
-  ui_result_dialog_text(REPAIR_OUTCOME_CLOSED, REMOVAL_REASON_NONE, headline, sizeof(headline), body, sizeof(body));
+  ui_result_dialog_text(REPAIR_OUTCOME_CLOSED, removal_error_none, headline, sizeof(headline), body, sizeof(body));
   TEST_CHECK(strcmp(headline, "Audient Device Closer") != 0);
   TEST_CHECK(strstr(headline, "could not") == NULL);
   TEST_CHECK(body[0] != '\0');
 
   TEST_CASE("a device that is not there");
-  ui_result_dialog_text(REPAIR_OUTCOME_ABSENT, REMOVAL_REASON_NONE, headline, sizeof(headline), body, sizeof(body));
+  ui_result_dialog_text(REPAIR_OUTCOME_ABSENT, removal_error_none, headline, sizeof(headline), body, sizeof(body));
   TEST_CHECK(strcmp(headline, "Audient Device Closer") != 0);
   TEST_CHECK(strstr(body, "No Audient device was found") != NULL);
   TEST_CHECK(strstr(body, "try again") == NULL);
 
   TEST_CASE("a device with a problem the removal does not cure");
-  ui_result_dialog_text(REPAIR_OUTCOME_OTHER_PROBLEM, REMOVAL_REASON_NONE, headline, sizeof(headline), body, sizeof(body));
+  ui_result_dialog_text(REPAIR_OUTCOME_OTHER_PROBLEM, removal_error_none, headline, sizeof(headline), body, sizeof(body));
   TEST_CHECK(strcmp(headline, "Audient Device Closer") != 0);
 
   TEST_CASE("a removal the program was not allowed to ask for");
-  ui_result_dialog_text(REPAIR_OUTCOME_FAILED, REMOVAL_REASON_ACCESS_DENIED, headline, sizeof(headline), body, sizeof(body));
+  ui_result_dialog_text(REPAIR_OUTCOME_FAILED, removal_error_access_denied, headline, sizeof(headline), body, sizeof(body));
   TEST_CHECK(strcmp(headline, "Failed.") == 0);
   TEST_MSG("want the verdict in the headline of a failed run");
   TEST_CHECK(strstr(body, "administrator") != NULL);
@@ -773,7 +774,7 @@ static void test_result_headline(void) {
   TEST_CHECK(strcmp(headline, body) != 0);
 
   TEST_CASE("a veto names no process here");
-  ui_result_dialog_text(REPAIR_OUTCOME_VETOED, REMOVAL_REASON_NONE, headline, sizeof(headline), body, sizeof(body));
+  ui_result_dialog_text(REPAIR_OUTCOME_VETOED, removal_error_none, headline, sizeof(headline), body, sizeof(body));
   TEST_CHECK(strstr(body, "A process is still using the device") != NULL);
   TEST_CHECK(strstr(body, ".exe") == NULL);
   TEST_MSG("the names of the blockers belong to the blockers window");
@@ -796,18 +797,22 @@ static void test_result_dialog_lines_differ(void) {
                                                  REPAIR_OUTCOME_VETOED,
                                                  REPAIR_OUTCOME_FAILED,
                                                  REPAIR_OUTCOME_UNKNOWN};
-  static enum removal_reason const reasons[] = {
-      REMOVAL_REASON_NONE, REMOVAL_REASON_ACCESS_DENIED, REMOVAL_REASON_DEVICE_GONE, REMOVAL_REASON_CALL_FAILED, REMOVAL_REASON_FAILED};
+  static enum removal_error_code const removal_errors[] = {removal_error_none,
+                                                           removal_error_access_denied,
+                                                           removal_error_device_gone,
+                                                           removal_error_call_failed,
+                                                           removal_error_veto,
+                                                           removal_error_refused};
   size_t i = 0;
   size_t k = 0;
 
   for (i = 0; i < (sizeof(outcomes) / sizeof(outcomes[0])); i++) {
-    for (k = 0; k < (sizeof(reasons) / sizeof(reasons[0])); k++) {
+    for (k = 0; k < (sizeof(removal_errors) / sizeof(removal_errors[0])); k++) {
       char headline[256];
       char body[512];
 
-      TEST_CASE_("outcome %d with reason %d", (int)outcomes[i], (int)reasons[k]);
-      ui_result_dialog_text(outcomes[i], reasons[k], headline, sizeof(headline), body, sizeof(body));
+      TEST_CASE_("outcome %d with removal error %d", (int)outcomes[i], (int)removal_errors[k]);
+      ui_result_dialog_text(outcomes[i], removal_errors[k], headline, sizeof(headline), body, sizeof(body));
       TEST_CHECK(headline[0] != '\0');
       TEST_CHECK(body[0] != '\0');
       if (!TEST_CHECK_(strcmp(headline, body) != 0, "both lines read [%hs]", headline)) {
@@ -856,6 +861,94 @@ static void test_auto_run_says_the_state_it_found(void) {
 }
 
 /**
+ * @brief A list of targets with the states named, the way probe_all hands them out
+ */
+static struct device_target *make_press_targets(enum device_state const *const states, size_t const count) {
+  char const *const devnodes[] = {
+      "TUSBAUDIO_ENUM\\VID_2708&PID_0001&KS\\6&deadbee&0&2",
+      "TUSBAUDIO_ENUM\\VID_2708&PID_0002&KS\\6&deadbee&0&2",
+      "TUSBAUDIO_ENUM\\VID_2708&PID_0003&KS\\6&deadbee&0&2",
+  };
+  struct device_target *targets = NULL;
+
+  for (size_t i = 0; i < count; i++) {
+    struct device_target t = {0};
+    if (!ov_sprintf_char(&t.devnode, NULL, NULL, "%s", devnodes[i])) {
+      return NULL;
+    }
+    t.state = states[i];
+    if (!OV_ARRAY_PUSH(&targets, t)) {
+      OV_ARRAY_DESTROY(&t.devnode);
+      return NULL;
+    }
+  }
+  return targets;
+}
+
+/**
+ * @brief The press looks at the devices it finds and answers them at once
+ *
+ * The state the devices are in when the button is pressed is what the press answers, and
+ * nothing looks at it before that: the state of one run must not decide the answer of
+ * the next one.
+ */
+static void test_press_answers_the_devices_it_finds(void) {
+  {
+    enum device_state const states[] = {DEVICE_STATE_FAULTED};
+    struct device_target *targets = make_press_targets(states, 1);
+    if (TEST_CHECK(targets != NULL)) {
+      TEST_CHECK(ui_press_action(targets, OV_ARRAY_LENGTH(targets)) == UI_PRESS_REPAIR);
+      device_targets_release(&targets);
+    }
+  }
+  {
+    enum device_state const states[] = {DEVICE_STATE_HEALTHY, DEVICE_STATE_FAULTED};
+    struct device_target *targets = make_press_targets(states, 2);
+    if (TEST_CHECK(targets != NULL)) {
+      TEST_CHECK(ui_press_action(targets, OV_ARRAY_LENGTH(targets)) == UI_PRESS_REPAIR);
+      device_targets_release(&targets);
+    }
+  }
+  {
+    enum device_state const states[] = {DEVICE_STATE_HEALTHY};
+    struct device_target *targets = make_press_targets(states, 1);
+    if (TEST_CHECK(targets != NULL)) {
+      TEST_CHECK(ui_press_action(targets, OV_ARRAY_LENGTH(targets)) == UI_PRESS_ASK);
+      device_targets_release(&targets);
+    }
+  }
+  {
+    enum device_state const states[] = {DEVICE_STATE_HEALTHY, DEVICE_STATE_HEALTHY};
+    struct device_target *targets = make_press_targets(states, 2);
+    if (TEST_CHECK(targets != NULL)) {
+      TEST_CHECK(ui_press_action(targets, OV_ARRAY_LENGTH(targets)) == UI_PRESS_ASK);
+      device_targets_release(&targets);
+    }
+  }
+  {
+    enum device_state const states[] = {DEVICE_STATE_PROBLEM};
+    struct device_target *targets = make_press_targets(states, 1);
+    if (TEST_CHECK(targets != NULL)) {
+      TEST_CHECK(ui_press_action(targets, OV_ARRAY_LENGTH(targets)) == UI_PRESS_NOT_REPAIRABLE);
+      device_targets_release(&targets);
+    }
+  }
+  {
+    enum device_state const states[] = {DEVICE_STATE_UNKNOWN};
+    struct device_target *targets = make_press_targets(states, 1);
+    if (TEST_CHECK(targets != NULL)) {
+      TEST_CHECK(ui_press_action(targets, OV_ARRAY_LENGTH(targets)) == UI_PRESS_NOT_REPAIRABLE);
+      device_targets_release(&targets);
+    }
+  }
+}
+
+/**
+ * @brief A press with nothing connected has nothing to answer
+ */
+static void test_press_with_nothing_connected(void) { TEST_CHECK(ui_press_action(NULL, 0) == UI_PRESS_NOT_REPAIRABLE); }
+
+/**
  * @brief The window belongs to the run that nobody is watching
  *
  * A run a person started keeps its result in front of them, whatever came of it, and a
@@ -894,27 +987,29 @@ static void test_result_dialog_only_for_a_window_that_stays(void) {
 }
 
 /**
- * @brief The two lines of the question have to differ or it says the same thing twice
+ * @brief The line of the combo names the device and the unit of it
  *
- * The question stands in front of a run that the device does not need.  The case this tool
- * exists for starts at once, the scheduled run never sees the question at all.
+ * The driver package lists one name for more than one device,
+ * and the same device can be connected more than once, so the
+ * line carries the devnode of the unit.  A unit no entry names
+ * is told by the only string it has.
  */
-static void test_confirm_dialog(void) {
-  char headline[256];
-  char body[512];
+static void test_device_picker_label(void) {
+  struct device_entry const named = {.id = "TUSBAUDIO_ENUM\\VID_2708&PID_0008&KS", .name = "iD14"};
+  struct device_entry const nameless = {.id = "TUSBAUDIO_ENUM\\VID_2708&PID_000B&KS", .name = NULL};
+  char line[256];
+  char const unit[] = "TUSBAUDIO_ENUM\\VID_2708&PID_0008&KS\\6&D6CB2A&0&2";
 
-  TEST_CHECK(ui_asks_before_close(true) == false);
-  TEST_CHECK(ui_asks_before_close(false) == true);
-
-  ui_confirm_dialog_text(headline, sizeof(headline), body, sizeof(body));
-  TEST_CHECK(headline[0] != '\0');
-  TEST_CHECK(body[0] != '\0');
-  TEST_CHECK(strcmp(headline, body) != 0);
-  TEST_CHECK(strstr(headline, "?") != NULL);
-  TEST_CHECK(strstr(body, "No faulty Audient device was found") != NULL);
-  TEST_CHECK(strstr(body, "likely to fail") != NULL);
-  TEST_CHECK(strstr(body, "?") == NULL);
-  TEST_CHECK(strcmp(headline, "Audient Device Closer") != 0);
+  TEST_CHECK(ui_device_picker_label(&named, unit, line, sizeof(line)) == true);
+  TEST_CHECK(strcmp(line, "iD14 (TUSBAUDIO_ENUM\\VID_2708&PID_0008&KS\\6&D6CB2A&0&2)") == 0);
+  TEST_CHECK(ui_device_picker_label(&nameless, unit, line, sizeof(line)) == true);
+  TEST_CHECK(strcmp(line, "TUSBAUDIO_ENUM\\VID_2708&PID_0008&KS\\6&D6CB2A&0&2") == 0);
+  TEST_CHECK(ui_device_picker_label(NULL, unit, line, sizeof(line)) == true);
+  TEST_CHECK(strcmp(line, "TUSBAUDIO_ENUM\\VID_2708&PID_0008&KS\\6&D6CB2A&0&2") == 0);
+  TEST_CHECK(ui_device_picker_label(&named, NULL, line, sizeof(line)) == false);
+  TEST_CHECK(ui_device_picker_label(&named, unit, NULL, sizeof(line)) == false);
+  TEST_CHECK(ui_device_picker_label(&named, unit, line, 0) == false);
+  TEST_CHECK(ui_device_picker_label(&named, "", line, sizeof(line)) == false);
 }
 
 /**
@@ -936,6 +1031,608 @@ static bool font_of_dpi(HWND const control, int const dpi) {
     return false;
   }
   return lf.lfHeight == layout_font_height((UINT)dpi);
+}
+
+/**
+ * @brief Does every line of the text of one control fit the room it is given
+ *
+ * The lines of the text are the parts its line
+ * breaks separate, and each of them has to fit
+ * the room of the control on its own.
+ *
+ * @param control the control to read
+ * @return false when a line is cut off, or nothing could be measured
+ */
+static bool control_lines_fit(HWND const control) {
+  wchar_t text[512];
+  HFONT const font = (HFONT)(INT_PTR)SendMessageW(control, WM_GETFONT, 0, 0);
+  HDC dc = GetDC(control);
+  HFONT old = NULL;
+  RECT rc;
+  bool fits = true;
+
+  if (dc == NULL) {
+    return false;
+  }
+  memset(text, 0, sizeof(text));
+  GetWindowTextW(control, text, (int)(sizeof(text) / sizeof(text[0])) - 1);
+  old = (HFONT)SelectObject(dc, font);
+  GetClientRect(control, &rc);
+  for (wchar_t const *line = text; (line != NULL) && fits;) {
+    wchar_t const *const end = wcschr(line, L'\n');
+    int const len = (int)((end != NULL) ? (size_t)(end - line) : wcslen(line));
+    SIZE size = {0, 0};
+
+    if ((len > 0) && ((GetTextExtentPoint32W(dc, line, len, &size) == 0) || (size.cx > (rc.right - rc.left)))) {
+      fits = false;
+    }
+    line = (end != NULL) ? (end + 1) : NULL;
+  }
+  if (old != NULL) {
+    SelectObject(dc, old);
+  }
+  ReleaseDC(control, dc);
+  return fits;
+}
+
+/**
+ * @brief Does the line the combo shows fit the room the combo keeps for it
+ *
+ * The button that opens the list, the frame
+ * around the line and the padding the line is
+ * drawn away from take room of the combo, so
+ * the line has to fit in the room that is left.
+ *
+ * @param combo the combo to read
+ * @return false when the line is cut off, or nothing could be measured
+ */
+static bool combo_line_fits(HWND const combo) {
+  wchar_t text[512];
+  HFONT const font = (HFONT)(INT_PTR)SendMessageW(combo, WM_GETFONT, 0, 0);
+  HDC dc = GetDC(combo);
+  HFONT old = NULL;
+  SIZE size = {0, 0};
+  RECT rc;
+  COMBOBOXINFO info = {0};
+  int button = 0;
+  bool measured = false;
+
+  if (dc == NULL) {
+    return false;
+  }
+  memset(text, 0, sizeof(text));
+  SendMessageW(combo, WM_GETTEXT, (WPARAM)(sizeof(text) / sizeof(text[0])), (LPARAM)text);
+  old = (HFONT)SelectObject(dc, font);
+  measured = GetTextExtentPoint32W(dc, text, (int)wcslen(text), &size) != FALSE;
+  if (old != NULL) {
+    SelectObject(dc, old);
+  }
+  ReleaseDC(combo, dc);
+  if (!measured) {
+    return false;
+  }
+  info.cbSize = sizeof(info);
+  if (GetComboBoxInfo(combo, &info) && ((info.rcButton.right - info.rcButton.left) > 0)) {
+    button = info.rcButton.right - info.rcButton.left;
+  } else {
+    button = GetSystemMetrics(SM_CXVSCROLL);
+  }
+  GetClientRect(combo, &rc);
+  return (size.cx + button + (2 * GetSystemMetrics(SM_CXEDGE)) + layout_scale(ADC_LAYOUT_PICKER_COMBO_INSET, GetDpiForWindow(combo))) <=
+         (rc.right - rc.left);
+}
+
+static bool field_name_drawn_whole(HWND const combo, HDC const field, HDC const screen);
+
+/**
+ * @brief Read the picker window while it is up, then answer it
+ *
+ * The units the combo holds are the two
+ * the timer was made for, so each line has
+ * to name its unit, and the window has to
+ * be wide enough for the widest one to be
+ * read whole.  The answer is the press of
+ * the button that repairs.
+ *
+ * @param hwnd the owner the timer was made for
+ * @param msg the message of the timer
+ * @param id the identifier of the timer
+ * @param tickcount the tick count when the timer fired
+ */
+static void CALLBACK picker_test_timer(HWND const hwnd, UINT const msg, UINT_PTR const id, DWORD const tickcount) {
+  static wchar_t const first_unit[] = L"iD14 (TUSBAUDIO_ENUM\\VID_2708&PID_0002&KS\\6&deadbee&0&2)";
+  static wchar_t const second_unit[] = L"iD14 (TUSBAUDIO_ENUM\\VID_2708&PID_0008&KS\\6&feedface&0&3)";
+  HWND picker = NULL;
+  HWND combo = NULL;
+  HWND label = NULL;
+  HWND ok_btn = NULL;
+  int lines = 0;
+  int i = 0;
+
+  (void)msg;
+  (void)id;
+  (void)tickcount;
+  KillTimer(hwnd, ADC_PICKER_TEST_TIMER_ID);
+  picker = GetLastActivePopup(hwnd);
+  if (!TEST_CHECK((picker != NULL) && (picker != hwnd))) {
+    return;
+  }
+  TEST_CHECK(IsWindowEnabled(hwnd) == FALSE);
+  TEST_MSG("want a locked owner while the picker is up");
+  combo = FindWindowExW(picker, NULL, WC_COMBOBOXW, NULL);
+  if (TEST_CHECK(combo != NULL)) {
+    lines = (int)SendMessageW(combo, CB_GETCOUNT, 0, 0);
+    TEST_CHECK_(lines == 2, "want the two units of the device, got %d", lines);
+    for (i = 0; i < lines; i++) {
+      wchar_t line[512];
+      wchar_t const *const want = (i == 0) ? first_unit : second_unit;
+
+      memset(line, 0, sizeof(line));
+      SendMessageW(combo, CB_GETLBTEXT, (WPARAM)i, (LPARAM)line);
+      TEST_CHECK_(lstrcmpW(line, want) == 0, "unit %d: want [%ls], got [%ls]", i, want, line);
+    }
+    TEST_CHECK(combo_line_fits(combo));
+    TEST_MSG("want the widest unit readable whole in the room the combo keeps");
+    if (theme_dark()) {
+      // the list of the drop down is a window of the system the control makes for itself:
+      // the theme class of the palette gives it its dark look, and this component paints
+      // the frame the theme of the system leaves in the light border of the classic
+      // frame.  The check reads the frame back through WM_PRINT, which paints into a
+      // context the test holds, so the reader never depends on the list being on the
+      // screen, and the list never has to be dropped to be read
+      COMBOBOXINFO info = {0};
+
+      info.cbSize = sizeof(info);
+      if (TEST_CHECK(GetComboBoxInfo(combo, &info) && (info.hwndList != NULL))) {
+        HDC dc = GetDC(info.hwndList);
+        HDC mem = CreateCompatibleDC(dc);
+        RECT rc = {0, 0, 0, 0};
+        HBITMAP bmp = NULL;
+        HBITMAP old = NULL;
+        COLORREF frame_pixel = 0;
+
+        GetWindowRect(info.hwndList, &rc);
+        bmp = CreateCompatibleBitmap(dc, rc.right - rc.left, rc.bottom - rc.top);
+        if (TEST_CHECK((dc != NULL) && (mem != NULL) && (bmp != NULL))) {
+          old = (HBITMAP)SelectObject(mem, bmp);
+          SendMessageW(info.hwndList, WM_PRINT, (WPARAM)mem, PRF_NONCLIENT);
+          frame_pixel = GetPixel(mem, 0, (rc.bottom - rc.top) / 2);
+          SelectObject(mem, old);
+          old = NULL;
+        }
+        if (bmp != NULL) {
+          DeleteObject(bmp);
+          bmp = NULL;
+        }
+        if (mem != NULL) {
+          DeleteDC(mem);
+          mem = NULL;
+        }
+        if (dc != NULL) {
+          ReleaseDC(info.hwndList, dc);
+          dc = NULL;
+        }
+        TEST_CHECK_(
+            frame_pixel == RGB(0x39, 0x39, 0x39), "want the frame of the list in the colour of the dark palette, got %08lx", frame_pixel);
+        // the rows of the list are painted here, and the reader reads them back
+        // through WM_PRINTCLIENT, which paints into a context the test holds
+        {
+          HDC row_dc = GetDC(NULL);
+          HDC row_mem = CreateCompatibleDC(row_dc);
+          HBITMAP row_bmp = NULL;
+          HBITMAP row_old = NULL;
+          COLORREF row = 0;
+          COLORREF chosen_row = 0;
+          RECT cr = {0, 0, 0, 0};
+          LONG const item_height = (LONG)SendMessageW(combo, CB_GETITEMHEIGHT, 0, 0);
+
+          GetClientRect(info.hwndList, &cr);
+          row_bmp = CreateCompatibleBitmap(row_dc, cr.right - cr.left, cr.bottom - cr.top);
+          if (TEST_CHECK((row_mem != NULL) && (row_bmp != NULL))) {
+            row_old = (HBITMAP)SelectObject(row_mem, row_bmp);
+            SendMessageW(info.hwndList, WM_PRINTCLIENT, (WPARAM)row_mem, PRF_CLIENT);
+            // the first row is the one the reader chose, the second one is not,
+            // and the name of a unit starts a little into the row, so the edge
+            // of the row is the face of the row
+            row = GetPixel(row_mem, 0, item_height + 3);
+            chosen_row = GetPixel(row_mem, 0, 3);
+            SelectObject(row_mem, row_old);
+            row_old = NULL;
+          }
+          if (row_bmp != NULL) {
+            DeleteObject(row_bmp);
+            row_bmp = NULL;
+          }
+          if (row_mem != NULL) {
+            DeleteDC(row_mem);
+            row_mem = NULL;
+          }
+          if (row_dc != NULL) {
+            ReleaseDC(NULL, row_dc);
+            row_dc = NULL;
+          }
+          TEST_CHECK_(row == RGB(0x2B, 0x2B, 0x2B), "want the face of a row of the list in the colour of the dark palette, got %08lx", row);
+          TEST_CHECK_(chosen_row == GetSysColor(COLOR_HIGHLIGHT),
+                      "want the chosen row in the colour of the selection of Windows, got %08lx",
+                      chosen_row);
+        }
+      }
+    }
+    if (theme_dark()) {
+      // the rows the reader sees are the ones the screen shows once the list is dropped, so
+      // the check drops the list, has it painted now, and reads the screen where the rows are
+      COMBOBOXINFO dd_info;
+      LONG const item_height = (LONG)SendMessageW(combo, CB_GETITEMHEIGHT, 0, 0);
+      HDC screen = GetDC(NULL);
+      POINT plain = {0, item_height + 3};
+      POINT chosen = {0, 3};
+      COLORREF plain_px = 0;
+      COLORREF chosen_px = 0;
+
+      memset(&dd_info, 0, sizeof(dd_info));
+      dd_info.cbSize = sizeof(dd_info);
+      GetComboBoxInfo(combo, &dd_info);
+      {
+        // the reader opens the list the way a click on the arrow does
+        LONG const arrow_x = (dd_info.rcButton.left + dd_info.rcButton.right) / 2;
+        LONG const arrow_y = (dd_info.rcButton.top + dd_info.rcButton.bottom) / 2;
+        SendMessageW(combo, WM_LBUTTONDOWN, MK_LBUTTON, MAKELPARAM(arrow_x, arrow_y));
+        SendMessageW(combo, WM_LBUTTONUP, 0, MAKELPARAM(arrow_x, arrow_y));
+      }
+      RedrawWindow(dd_info.hwndList, NULL, NULL, RDW_UPDATENOW);
+      ClientToScreen(dd_info.hwndList, &plain);
+      ClientToScreen(dd_info.hwndList, &chosen);
+      if (screen != NULL) {
+        plain_px = GetPixel(screen, plain.x, plain.y);
+        chosen_px = GetPixel(screen, chosen.x, chosen.y);
+        ReleaseDC(NULL, screen);
+      }
+      SendMessageW(combo, CB_SHOWDROPDOWN, FALSE, 0);
+      TEST_CHECK_(plain_px == RGB(0x2B, 0x2B, 0x2B),
+                  "want the unchosen row of the open list in the colour of the dark palette, got %08lx",
+                  plain_px);
+      TEST_CHECK_(chosen_px == GetSysColor(COLOR_HIGHLIGHT),
+                  "want the chosen row of the open list in the colour of the selection, got %08lx",
+                  chosen_px);
+    }
+    if (theme_dark()) {
+      // the list is erased before it is painted, and an animation of the drop shows the area
+      // the erase covers first, so the erase has to fill it in the palette too
+      HDC erase_dc = GetDC(NULL);
+      HDC erase_mem = CreateCompatibleDC(erase_dc);
+      HBITMAP erase_bmp = CreateCompatibleBitmap(erase_dc, 64, 64);
+      HBITMAP erase_old = NULL;
+      RECT erase_rc = {0, 0, 64, 64};
+      COLORREF erased = 0;
+      COMBOBOXINFO erase_info;
+
+      memset(&erase_info, 0, sizeof(erase_info));
+      erase_info.cbSize = sizeof(erase_info);
+      GetComboBoxInfo(combo, &erase_info);
+      if ((erase_mem != NULL) && (erase_bmp != NULL)) {
+        erase_old = (HBITMAP)SelectObject(erase_mem, erase_bmp);
+        FillRect(erase_mem, &erase_rc, (HBRUSH)GetStockObject(WHITE_BRUSH));
+        SendMessageW(erase_info.hwndList, WM_ERASEBKGND, (WPARAM)erase_mem, 0);
+        erased = GetPixel(erase_mem, 5, 5);
+        SelectObject(erase_mem, erase_old);
+      }
+      if (erase_bmp != NULL) {
+        DeleteObject(erase_bmp);
+      }
+      if (erase_mem != NULL) {
+        DeleteDC(erase_mem);
+      }
+      ReleaseDC(NULL, erase_dc);
+      TEST_CHECK_(erased == RGB(0x2B, 0x2B, 0x2B), "want the erase of the list in the colour of the dark palette, got %08lx", erased);
+    }
+    if (theme_dark()) {
+      // the selection is moved with the arrow keys while the list is open, and the rows the
+      // screen shows then have to follow the selection, so the check opens the list, moves
+      // the selection down, has the list painted now and reads the screen where the rows are
+      COMBOBOXINFO key_info;
+      LONG const item_height = (LONG)SendMessageW(combo, CB_GETITEMHEIGHT, 0, 0);
+      HDC screen = NULL;
+      POINT first = {0, 3};
+      POINT second = {0, item_height + 3};
+      COLORREF first_px = 0;
+      COLORREF second_px = 0;
+      LRESULT moved = 0;
+
+      memset(&key_info, 0, sizeof(key_info));
+      key_info.cbSize = sizeof(key_info);
+      GetComboBoxInfo(combo, &key_info);
+      {
+        LONG const arrow_x = (key_info.rcButton.left + key_info.rcButton.right) / 2;
+        LONG const arrow_y = (key_info.rcButton.top + key_info.rcButton.bottom) / 2;
+        SendMessageW(combo, WM_LBUTTONDOWN, MK_LBUTTON, MAKELPARAM(arrow_x, arrow_y));
+        SendMessageW(combo, WM_LBUTTONUP, 0, MAKELPARAM(arrow_x, arrow_y));
+      }
+      SendMessageW(key_info.hwndList, WM_KEYDOWN, VK_DOWN, 0);
+      SendMessageW(key_info.hwndList, WM_KEYUP, VK_DOWN, 0);
+      moved = SendMessageW(key_info.hwndList, LB_GETCURSEL, 0, 0);
+      RedrawWindow(key_info.hwndList, NULL, NULL, RDW_UPDATENOW);
+      ClientToScreen(key_info.hwndList, &first);
+      ClientToScreen(key_info.hwndList, &second);
+      screen = GetDC(NULL);
+      if (screen != NULL) {
+        first_px = GetPixel(screen, first.x, first.y);
+        second_px = GetPixel(screen, second.x, second.y);
+        ReleaseDC(NULL, screen);
+      }
+      // the choice is put back to the first unit, the window answers with the chosen one
+      SendMessageW(key_info.hwndList, WM_KEYDOWN, VK_UP, 0);
+      SendMessageW(key_info.hwndList, WM_KEYUP, VK_UP, 0);
+      SendMessageW(combo, CB_SHOWDROPDOWN, FALSE, 0);
+      TEST_CHECK_(moved == 1, "want the arrow key to choose the second unit of the open list, got %ld", (long)moved);
+      TEST_CHECK_(first_px == RGB(0x2B, 0x2B, 0x2B),
+                  "want the first row, now unchosen, in the colour of the dark palette after the arrow key, got %08lx",
+                  first_px);
+      TEST_CHECK_(second_px == GetSysColor(COLOR_HIGHLIGHT),
+                  "want the second row, now chosen, in the colour of the selection after the arrow key, got %08lx",
+                  second_px);
+    }
+    if (theme_dark()) {
+      // the field of a drop down list is painted from the theme, which is light in every
+      // state, so the component paints it: the check reads the field back through
+      // WM_PRINTCLIENT, which paints without the window and never races a repaint
+      HDC screen = GetDC(combo);
+      HDC mem = CreateCompatibleDC(screen);
+      HBITMAP bmp = NULL;
+      HBITMAP old = NULL;
+      RECT rc;
+      COLORREF frame_pixel = 0;
+      COLORREF face_pixel = 0;
+      bool name_whole = false;
+
+      GetClientRect(combo, &rc);
+      bmp = CreateCompatibleBitmap(screen, rc.right - rc.left, rc.bottom - rc.top);
+      if ((screen != NULL) && (mem != NULL) && (bmp != NULL)) {
+        old = (HBITMAP)SelectObject(mem, bmp);
+        SendMessageW(combo, WM_PRINTCLIENT, (WPARAM)mem, PRF_CLIENT);
+        frame_pixel = GetPixel(mem, 0, (rc.bottom - rc.top) / 2);
+        face_pixel = GetPixel(mem, 1, 1);
+        name_whole = field_name_drawn_whole(combo, mem, screen);
+        SelectObject(mem, old);
+        old = NULL;
+      }
+      if (bmp != NULL) {
+        DeleteObject(bmp);
+        bmp = NULL;
+      }
+      if (mem != NULL) {
+        DeleteDC(mem);
+        mem = NULL;
+      }
+      if (screen != NULL) {
+        ReleaseDC(combo, screen);
+        screen = NULL;
+      }
+      TEST_CHECK_(
+          frame_pixel == RGB(0x39, 0x39, 0x39), "want the frame of the field in the colour of the dark palette, got %08lx", frame_pixel);
+      TEST_CHECK_(
+          face_pixel == RGB(0x2D, 0x2D, 0x2D), "want the face of the field in the colour of the dark palette, got %08lx", face_pixel);
+      TEST_CHECK_(name_whole, "want the chosen name drawn whole in the field, the sign of an accelerator must not be eaten");
+    }
+  }
+  label = FindWindowExW(picker, NULL, L"STATIC", NULL);
+  if (TEST_CHECK(label != NULL)) {
+    TEST_CHECK(control_lines_fit(label));
+    TEST_MSG("want every sentence of the question readable whole in the room it is given");
+  }
+  ok_btn = FindWindowExW(picker, NULL, L"Button", NULL);
+  if (!TEST_CHECK(ok_btn != NULL)) {
+    return;
+  }
+  TEST_CHECK(font_of_dpi(ok_btn, (int)GetDpiForWindow(picker)));
+  TEST_MSG("want the button drawn with a font of the window");
+  SendMessageW(picker, WM_COMMAND, MAKEWPARAM(IDC_PICKER_OK, BN_CLICKED), (LPARAM)ok_btn);
+  TEST_CHECK(!IsWindow(picker));
+  TEST_MSG("want the picker window gone after the press of its repair button");
+}
+
+/**
+ * @brief Does the field of a drop down list draw the chosen name whole
+ *
+ * A name carries the sign of an accelerator.  A field that draws the name as a prefix eats
+ * the sign and underlines the letter after it.  The check draws the same name, with the
+ * sign kept, in the palette of the field, and compares the band the name fills with the
+ * field.  The edges of the field are left out, the focus cue is drawn there.
+ *
+ * @param combo the combo box whose field was read
+ * @param field the context the field was printed into
+ * @param screen a context of the screen, the reference is made in a context like it
+ * @return true when the name is drawn whole in the field
+ */
+static bool field_name_drawn_whole(HWND const combo, HDC const field, HDC const screen) {
+  enum { field_text_inset = 2, edge_skip = 1 };
+  wchar_t name[256];
+  int const cur = (int)SendMessageW(combo, CB_GETCURSEL, 0, 0);
+  LRESULT const font_value = SendMessageW(combo, WM_GETFONT, 0, 0);
+  HFONT const font = (HFONT)(void *)font_value;
+  COMBOBOXINFO info;
+  RECT box = {0, 0, 0, 0};
+  RECT client = {0, 0, 0, 0};
+  RECT measure = {0, 0, 0, 0};
+  HDC ref = NULL;
+  HBITMAP ref_bmp = NULL;
+  HBITMAP ref_old = NULL;
+  HFONT ref_font = NULL;
+  HBRUSH face = NULL;
+  LONG end = 0;
+  LONG x = 0;
+  LONG y = 0;
+  bool made = false;
+  bool differs = false;
+
+  memset(name, 0, sizeof(name));
+  if ((cur == CB_ERR) || (font == NULL) || (SendMessageW(combo, CB_GETLBTEXT, (WPARAM)cur, (LPARAM)name) == CB_ERR)) {
+    return false;
+  }
+  memset(&info, 0, sizeof(info));
+  info.cbSize = sizeof(info);
+  if (!GetComboBoxInfo(combo, &info)) {
+    return false;
+  }
+  box = info.rcItem;
+  InflateRect(&box, -layout_scale(field_text_inset, (UINT)GetDpiForWindow(combo)), 0);
+  GetClientRect(combo, &client);
+  ref = CreateCompatibleDC(screen);
+  ref_bmp = CreateCompatibleBitmap(screen, client.right - client.left, client.bottom - client.top);
+  face = CreateSolidBrush(RGB(0x2D, 0x2D, 0x2D));
+  if ((ref == NULL) || (ref_bmp == NULL) || (face == NULL)) {
+    goto cleanup;
+  }
+  made = true;
+  ref_old = (HBITMAP)SelectObject(ref, ref_bmp);
+  ref_font = (HFONT)SelectObject(ref, font);
+  FillRect(ref, &client, face);
+  SetBkMode(ref, TRANSPARENT);
+  SetTextColor(ref, theme_palette_text());
+  DrawTextW(ref, name, -1, &measure, DT_LEFT | DT_SINGLELINE | DT_NOPREFIX | DT_CALCRECT);
+  DrawTextW(ref, name, -1, &box, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
+  end = box.left + measure.right;
+  if (end > box.right - edge_skip) {
+    end = box.right - edge_skip;
+  }
+  for (y = box.top + edge_skip; (y < box.bottom - edge_skip) && !differs; y++) {
+    for (x = box.left + edge_skip; (x < end) && !differs; x++) {
+      if (GetPixel(field, x, y) != GetPixel(ref, x, y)) {
+        differs = true;
+      }
+    }
+  }
+
+cleanup:
+  if (ref_font != NULL) {
+    SelectObject(ref, ref_font);
+  }
+  if (ref_old != NULL) {
+    SelectObject(ref, ref_old);
+  }
+  if (face != NULL) {
+    DeleteObject(face);
+  }
+  if (ref_bmp != NULL) {
+    DeleteObject(ref_bmp);
+  }
+  if (ref != NULL) {
+    DeleteDC(ref);
+  }
+  return made && !differs;
+}
+
+/**
+ * @brief The picker names every unit of the device and answers with the one
+ *
+ * Two units of one device are connected, so the
+ * combo has to tell them apart by the unit
+ * each line names, and the window has to be
+ * wide enough for the widest one to be read
+ * whole.  The reader answers with the button
+ * that repairs, and the window hands the unit
+ * it held selected back to the caller.
+ */
+static void test_picker_window_names_every_unit(void) {
+  struct device_entry *devices = NULL;
+  struct device_target *targets = NULL;
+  struct device_target *picked = NULL;
+  struct settings s;
+  struct device_entry entry;
+  struct device_target target;
+  struct ov_error err = {0};
+  ATOM atom = 0;
+  HFONT font = NULL;
+  HWND owner = NULL;
+  WNDCLASSEXW wc;
+
+  memset(&s, 0, sizeof(s));
+  memset(&entry, 0, sizeof(entry));
+  entry.id = "TUSBAUDIO_ENUM\\VID_2708&PID_0002&KS";
+  entry.name = "iD14";
+  TEST_CHECK(OV_ARRAY_PUSH(&devices, entry));
+  entry.id = "TUSBAUDIO_ENUM\\VID_2708&PID_0008&KS";
+  TEST_CHECK(OV_ARRAY_PUSH(&devices, entry));
+  s.devices = devices;
+  memset(&target, 0, sizeof(target));
+  target.devnode = "TUSBAUDIO_ENUM\\VID_2708&PID_0002&KS\\6&deadbee&0&2";
+  target.state = DEVICE_STATE_PROBLEM;
+  TEST_CHECK(OV_ARRAY_PUSH(&targets, target));
+  target.devnode = "TUSBAUDIO_ENUM\\VID_2708&PID_0008&KS\\6&feedface&0&3";
+  target.state = DEVICE_STATE_PROBLEM;
+  TEST_CHECK(OV_ARRAY_PUSH(&targets, target));
+
+  TEST_CHECK(theme_init(true, &err));
+  memset(&wc, 0, sizeof(wc));
+  wc.cbSize = sizeof(wc);
+  wc.lpfnWndProc = DefWindowProcW;
+  wc.hInstance = GetModuleHandleW(NULL);
+  wc.hCursor = LoadCursorW(NULL, (LPCWSTR)IDC_ARROW);
+  wc.hbrBackground = theme_class_brush();
+  wc.lpszClassName = L"adc_picker_test_owner";
+  atom = RegisterClassExW(&wc);
+  TEST_CHECK(atom != 0);
+  font = CreateFontW(layout_font_height(USER_DEFAULT_SCREEN_DPI),
+                     0,
+                     0,
+                     0,
+                     FW_NORMAL,
+                     FALSE,
+                     FALSE,
+                     FALSE,
+                     DEFAULT_CHARSET,
+                     OUT_DEFAULT_PRECIS,
+                     CLIP_DEFAULT_PRECIS,
+                     CLEARTYPE_QUALITY,
+                     DEFAULT_PITCH | FF_DONTCARE,
+                     L"Segoe UI");
+  if (!TEST_CHECK(font != NULL)) {
+    goto cleanup;
+  }
+  owner = CreateWindowExW(0, wc.lpszClassName, L"owner", WS_OVERLAPPEDWINDOW, 0, 0, 400, 300, NULL, NULL, wc.hInstance, NULL);
+  if (!TEST_CHECK(owner != NULL)) {
+    goto cleanup;
+  }
+  theme_attach(owner);
+  SendMessageW(owner, WM_SETFONT, (WPARAM)font, TRUE);
+  ShowWindow(owner, SW_SHOW);
+
+  TEST_CASE("the picker names every unit and answers with the one it held");
+  {
+    UINT_PTR timer = 0;
+
+    timer = SetTimer(owner, ADC_PICKER_TEST_TIMER_ID, ADC_PICKER_TEST_TIMER_MS, picker_test_timer);
+    if (!TEST_CHECK(timer != 0)) {
+      goto cleanup;
+    }
+    if (!TEST_SUCCEEDED(ui_device_picker_show(owner, &s, targets, &picked, &err), &err)) {
+      goto cleanup;
+    }
+    KillTimer(owner, ADC_PICKER_TEST_TIMER_ID);
+    TEST_CHECK(IsWindowEnabled(owner) != 0);
+    TEST_MSG("want the owner unlocked when the picker is done");
+    TEST_CHECK(GetActiveWindow() == owner);
+    TEST_MSG("want the owner active again after the popup is gone");
+    if (TEST_CHECK(picked != NULL)) {
+      TEST_CHECK_(strcmp(picked->devnode, "TUSBAUDIO_ENUM\\VID_2708&PID_0002&KS\\6&deadbee&0&2") == 0,
+                  "want the first unit, got [%s]",
+                  picked->devnode);
+    }
+    device_targets_release(&picked);
+  }
+  TEST_CASE_(NULL);
+
+cleanup:
+  if (owner != NULL) {
+    DestroyWindow(owner);
+  }
+  if (font != NULL) {
+    DeleteObject(font);
+  }
+  if (atom != 0) {
+    UnregisterClassW(wc.lpszClassName, wc.hInstance);
+  }
+  OV_ARRAY_DESTROY(&targets);
+  OV_ARRAY_DESTROY(&devices);
 }
 
 /**
@@ -1154,8 +1851,7 @@ static void test_blockers_window_shows_the_processes(void) {
     if (!TEST_CHECK(timer != 0)) {
       goto cleanup;
     }
-    if (!TEST_CHECK(ui_blockers_window_show(owner, culprits, &berr))) {
-      OV_ERROR_REPORT(&berr, NULL);
+    if (!TEST_SUCCEEDED(ui_blockers_window_show(owner, culprits, &berr), &berr)) {
       goto cleanup;
     }
     KillTimer(owner, ADC_BLOCKERS_TEST_TIMER_ID);
@@ -1183,7 +1879,6 @@ cleanup:
     UnregisterClassW(wc.lpszClassName, wc.hInstance);
   }
   OV_ARRAY_DESTROY(&culprits);
-  OV_ERROR_REPORT(&berr, NULL);
 }
 
 /**
@@ -1216,9 +1911,9 @@ static void test_progress_window_greys_the_asks_and_stays(void) {
   if (!TEST_CHECK(owner != NULL)) {
     goto cleanup;
   }
-  if (!TEST_CHECK(ui_progress_window_create(
-          owner, (int)GetDpiForWindow(owner), ui_progress_window_steps(false), &cancel, NULL, NULL, &progress, &perr))) {
-    OV_ERROR_REPORT(&perr, NULL);
+  if (!TEST_SUCCEEDED(ui_progress_window_create(
+                          owner, (int)GetDpiForWindow(owner), ui_progress_window_steps(false, 1), &cancel, NULL, NULL, &progress, &perr),
+                      &perr)) {
     goto cleanup;
   }
 
@@ -1586,9 +2281,9 @@ static void test_progress_window_keeps_its_size_and_font(void) {
   theme_attach(owner);
   borrowed = layout_make_font((UINT)GetDpiForWindow(owner));
   SendMessageW(owner, WM_SETFONT, (WPARAM)borrowed, TRUE);
-  if (!TEST_CHECK(ui_progress_window_create(
-          owner, (int)GetDpiForWindow(owner), ui_progress_window_steps(false), &cancel, NULL, NULL, &progress, &perr))) {
-    OV_ERROR_REPORT(&perr, NULL);
+  if (!TEST_SUCCEEDED(ui_progress_window_create(
+                          owner, (int)GetDpiForWindow(owner), ui_progress_window_steps(false, 1), &cancel, NULL, NULL, &progress, &perr),
+                      &perr)) {
     goto cleanup;
   }
   ShowWindow(progress, SW_SHOW);
@@ -1658,9 +2353,12 @@ static void test_progress_window_keeps_its_size_and_font(void) {
     HWND wide = NULL;
     RECT client;
 
-    if (!TEST_CHECK(ui_progress_window_create(owner, dpi, ui_progress_window_steps(false), &cancel, long_line, long_line, &wide, &perr))) {
-      OV_ERROR_REPORT(&perr, NULL);
-    } else {
+    if (!TEST_SUCCEEDED(
+            ui_progress_window_create(owner, dpi, ui_progress_window_steps(false, 1), &cancel, long_line, long_line, &wide, &perr),
+            &perr)) {
+      goto cleanup;
+    }
+    {
       wchar_t shown[256];
       HWND status = FindWindowExW(wide, NULL, L"STATIC", NULL);
 
@@ -1786,8 +2484,6 @@ cleanup:
     TEST_CHECK(join_ui(&thread, &job.done));
     started = false;
   }
-  OV_ERROR_REPORT(&err, NULL);
-  OV_ERROR_REPORT(&result.err, NULL);
   cndvar_exit(&job.done);
 }
 
@@ -1801,11 +2497,14 @@ TEST_LIST = {
     {"progress_bar_follows_the_palette", test_progress_bar_follows_the_palette},
     {"theme_change_reaches_every_window", test_theme_change_reaches_every_window},
     {"theme_switch_detaches_the_theme", test_theme_switch_detaches_the_theme},
+    {"device_picker_label", test_device_picker_label},
+    {"picker_window_names_every_unit", test_picker_window_names_every_unit},
     {"auto_close_follows_the_run", test_auto_close_only_for_a_run_nobody_watches},
     {"result_dialog_follows_the_window", test_result_dialog_only_for_a_window_that_stays},
     {"auto_run_acts_on_the_state", test_auto_run_acts_on_the_state_it_is_for},
     {"auto_run_says_the_state", test_auto_run_says_the_state_it_found},
-    {"confirm_dialog", test_confirm_dialog},
+    {"press_answers_the_devices_it_finds", test_press_answers_the_devices_it_finds},
+    {"press_with_nothing_connected", test_press_with_nothing_connected},
     {"activate_reaches_the_running_copy", test_activate_reaches_the_window_of_the_running_copy},
     {"result_headline", test_result_headline},
     {"result_dialog_lines_differ", test_result_dialog_lines_differ},

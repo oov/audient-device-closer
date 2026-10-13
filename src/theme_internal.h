@@ -57,6 +57,13 @@ COLORREF theme_palette_surface(void);
 COLORREF theme_palette_text(void);
 
 /**
+ * @brief The colour of a control, lists included, in the palette of the theme
+ *
+ * @return the colour to paint with
+ */
+COLORREF theme_palette_control(void);
+
+/**
  * @brief The colour of a caption that cannot be acted on
  *
  * @return the colour to paint with

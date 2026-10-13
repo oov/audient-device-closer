@@ -58,7 +58,9 @@ struct progress_window {
   bool *cancel;                            // the ask to stop, written by the window thread, read by the run
 };
 
-size_t ui_progress_window_steps(bool const wait_first) { return REPAIR_STEPS_TOTAL + (wait_first ? 1 : 0); }
+size_t ui_progress_window_steps(bool const wait_first, size_t const targets) {
+  return (targets * REPAIR_STEPS_PER_TARGET) + (wait_first ? 1 : 0);
+}
 /**
  * @brief Raise the abort flag of the run and grey the ways out
  *
@@ -440,5 +442,6 @@ void ui_progress_window_report(HWND const progress, size_t const step, char cons
   }
   OV_SNPRINTF(buf, sizeof(buf) / sizeof(WCHAR), line_ph, line_ph, text, (int)step, (int)steps);
   SetWindowTextW(pw->status, buf);
+  SendMessageW(pw->bar, PBM_SETRANGE, 0, MAKELPARAM(0, (short)steps));
   SendMessageW(pw->bar, PBM_SETPOS, (WPARAM)step, 0);
 }

@@ -205,31 +205,114 @@ cleanup:
 }
 
 /**
- * @brief What the walk over the devnodes carries with it
+ * @brief The letter a byte of the ASCII stands for
+ *
+ * Only the letters of the ASCII have a case; every other
+ * byte stands for itself, so the two spellings of a letter
+ * fold onto the one letter.
+ *
+ * @param c the byte to fold
+ * @return the letter of c, in the one case the folding has
  */
-struct found_ctx {
-  char const *instance_prefix; // UTF-8, NULL means no prefix filter
-  char **out_devnode;
-  bool found;
-};
+static char ascii_letter(char const c) {
+  if ((c >= 'A') && (c <= 'Z')) {
+    return (char)(c - 'A' + 'a');
+  }
+  return c;
+}
 
 /**
- * @brief Does a devnode sit under the prefix the settings name
+ * @brief Does a string start with a prefix, the case left out
+ *
+ * @param s the string to look at, may not be NULL
+ * @param prefix the prefix to look for, may not be NULL
+ * @return true when s starts with prefix
+ */
+static bool ascii_starts_with(char const *const s, char const *const prefix) {
+  for (size_t i = 0; prefix[i] != '\0'; ++i) {
+    if (ascii_letter(s[i]) != ascii_letter(prefix[i])) {
+      return false;
+    }
+  }
+  return true;
+}
+
+/**
+ * @brief Are two strings the same one, the case left out
+ *
+ * @param a the first string to compare, may not be NULL
+ * @param b the second string to compare, may not be NULL
+ * @return true when both strings end on the same letters
+ */
+static bool ascii_equals(char const *const a, char const *const b) {
+  size_t i = 0;
+
+  while ((a[i] != '\0') && (b[i] != '\0')) {
+    if (ascii_letter(a[i]) != ascii_letter(b[i])) {
+      return false;
+    }
+    ++i;
+  }
+  return a[i] == b[i]; // both ended, or one still has letters
+}
+
+/**
+ * @brief Does a devnode name the device an identifier names
+ *
+ * An identifier of a device, the one without the unit, names
+ * every unit of it: the devnode is that device's when it
+ * starts with the identifier.  An identifier of one unit
+ * names that unit alone: the devnode is that unit's when it
+ * is the identifier, so a devnode of a namesake unit of the
+ * same device is not the one the identifier names.
+ *
+ * @param devnode instance ID of the devnode, UTF-8
+ * @param id the identifier of a device or of a unit, UTF-8
+ * @return true when devnode and id name the same device
+ */
+bool device_is_same(char const *const devnode, char const *const id) {
+  size_t units = 0;
+
+  if ((devnode == NULL) || (devnode[0] == '\0') || (id == NULL) || (id[0] == '\0')) {
+    return false;
+  }
+  for (size_t i = 0; id[i] != '\0'; ++i) {
+    if (id[i] == '\\') {
+      ++units;
+    }
+  }
+  if (units > 1) {
+    // the identifier carries the unit, so only that unit is the one
+    return ascii_equals(devnode, id);
+  }
+  // the identifier names the device, so every unit of it is the one
+  return ascii_starts_with(devnode, id);
+}
+
+/**
+ * @brief Does a devnode belong to one of the devices the settings name
+ *
+ * A devnode sits under the instance identifier of its device, so the devnode is that
+ * device's when it starts with the identifier.  A device list with no entries keeps
+ * every devnode of the service in play.
  *
  * @param devnode the device to look at
- * @param instance_prefix the prefix to look for, NULL means no filter
+ * @param devices the devices to look for, NULL or empty means no filter
+ * @param device_count how many devices the list holds
  * @param out_matched receives the answer
  * @param err receives the failure of the conversion
  * @return false on such a failure
  */
-static bool
-prefix_matches(WCHAR const *const devnode, char const *const instance_prefix, bool *const out_matched, struct ov_error *const err) {
+static bool device_matches(WCHAR const *const devnode,
+                           struct device_entry const *const devices,
+                           size_t const device_count,
+                           bool *const out_matched,
+                           struct ov_error *const err) {
   bool success = false;
   char *utf8 = NULL;
-  size_t plen = 0;
 
   *out_matched = false;
-  if (instance_prefix == NULL) {
+  if ((devices == NULL) || (device_count == 0)) {
     *out_matched = true;
     success = true;
     goto cleanup;
@@ -238,11 +321,11 @@ prefix_matches(WCHAR const *const devnode, char const *const instance_prefix, bo
     OV_ERROR_ADD_TRACE(err);
     goto cleanup;
   }
-  plen = strlen(instance_prefix);
-  if (plen == 0) {
-    *out_matched = true;
-  } else {
-    *out_matched = (_strnicmp(utf8, instance_prefix, plen) == 0);
+  for (size_t i = 0; i < device_count; ++i) {
+    if (device_is_same(utf8, devices[i].id)) {
+      *out_matched = true;
+      break;
+    }
   }
   success = true;
 
@@ -250,6 +333,51 @@ cleanup:
   if (utf8) {
     OV_ARRAY_DESTROY(&utf8);
   }
+  return success;
+}
+
+/**
+ * @brief The entry of the list a devnode belongs to
+ *
+ * The identifier of an entry is a prefix of the devnode of its device,
+ * so the devnode says which entry names it.  A devnode no entry names
+ * is one the list does not cover.
+ *
+ * @param devnode instance ID of the KS devnode, UTF-8
+ * @param devices the devices this program looks at, NULL or empty means
+ *                no entry covers any devnode
+ * @param device_count how many devices the list holds
+ * @param out_found receives the answer
+ * @param out_index receives the entry out_found says yes to
+ * @param err receives nothing but the refused arguments
+ * @return false when the arguments are refused
+ */
+bool device_find_entry(char const *const devnode,
+                       struct device_entry const *const devices,
+                       size_t const device_count,
+                       bool *const out_found,
+                       size_t *const out_index,
+                       struct ov_error *const err) {
+  bool success = false;
+
+  if ((devnode == NULL) || (devnode[0] == '\0') || (out_found == NULL) || (out_index == NULL)) {
+    OV_ERROR_SET_GENERIC(err, ov_error_generic_invalid_argument);
+    goto cleanup;
+  }
+  *out_found = false;
+  *out_index = 0;
+  if ((devices != NULL) && (device_count > 0)) {
+    for (size_t i = 0; i < device_count; ++i) {
+      if (device_is_same(devnode, devices[i].id)) {
+        *out_found = true;
+        *out_index = i;
+        break;
+      }
+    }
+  }
+  success = true;
+
+cleanup:
   return success;
 }
 
@@ -376,82 +504,6 @@ cleanup:
 }
 
 /**
- * @brief Take the first devnode that fits the prefix filter
- *
- * @param devnode the device the walk found
- * @param ctx_void a struct found_ctx
- * @param err receives the failure of the checks
- * @return false to stop the walk with an error
- */
-static bool on_devnode_copy(WCHAR const *const devnode, void *const ctx_void, struct ov_error *const err) {
-  struct found_ctx *ctx = (struct found_ctx *)ctx_void;
-  bool success = false;
-  bool matched = false;
-  char *utf8 = NULL;
-
-  if (ctx->found) {
-    success = true; // the device was found already, nothing else has to be looked at
-    goto cleanup;
-  }
-  if (!prefix_matches(devnode, ctx->instance_prefix, &matched, err)) {
-    OV_ERROR_ADD_TRACE(err);
-    goto cleanup;
-  }
-  if (!matched) {
-    success = true; // not our device, keep walking
-    goto cleanup;
-  }
-  if (!to_utf8(devnode, &utf8, err)) {
-    OV_ERROR_ADD_TRACE(err);
-    goto cleanup;
-  }
-  *ctx->out_devnode = utf8;
-  utf8 = NULL;
-  ctx->found = true;
-  success = true;
-
-cleanup:
-  if (utf8) {
-    OV_ARRAY_DESTROY(&utf8);
-  }
-  return success;
-}
-
-/**
- * @brief First present devnode of the KS service
- *
- * @param service DEVPKEY_Device_Service of the KS devnode
- * @param instance_prefix only devices under this prefix are looked at, NULL means no filter
- * @param err receives the failure of the query
- * @return the devnode in UTF-8, NULL when no device of the service is present
- * @note Release with device_string_free.
- */
-char *device_ks_devnode(char const *const service, char const *const instance_prefix, struct ov_error *const err) {
-  char *result = NULL;
-  struct found_ctx ctx;
-  bool success = false;
-
-  if (!service) {
-    OV_ERROR_SET_GENERIC(err, ov_error_generic_invalid_argument);
-    return NULL;
-  }
-  ctx.instance_prefix = instance_prefix;
-  ctx.out_devnode = &result;
-  ctx.found = false;
-  if (!foreach_devnode(service, on_devnode_copy, &ctx, err)) {
-    OV_ERROR_ADD_TRACE(err);
-    goto cleanup;
-  }
-  success = true;
-
-cleanup:
-  if (!success) {
-    device_string_free(&result);
-  }
-  return success ? result : NULL;
-}
-
-/**
  * @brief Release a string this module handed out
  *
  * @param value set to NULL afterwards, NULL is allowed
@@ -463,47 +515,31 @@ void device_string_free(char **const value) {
 }
 
 /**
- * @brief What the probe collects about the device
- */
-struct probe_ctx {
-  char const *instance_prefix;
-  unsigned long problem_code;
-  size_t render_present;
-  size_t render_registered;
-  size_t capture_present;
-  size_t capture_registered;
-  bool evaluated;
-};
-
-/**
- * @brief Measure one devnode and keep what device_evaluate needs
+ * @brief Measure one devnode: its problem code and what its endpoints offer
  *
- * @param devnode the device the walk found
- * @param ctx_void a struct probe_ctx
- * @param err receives the failure of the checks
- * @return false to stop the walk with an error
+ * Detection only.  The numbers mean what device_evaluate reads.
+ *
+ * @param devnode the device to measure
+ * @param out_problem_code receives the CM_PROB_* value of the devnode
+ * @param out_render_present receives how many render endpoints are present
+ * @param out_render_registered receives how many render endpoints are registered
+ * @param out_capture_present receives how many capture endpoints are present
+ * @param out_capture_registered receives how many capture endpoints are registered
+ * @param err receives the failure of the queries
+ * @return false when the devnode could not be measured
  */
-static bool on_devnode_probe(WCHAR const *const devnode, void *const ctx_void, struct ov_error *const err) {
-  struct probe_ctx *ctx = (struct probe_ctx *)ctx_void;
+static bool measure_devnode(WCHAR const *const devnode,
+                            unsigned long *const out_problem_code,
+                            size_t *const out_render_present,
+                            size_t *const out_render_registered,
+                            size_t *const out_capture_present,
+                            size_t *const out_capture_registered,
+                            struct ov_error *const err) {
   bool success = false;
-  bool matched = false;
   DEVINST devinst = 0;
   ULONG status = 0;
   ULONG problem = 0;
   CONFIGRET cr = 0;
-
-  if (ctx->evaluated) {
-    success = true; // the device was measured already, nothing else has to be looked at
-    goto cleanup;
-  }
-  if (!prefix_matches(devnode, ctx->instance_prefix, &matched, err)) {
-    OV_ERROR_ADD_TRACE(err);
-    goto cleanup;
-  }
-  if (!matched) {
-    success = true; // not our device, keep walking
-    goto cleanup;
-  }
 
   cr = CM_Locate_DevNodeW(&devinst, (WCHAR *)ov_deconster_(devnode), CM_LOCATE_DEVNODE_NORMAL);
   if (cr != CR_SUCCESS) {
@@ -515,24 +551,23 @@ static bool on_devnode_probe(WCHAR const *const devnode, void *const ctx_void, s
     SET_CONFIGRET_ERROR(err, "CM_Get_DevNode_Status", cr);
     goto cleanup;
   }
-  if (!interface_count(&kKsCategoryRender, devnode, CM_GET_DEVICE_INTERFACE_LIST_PRESENT, &ctx->render_present, err)) {
+  if (!interface_count(&kKsCategoryRender, devnode, CM_GET_DEVICE_INTERFACE_LIST_PRESENT, out_render_present, err)) {
     OV_ERROR_ADD_TRACE(err);
     goto cleanup;
   }
-  if (!interface_count(&kKsCategoryRender, devnode, CM_GET_DEVICE_INTERFACE_LIST_ALL_DEVICES, &ctx->render_registered, err)) {
+  if (!interface_count(&kKsCategoryRender, devnode, CM_GET_DEVICE_INTERFACE_LIST_ALL_DEVICES, out_render_registered, err)) {
     OV_ERROR_ADD_TRACE(err);
     goto cleanup;
   }
-  if (!interface_count(&kKsCategoryCapture, devnode, CM_GET_DEVICE_INTERFACE_LIST_PRESENT, &ctx->capture_present, err)) {
+  if (!interface_count(&kKsCategoryCapture, devnode, CM_GET_DEVICE_INTERFACE_LIST_PRESENT, out_capture_present, err)) {
     OV_ERROR_ADD_TRACE(err);
     goto cleanup;
   }
-  if (!interface_count(&kKsCategoryCapture, devnode, CM_GET_DEVICE_INTERFACE_LIST_ALL_DEVICES, &ctx->capture_registered, err)) {
+  if (!interface_count(&kKsCategoryCapture, devnode, CM_GET_DEVICE_INTERFACE_LIST_ALL_DEVICES, out_capture_registered, err)) {
     OV_ERROR_ADD_TRACE(err);
     goto cleanup;
   }
-  ctx->problem_code = problem;
-  ctx->evaluated = true;
+  *out_problem_code = problem;
   success = true;
 
 cleanup:
@@ -540,63 +575,268 @@ cleanup:
 }
 
 /**
- * @brief Look at the device and report what state it is in
- *
- * Detection only.  Never modifies the device.
- *
- * @param service DEVPKEY_Device_Service of the KS devnode
- * @param instance_prefix only devices under this prefix are looked at, NULL means no filter
- * @param err receives the failure of the checks; a state that is neither healthy nor
- *            faulted always carries one
- * @return the state the dialog shows
+ * @brief What the walk over the devnodes collects for every connected device
  */
-enum device_state device_probe(char const *const service, char const *const instance_prefix, struct ov_error *const err) {
-  struct probe_ctx ctx;
-  enum device_state state = DEVICE_STATE_UNKNOWN;
+struct targets_ctx {
+  struct device_entry const *devices; // the devices this program looks at
+  size_t device_count;
+  struct device_target *targets; // the list that fills up
+};
 
-  if (!service) {
-    OV_ERROR_SET_GENERIC(err, ov_error_generic_invalid_argument);
-    goto cleanup;
-  }
-  ctx.instance_prefix = instance_prefix;
-  ctx.problem_code = 0;
-  ctx.render_present = 0;
-  ctx.render_registered = 0;
-  ctx.capture_present = 0;
-  ctx.capture_registered = 0;
-  ctx.evaluated = false;
-  if (!foreach_devnode(service, on_devnode_probe, &ctx, err)) {
+/**
+ * @brief Measure one devnode and file it with its state
+ *
+ * @param devnode the device the walk found
+ * @param ctx_void a struct targets_ctx
+ * @param err receives the failure of the checks
+ * @return false to stop the walk with an error
+ */
+static bool on_devnode_collect(WCHAR const *const devnode, void *const ctx_void, struct ov_error *const err) {
+  struct targets_ctx *ctx = (struct targets_ctx *)ctx_void;
+  bool success = false;
+  bool matched = false;
+  unsigned long problem = 0;
+  size_t render_present = 0;
+  size_t render_registered = 0;
+  size_t capture_present = 0;
+  size_t capture_registered = 0;
+  struct device_target t;
+  char *utf8 = NULL;
+
+  memset(&t, 0, sizeof(t));
+  if (!device_matches(devnode, ctx->devices, ctx->device_count, &matched, err)) {
     OV_ERROR_ADD_TRACE(err);
     goto cleanup;
   }
-  if (!ctx.evaluated) {
-    OV_ERROR_SETF(err,
-                  ov_error_type_generic,
-                  ov_error_generic_fail,
-                  "no devnode of service %1$s is registered",
-                  "no devnode of service %1$s is registered",
-                  service);
-    state = DEVICE_STATE_ABSENT;
+  if (!matched) {
+    success = true; // not our device, keep walking
     goto cleanup;
   }
-  state = device_evaluate(ctx.problem_code, ctx.render_present, ctx.render_registered, ctx.capture_present, ctx.capture_registered);
-  if (state == DEVICE_STATE_PROBLEM) {
-    OV_ERROR_SETF(err,
-                  ov_error_type_generic,
-                  ov_error_generic_fail,
-                  "devnode of service %1$s has problem code 0x%2$08lx",
-                  "devnode of service %1$s has problem code 0x%2$08lx",
-                  service,
-                  ctx.problem_code);
-  } else if (state == DEVICE_STATE_UNKNOWN) {
-    OV_ERROR_SETF(err,
-                  ov_error_type_generic,
-                  ov_error_generic_fail,
-                  "no KS interface of service %1$s is registered",
-                  "no KS interface of service %1$s is registered",
-                  service);
+  if (!measure_devnode(devnode, &problem, &render_present, &render_registered, &capture_present, &capture_registered, err)) {
+    OV_ERROR_ADD_TRACE(err);
+    goto cleanup;
   }
+  if (!to_utf8(devnode, &utf8, err)) {
+    OV_ERROR_ADD_TRACE(err);
+    goto cleanup;
+  }
+  t.devnode = utf8;
+  utf8 = NULL;
+  t.state = device_evaluate(problem, render_present, render_registered, capture_present, capture_registered);
+  if (!OV_ARRAY_PUSH(&ctx->targets, t)) {
+    OV_ERROR_SET_GENERIC(err, ov_error_generic_out_of_memory);
+    goto cleanup;
+  }
+  success = true;
 
 cleanup:
+  if (utf8) {
+    OV_ARRAY_DESTROY(&utf8);
+  }
+  return success;
+}
+
+/**
+ * @brief Release the list of the targets
+ *
+ * @param targets set to NULL afterwards, NULL is allowed
+ */
+void device_targets_release(struct device_target **const targets) {
+  size_t i = 0;
+  size_t n = 0;
+
+  if (targets == NULL) {
+    return;
+  }
+  n = OV_ARRAY_LENGTH(*targets);
+  for (i = 0; i < n; i++) {
+    OV_ARRAY_DESTROY(&(*targets)[i].devnode);
+  }
+  if (*targets) {
+    OV_ARRAY_DESTROY(targets);
+  }
+}
+
+void device_targets_keep_faulted(struct device_target **const targets) {
+  size_t kept = 0;
+  size_t i = 0;
+  size_t n = 0;
+
+  if (targets == NULL) {
+    return;
+  }
+  n = OV_ARRAY_LENGTH(*targets);
+  for (i = 0; i < n; i++) {
+    if ((*targets)[i].state == DEVICE_STATE_FAULTED) {
+      (*targets)[kept++] = (*targets)[i];
+    } else {
+      OV_ARRAY_DESTROY(&(*targets)[i].devnode);
+    }
+  }
+  OV_ARRAY_SET_LENGTH(*targets, kept);
+}
+
+/**
+ * @brief Enumerate the present devnodes of the service and state each one
+ *
+ * @param service DEVPKEY_Device_Service of the KS devnodes
+ * @param devices the devices this program looks at, may not be NULL or empty here
+ * @param device_count how many devices the list holds
+ * @param out_targets receives an array of the targets
+ * @param err receives the failure of the queries
+ * @return false when a devnode could not be measured
+ */
+bool device_probe_all(char const *const service,
+                      struct device_entry const *const devices,
+                      size_t const device_count,
+                      struct device_target **const out_targets,
+                      struct ov_error *const err) {
+  bool success = false;
+  struct targets_ctx ctx;
+
+  ctx.targets = NULL;
+  if ((service == NULL) || (out_targets == NULL)) {
+    OV_ERROR_SET_GENERIC(err, ov_error_generic_invalid_argument);
+    goto cleanup;
+  }
+  ctx.devices = devices;
+  ctx.device_count = device_count;
+  if (!foreach_devnode(service, on_devnode_collect, &ctx, err)) {
+    OV_ERROR_ADD_TRACE(err);
+    goto cleanup;
+  }
+  *out_targets = ctx.targets;
+  ctx.targets = NULL;
+  success = true;
+
+cleanup:
+  if (!success) {
+    device_targets_release(&ctx.targets);
+    if (out_targets != NULL) {
+      *out_targets = NULL;
+    }
+  }
+  return success;
+}
+
+/**
+ * @brief State one devnode the caller already knows by name
+ *
+ * @param devnode instance ID of the KS devnode, UTF-8
+ * @param err receives the failure of the queries
+ * @return the state the devnode is in, DEVICE_STATE_UNKNOWN when nothing was registered
+ */
+enum device_state device_probe_devnode(char const *const devnode, struct ov_error *const err) {
+  enum device_state state = DEVICE_STATE_UNKNOWN;
+  wchar_t *native = NULL;
+  unsigned long problem = 0;
+  size_t render_present = 0;
+  size_t render_registered = 0;
+  size_t capture_present = 0;
+  size_t capture_registered = 0;
+
+  if ((devnode == NULL) || (devnode[0] == '\0')) {
+    OV_ERROR_SET_GENERIC(err, ov_error_generic_invalid_argument);
+    goto cleanup;
+  }
+  if (!to_native(devnode, &native, err)) {
+    OV_ERROR_ADD_TRACE(err);
+    goto cleanup;
+  }
+  if (!measure_devnode(native, &problem, &render_present, &render_registered, &capture_present, &capture_registered, err)) {
+    OV_ERROR_ADD_TRACE(err);
+    goto cleanup;
+  }
+  state = device_evaluate(problem, render_present, render_registered, capture_present, capture_registered);
+
+cleanup:
+  if (native) {
+    OV_ARRAY_DESTROY(&native);
+  }
   return state;
+}
+
+/**
+ * @brief How deep the ancestors of a KS devnode are followed
+ *
+ * A KS devnode sits under the audio function of a USB composite device, so the removal
+ * record of the USB device is an ancestor a few levels up, not the devnode itself.
+ */
+enum { kKsAncestorDepth = 4 };
+
+/**
+ * @brief Does the removal record name one of the ancestors of a devnode
+ *
+ * @param device_instance the DeviceInstance of the removal record, UTF-8, may not be NULL
+ * @param devnode instance ID of the KS devnode, UTF-8, may not be NULL
+ * @param out_named receives the answer
+ * @param err receives the failure of the queries
+ * @return false when the ancestors could not be walked
+ */
+bool device_culprit_names_ancestor(char const *const device_instance,
+                                   char const *const devnode,
+                                   bool *const out_named,
+                                   struct ov_error *const err) {
+  bool named = false;
+  bool success = false;
+  wchar_t *native = NULL;
+  WCHAR id[MAX_DEVICE_ID_LEN];
+  DEVINST devinst = 0;
+  CONFIGRET cr = 0;
+  size_t level = 0;
+
+  *out_named = false;
+  if ((device_instance == NULL) || (device_instance[0] == '\0') || (devnode == NULL) || (devnode[0] == '\0') || (out_named == NULL)) {
+    OV_ERROR_SET_GENERIC(err, ov_error_generic_invalid_argument);
+    goto cleanup;
+  }
+  if (!to_native(devnode, &native, err)) {
+    OV_ERROR_ADD_TRACE(err);
+    goto cleanup;
+  }
+  cr = CM_Locate_DevNodeW(&devinst, native, CM_LOCATE_DEVNODE_NORMAL);
+  if (cr != CR_SUCCESS) {
+    SET_CONFIGRET_ERROR(err, "CM_Locate_DevNodeW", cr);
+    goto cleanup;
+  }
+  for (level = 0; level < (size_t)kKsAncestorDepth; level++) {
+    DEVINST parent = 0;
+    char *id_utf8 = NULL;
+
+    cr = CM_Get_Parent(&parent, devinst, 0);
+    if (cr != CR_SUCCESS) {
+      // the root has no parent; the walk over the ancestors has to stop for that reason and
+      // not with an error
+      if (level > 0) {
+        break;
+      }
+      SET_CONFIGRET_ERROR(err, "CM_Get_Parent", cr);
+      goto cleanup;
+    }
+    cr = CM_Get_Device_IDW(parent, id, MAX_DEVICE_ID_LEN, 0);
+    if (cr != CR_SUCCESS) {
+      SET_CONFIGRET_ERROR(err, "CM_Get_Device_IDW", cr);
+      goto cleanup;
+    }
+    if (!to_utf8(id, &id_utf8, err)) {
+      OV_ERROR_ADD_TRACE(err);
+      goto cleanup;
+    }
+    if (device_is_same(id_utf8, device_instance)) {
+      named = true;
+    }
+    OV_ARRAY_DESTROY(&id_utf8);
+    if (named) {
+      break;
+    }
+    devinst = parent;
+  }
+  *out_named = named;
+  success = true;
+
+cleanup:
+  if (native) {
+    OV_ARRAY_DESTROY(&native);
+  }
+  return success;
 }

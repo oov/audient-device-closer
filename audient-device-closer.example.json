@@ -1,11 +1,34 @@
 {
   "ks_service": "audientusbaudioks",
-  "ks_instance_prefix": "TUSBAUDIO_ENUM",
+  "devices": [
+    { "name": "iD22", "id": "TUSBAUDIO_ENUM\\VID_2708&PID_0001&KS" },
+    { "name": "iD14", "id": "TUSBAUDIO_ENUM\\VID_2708&PID_0002&KS" },
+    { "name": "iD4", "id": "TUSBAUDIO_ENUM\\VID_2708&PID_0003&KS" },
+    { "name": "Sono", "id": "TUSBAUDIO_ENUM\\VID_2708&PID_0004&KS" },
+    { "name": "iD44", "id": "TUSBAUDIO_ENUM\\VID_2708&PID_0005&KS" },
+    { "name": "EVO4", "id": "TUSBAUDIO_ENUM\\VID_2708&PID_0006&KS" },
+    { "name": "EVO8", "id": "TUSBAUDIO_ENUM\\VID_2708&PID_0007&KS" },
+    { "name": "iD14", "id": "TUSBAUDIO_ENUM\\VID_2708&PID_0008&KS" },
+    { "name": "iD4", "id": "TUSBAUDIO_ENUM\\VID_2708&PID_0009&KS" },
+    { "name": "EVO16", "id": "TUSBAUDIO_ENUM\\VID_2708&PID_000A&KS" },
+    { "name": "iD44", "id": "TUSBAUDIO_ENUM\\VID_2708&PID_000B&KS" },
+    { "name": "iD24", "id": "TUSBAUDIO_ENUM\\VID_2708&PID_000D&KS" },
+    { "name": "ORIA", "id": "TUSBAUDIO_ENUM\\VID_2708&PID_000E&KS" },
+    { "name": "iD4 Stream OTG", "id": "TUSBAUDIO_ENUM\\VID_2708&PID_000F&KS" },
+    { "name": "iD14 Stream OTG", "id": "TUSBAUDIO_ENUM\\VID_2708&PID_0010&KS" },
+    { "name": "iD48", "id": "TUSBAUDIO_ENUM\\VID_2708&PID_0012&KS" }
+  ],
   "veto_log_name": "System",
   "veto_provider_name": "Microsoft-Windows-Kernel-PnP",
   "veto_event_id": 225,
-  "mixer_process_name": "iD.exe",
+  "mixer_process_names": [
+    "iD.exe",
+    "EVO.exe",
+    "Sono.exe",
+    "ORIA Control.exe"
+  ],
   "task_name": "\\AudientDeviceCloser\\Device recovery after resume from sleep",
   "auto_run_delay_ms": 5000,
+  "confirm_max_wait_ms": 5000,
   "use_theme": true
 }

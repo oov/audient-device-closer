@@ -33,15 +33,14 @@ msgstr "動作設定"
 msgid "Blocked device"
 msgstr "止められたデバイス"
 
+msgid "Cancel"
+msgstr "キャンセル"
+
 msgid "Checking the device state..."
 msgstr "デバイスの状態を確認しています..."
 
 msgid "Checking what is blocking the close..."
 msgstr "閉じられない原因を確認しています..."
-
-#, c-format
-msgid "Close %1$s (%2$s) automatically"
-msgstr "%1$s (%2$s) を自動的に終了する"
 
 msgid "Close audiodg (audiodg.exe) automatically"
 msgstr "audiodg (audiodg.exe) を自動的に終了する"
@@ -49,12 +48,14 @@ msgstr "audiodg (audiodg.exe) を自動的に終了する"
 msgid "Close the Audient device"
 msgstr "Audient デバイスを閉じる"
 
-#, c-format
-msgid "Closing %1$s (%2$s)..."
-msgstr "%1$s (%2$s) を終了しています..."
+msgid "Close the Audient mixer automatically"
+msgstr "Audient ミキサーを自動的に終了する"
 
 msgid "Closing audiodg (audiodg.exe)..."
 msgstr "audiodg (audiodg.exe) を終了しています..."
+
+msgid "Closing the Audient mixer..."
+msgstr "Audient ミキサーを終了しています..."
 
 msgid "Closing the device..."
 msgstr "デバイスを閉じています..."
@@ -66,9 +67,6 @@ msgstr ""
 "設定ファイルを読み込めませんでした。\n"
 "%1$hs という名前でプログラムと同じ場所に置いてください。"
 
-msgid "Do you really want to continue?"
-msgstr "本当に続けますか？"
-
 msgid "Failed."
 msgstr "失敗しました。"
 
@@ -79,13 +77,11 @@ msgid "No Audient device was found."
 msgstr "Audient のデバイスは見つかりませんでした。"
 
 msgid ""
-"No faulty Audient device was found.\n"
-"\n"
-"A device that is working normally is likely to fail to be closed."
+"None of the connected devices needs a repair.\n"
+"To repair one anyway, choose it below."
 msgstr ""
-"不正な状態の Audient デバイスはありません。\n"
-"\n"
-"正常に動作しているデバイスではクローズに失敗することがあります。"
+"接続されているデバイスは修復不要です。\n"
+"それでも修復処理を行う場合は対象デバイスを選択してください。"
 
 msgid "OK"
 msgstr "OK"
@@ -104,6 +100,9 @@ msgstr "タスクスケジューラーに登録"
 
 msgid "Remove the scheduled task"
 msgstr "タスクスケジューラーから削除"
+
+msgid "Repair"
+msgstr "修復"
 
 msgid "Starts Audient Device Closer after the computer resumes from sleep and tries to fix the problem when the Audient device did not come back properly."
 msgstr "コンピューターがスリープから復帰した後に Audient Device Closer を起動し、Audient デバイスが正しく復帰できなかった場合に問題解消を試みます。"
@@ -159,6 +158,9 @@ msgstr "このツールでは対応できない異常を検知しました。"
 msgid "Too many blocker processes are named in the record, more than this tool can close at once."
 msgstr "ブロック中のプロセスが多く、このツールで一度に終了できる上限を超えています。"
 
+msgid "Waiting for the device to come back..."
+msgstr "デバイスの復帰を確認しています..."
+
 msgid "Waiting..."
 msgstr "待機しています..."
 
@@ -166,5 +168,17 @@ msgstr "待機しています..."
 msgid "†"
 msgstr "†"
 
-#~ msgid "Closing iD Mixer (iD.exe)..."
-#~ msgstr "iD Mixer (iD.exe) を終了しています..."
+#~ msgid "Do you really want to continue?"
+#~ msgstr "本当に続けますか？"
+
+#~ msgid ""
+#~ "No faulty Audient device was found.\n"
+#~ "\n"
+#~ "A device that is working normally is likely to fail to be closed."
+#~ msgstr ""
+#~ "不正な状態の Audient デバイスはありません。\n"
+#~ "\n"
+#~ "正常に動作しているデバイスではクローズに失敗することがあります。"
+
+#~ msgid "To repair one anyway, choose it below."
+#~ msgstr "それでも修復する場合は、以下からデバイスを選択してください。"

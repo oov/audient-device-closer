@@ -820,6 +820,58 @@ static void test_window_is_no_bigger_than_its_parts(void) {
   }
 }
 
+/**
+ * @brief The buttons that answer the picker ride the right edge
+ *
+ * The two buttons are a pair at the right of the window,
+ * the one that repairs on the left of the one that answers
+ * nothing, the way the dialogs of the system hold them.
+ */
+static void test_picker_buttons_ride_the_right(void) {
+  int i = 0;
+
+  for (i = 0; i < DPI_COUNT; i++) {
+    UINT const dpi = dpi_list[i];
+    struct picker_layout g;
+    int const width = layout_scale(ADC_LAYOUT_PICKER_W, dpi);
+    int const margin = layout_scale(ADC_LAYOUT_MARGIN_X, dpi);
+    int const gap = layout_scale(ADC_LAYOUT_GAP, dpi);
+    int const button_w = layout_scale(ADC_LAYOUT_PICKER_BUTTON_W, dpi);
+    int const button_h = layout_scale(ADC_LAYOUT_PICKER_BUTTON_H, dpi);
+    int const row =
+        layout_scale(ADC_LAYOUT_MARGIN_TOP + ADC_LAYOUT_PICKER_LABEL_H + ADC_LAYOUT_GAP + ADC_LAYOUT_PICKER_COMBO_H + ADC_LAYOUT_GAP, dpi);
+
+    layout_picker_compute(width, dpi, &g);
+    TEST_CHECK(g.ok.top == row);
+    TEST_CHECK(g.cancel.top == row);
+    TEST_CHECK(g.ok.bottom == row + button_h);
+    TEST_CHECK(g.cancel.bottom == row + button_h);
+    TEST_CHECK_(g.cancel.right == width - margin,
+                "dpi %u: cancel ends at %d, the margin ends at %d",
+                (unsigned)dpi,
+                (int)g.cancel.right,
+                (int)(width - margin));
+    TEST_CHECK_(g.ok.right + gap == g.cancel.left,
+                "dpi %u: ok ends at %d, cancel starts at %d",
+                (unsigned)dpi,
+                (int)g.ok.right,
+                (int)g.cancel.left);
+    TEST_CHECK(g.ok.right - g.ok.left == button_w);
+    TEST_CHECK(g.cancel.right - g.cancel.left == button_w);
+    TEST_CHECK_(g.ok.left > margin, "dpi %u: the pair starts at %d, the margin ends at %d", (unsigned)dpi, (int)g.ok.left, (int)margin);
+  }
+}
+
+/**
+ * @brief The width of the picker holds the pair of buttons
+ */
+static void test_picker_holds_its_buttons(void) {
+  TEST_CHECK_(ADC_LAYOUT_PICKER_W >= 2 * ADC_LAYOUT_PICKER_BUTTON_W + ADC_LAYOUT_GAP + 2 * ADC_LAYOUT_MARGIN_X,
+              "the width %d, the pair and its margins need %d",
+              (int)ADC_LAYOUT_PICKER_W,
+              (int)(2 * ADC_LAYOUT_PICKER_BUTTON_W + ADC_LAYOUT_GAP + 2 * ADC_LAYOUT_MARGIN_X));
+}
+
 TEST_LIST = {
     {"caption_line_balance", test_caption_line_balance},
     {"caption_rides_the_frame", test_caption_rides_the_frame},
@@ -844,6 +896,8 @@ TEST_LIST = {
     {"progress_dialog_height_fits_its_parts", test_progress_dialog_height_fits_its_parts},
     {"progress_dialog_holds_its_button", test_progress_dialog_holds_its_button},
     {"progress_dialog_scales", test_progress_dialog_scales},
+    {"picker_buttons_ride_the_right", test_picker_buttons_ride_the_right},
+    {"picker_holds_its_buttons", test_picker_holds_its_buttons},
     {"window_rect_carries_the_frame", test_window_rect_carries_the_frame},
     {"window_is_no_bigger_than_its_parts", test_window_is_no_bigger_than_its_parts},
     {NULL, NULL},

@@ -47,6 +47,34 @@ void layout_progress_compute(int const width, UINT const dpi, struct progress_la
 }
 
 /**
+ * @brief Compute the geometry of the window that asks which device to repair
+ *
+ * The stack is placed from the top edge: the sentence, the combo of the
+ * connected devices under it and the two buttons that answer the question
+ * side by side under that.
+ *
+ * @param width  the client width of the window in pixels
+ * @param dpi    the dpi of the window
+ * @param out    receives the geometry
+ */
+void layout_picker_compute(int const width, UINT const dpi, struct picker_layout *const out) {
+  int const margin = layout_scale(ADC_LAYOUT_MARGIN_X, dpi);
+  int const usable = (width > 2 * margin) ? (width - 2 * margin) : 0;
+  int const combo_bottom =
+      layout_scale(ADC_LAYOUT_MARGIN_TOP + ADC_LAYOUT_PICKER_LABEL_H + ADC_LAYOUT_GAP + ADC_LAYOUT_PICKER_COMBO_H, dpi);
+  int const button_w = layout_scale(ADC_LAYOUT_PICKER_BUTTON_W, dpi);
+  int const button_h = layout_scale(ADC_LAYOUT_PICKER_BUTTON_H, dpi);
+  int const button_row = combo_bottom + layout_scale(ADC_LAYOUT_GAP, dpi);
+  int const right = margin + usable;
+
+  memset(out, 0, sizeof(*out));
+  out->label = rect_of(margin, layout_scale(ADC_LAYOUT_MARGIN_TOP, dpi), usable, layout_scale(ADC_LAYOUT_PICKER_LABEL_H, dpi));
+  out->combo = rect_of(margin, out->label.bottom + layout_scale(ADC_LAYOUT_GAP, dpi), usable, layout_scale(ADC_LAYOUT_PICKER_COMBO_H, dpi));
+  out->ok = rect_of(right - 2 * button_w - layout_scale(ADC_LAYOUT_GAP, dpi), button_row, button_w, button_h);
+  out->cancel = rect_of(right - button_w, button_row, button_w, button_h);
+}
+
+/**
  * @brief Turn one logical value into physical pixels for the given dpi
  *
  * @param logical the value in logical units (1/96 inch)

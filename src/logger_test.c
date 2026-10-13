@@ -173,7 +173,7 @@ static void test_path_for_exe(void) {
 
   TEST_CASE("an installed copy writes into the machine-wide application data");
   p = logger_path_for_exe("C:\\Program Files\\audient-device-closer\\audient-device-closer.exe", &err);
-  if (!TEST_CHECK(p != NULL)) {
+  if (!TEST_SUCCEEDED(p != NULL, &err)) {
     TEST_MSG("want a path, got NULL");
     goto cleanup;
   }
@@ -200,7 +200,6 @@ static void test_path_for_exe(void) {
   TEST_FAILED_WITH(logger_path_for_exe(NULL, &err), &err, ov_error_type_generic, ov_error_generic_invalid_argument);
 cleanup:
   logger_string_free(&p);
-  OV_ERROR_REPORT(&err, NULL);
 }
 
 /**
@@ -219,11 +218,11 @@ static void test_write_to_file(void) {
   if (logger_is_open()) {
     logger_close();
   }
-  if (!TEST_CHECK(logger_open(&err) == true)) {
+  if (!TEST_SUCCEEDED(logger_open(&err), &err)) {
     goto cleanup;
   }
   TEST_CHECK(logger_is_open() == true);
-  if (!TEST_CHECK(logger_write("paths", "hello\tworld", &err) == true)) {
+  if (!TEST_SUCCEEDED(logger_write("paths", "hello\tworld", &err), &err)) {
     goto cleanup;
   }
   {
@@ -235,14 +234,14 @@ static void test_write_to_file(void) {
   TEST_CHECK(logger_write("paths", "after close", &err) == true);
 
   exe = paths_executable(&err);
-  if (!TEST_CHECK(exe != NULL)) {
+  if (!TEST_SUCCEEDED(exe != NULL, &err)) {
     goto cleanup;
   }
   path = logger_path_for_exe(exe, &err);
-  if (!TEST_CHECK(path != NULL)) {
+  if (!TEST_SUCCEEDED(path != NULL, &err)) {
     goto cleanup;
   }
-  if (!TEST_CHECK(ov_sprintf_wchar(&wide, &err, NULL, L"%s", path) == true)) {
+  if (!TEST_SUCCEEDED(ov_sprintf_wchar(&wide, &err, NULL, L"%s", path), &err)) {
     goto cleanup;
   }
   h = CreateFileW(wide, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
@@ -276,7 +275,6 @@ cleanup:
   }
   paths_string_free(&exe);
   logger_string_free(&path);
-  OV_ERROR_REPORT(&err, NULL);
 }
 
 /**
@@ -360,7 +358,7 @@ static void test_run_records(void) {
   if (logger_is_open()) {
     logger_close();
   }
-  if (!TEST_CHECK(logger_open(&err) == true)) {
+  if (!TEST_SUCCEEDED(logger_open(&err), &err)) {
     goto cleanup;
   }
   logger_log_run_start();
@@ -420,7 +418,6 @@ cleanup:
   if (text != NULL) {
     OV_FREE(&text);
   }
-  OV_ERROR_REPORT(&err, NULL);
 }
 
 /**
@@ -458,7 +455,7 @@ static void test_repeated_report_is_written_once(void) {
   if (logger_is_open()) {
     logger_close();
   }
-  if (!TEST_CHECK(logger_open(&err) == true)) {
+  if (!TEST_SUCCEEDED(logger_open(&err), &err)) {
     goto cleanup;
   }
   logger_output(ov_error_severity_error, "[01:0x00000001] adc-repeated: the same failure");
@@ -466,7 +463,7 @@ static void test_repeated_report_is_written_once(void) {
   logger_output(ov_error_severity_error, "[01:0x00000002] adc-repeated: a different failure");
   logger_close();
 
-  if (!TEST_CHECK(read_log_file(&text, &err))) {
+  if (!TEST_SUCCEEDED(read_log_file(&text, &err), &err)) {
     goto cleanup;
   }
   TEST_CASE("the report that repeats is written once");
@@ -482,7 +479,6 @@ cleanup:
   if (text != NULL) {
     OV_FREE(&text);
   }
-  OV_ERROR_REPORT(&err, NULL);
 }
 
 /**
@@ -526,11 +522,11 @@ static void test_trim_on_write(void) {
   CloseHandle(h);
   h = INVALID_HANDLE_VALUE;
 
-  if (!TEST_CHECK(logger_open(&err) == true)) {
+  if (!TEST_SUCCEEDED(logger_open(&err), &err)) {
     goto cleanup;
   }
   TEST_CHECK(logger_is_open() == true);
-  if (!TEST_CHECK(logger_write("trim", "the newest record", &err) == true)) {
+  if (!TEST_SUCCEEDED(logger_write("trim", "the newest record", &err), &err)) {
     goto cleanup;
   }
   logger_close();
@@ -569,7 +565,6 @@ cleanup:
   OV_FREE(&text);
   paths_string_free(&exe);
   logger_string_free(&path);
-  OV_ERROR_REPORT(&err, NULL);
 }
 
 /**

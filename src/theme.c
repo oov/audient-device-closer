@@ -11,6 +11,7 @@
 
 #include "layout.h"
 #include "theme_button.h"
+#include "theme_combo.h"
 #include "theme_header.h"
 #include "theme_internal.h"
 
@@ -96,7 +97,7 @@ COLORREF theme_palette_border(void) { return g_theme.dark ? RGB(0x39, 0x39, 0x39
  *
  * @return the colour to paint with
  */
-static COLORREF palette_control(void) { return g_theme.dark ? RGB(0x2B, 0x2B, 0x2B) : GetSysColor(COLOR_BTNFACE); }
+COLORREF theme_palette_control(void) { return g_theme.dark ? RGB(0x2B, 0x2B, 0x2B) : GetSysColor(COLOR_BTNFACE); }
 
 /**
  * @brief The colour of the face of a push button
@@ -353,7 +354,7 @@ bool theme_init(bool const enabled, struct ov_error *const err) {
     resolve_uxtheme(build_number());
   }
   g_theme.surface = CreateSolidBrush(theme_palette_surface());
-  g_theme.control = CreateSolidBrush(palette_control());
+  g_theme.control = CreateSolidBrush(theme_palette_control());
   return true;
 }
 
@@ -419,6 +420,10 @@ void theme_attach(HWND const hwnd) {
   }
   if (lstrcmpiW(cls, WC_LISTVIEWW) == 0) {
     swap_theme_class(hwnd);
+    return;
+  }
+  if (lstrcmpiW(cls, WC_COMBOBOXW) == 0) {
+    theme_combo_attach(hwnd);
     return;
   }
   if (lstrcmpiW(cls, PROGRESS_CLASSW) == 0) {
@@ -548,6 +553,18 @@ bool theme_message(HWND const hwnd,
     *handled = true;
     return true;
   }
+  case WM_CTLCOLORLISTBOX: {
+    // the list of a combo box asks its parent for the colours of its rows whenever it paints
+    // them, so the palette answers here for every paint of the list
+    HDC const dc = (HDC)wparam;
+
+    SetBkMode(dc, OPAQUE);
+    SetTextColor(dc, theme_palette_text());
+    SetBkColor(dc, theme_palette_control());
+    *result = (LRESULT)g_theme.control;
+    *handled = true;
+    return true;
+  }
   case WM_ERASEBKGND:
     if (g_theme.dark) {
       RECT rc;
@@ -603,7 +620,7 @@ static void theme_rebuild_brushes(void) {
   if (surface == NULL) {
     goto cleanup;
   }
-  control = CreateSolidBrush(palette_control());
+  control = CreateSolidBrush(theme_palette_control());
   if (control == NULL) {
     goto cleanup;
   }
