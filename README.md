@@ -17,7 +17,8 @@ There is no guarantee that this fix works in every environment, but since I buil
 - Windows 11 Home 26H2
 - Audient iD14mkII
 
-It may work with other devices too, but I don't own any, so that is untested.
+It is meant to work with Audient products other than the iD14mkII as well, but I do not own any of them, so that is untested.  
+Having several Audient devices at once is also accounted for, but that is untested in the same way.
 
 <!-- PRIVILEGES BEGIN -->
 ## Privilege elevation
@@ -45,6 +46,9 @@ Rather than installing it right away, first make sure the tool actually helps in
 4. If the device comes back normally, the tool is working as intended.
 5. Press the `Register the scheduled task` button so that the fix is applied automatically after resuming from sleep.
 
+This tool writes the result of its work to a log file.  
+The zip version keeps the log next to the exe file, and the installer version keeps it in `C:\ProgramData\AudientDeviceCloser`.
+
 ## Usage
 
 When you start the program normally, a window like this appears.
@@ -53,15 +57,16 @@ When you start the program normally, a window like this appears.
 
 ### The `Close the Audient device` button
 
-Pressing this button releases the device that is stuck in a bad state.
-Pressing it when no problem is occurring will most likely fail.
+Pressing this button releases the device that is stuck in a bad state.  
+When several Audient devices are stuck at the same time, they are handled one after another.
 
 ### Behaviour
 
-#### Close iD Mixer (iD.exe) automatically
+#### Close the Audient mixer automatically
 
-With this checked, `iD Mixer` is closed automatically when it is holding the device.  
-This program is launched automatically from `AudientAppLauncher.exe` when the device reconnects.  
+With this checked, the mixer application of each product is closed automatically when it is holding the device.  
+The ones this tool looks for are `iD.exe`, `EVO.exe`, `Sono.exe` and `ORIA Control.exe`.  
+These programs are expected to be launched automatically from `AudientAppLauncher.exe` when the device reconnects.  
 This option is enabled by default.
 
 #### Close audiodg (audiodg.exe) automatically
@@ -74,7 +79,7 @@ This option is disabled by default.
 
 ### Install
 
-Installation uses the current location of the exe file.  
+Registering the scheduled task uses the current location of the exe file.  
 If you delete or move the file afterwards, the tool will stop working properly.
 
 #### Register the scheduled task
@@ -90,12 +95,15 @@ Removes the entry that was installed.
 A rough outline of what this tool actually does:
 
 1. If started from Task Scheduler, wait 5 seconds; if started manually, don't wait
-2. Check whether the device is connected via USB but not recognized as an audio device; if everything looks fine, exit
-3. If a problem is found, try releasing the device; if that succeeds, exit
-4. If `iD.exe` is holding the device and the option is enabled, force it to quit
-5. If `audiodg.exe` is holding the device and the option is enabled, force it to quit
-6. Try releasing the device once more; if that succeeds, exit
-7. If it still fails, show a list of the applications that caused the problem
+2. Look at the Audient devices that are connected and find the ones that are connected via USB but not recognized as an audio device
+3. If no such device is found, exit
+4. Handle the devices that were found one at a time, in this order
+   1. Try to release the device
+   2. If it was released, check whether it has come back as an audio device. Once that is confirmed, this device is done
+   3. If the release was refused, look up the applications that caused it
+   4. If the option is enabled, force the mixer and `audiodg.exe` to quit and try to release the device again
+   5. If it was released, check whether it has come back as an audio device. Once that is confirmed, this device is done
+   6. It could not be released, so show a list of the applications that caused it and stop the remaining devices as well
 
 ## Credits
 
