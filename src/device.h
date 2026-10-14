@@ -29,21 +29,6 @@ struct device_entry {
 };
 
 /**
- * @brief First present devnode of the KS service
- *
- * @param service DEVPKEY_Device_Service of the KS devnode
- * @param devices the devices this program looks at, NULL or empty means no instance filter
- * @param device_count how many devices the list holds
- * @param err receives the failure of the query
- * @return the devnode in UTF-8, NULL when no device of the service is present
- * @note Release with device_string_free.
- */
-char *device_ks_devnode(char const *const service,
-                        struct device_entry const *const devices,
-                        size_t const device_count,
-                        struct ov_error *const err);
-
-/**
  * @brief Release a string this module handed out
  *
  * @param value set to NULL afterwards, NULL is allowed
