@@ -71,7 +71,6 @@ static void test_terminate_and_wait(void) {
   PROCESS_INFORMATION pi;
   struct process_ref ref;
   char *image = NULL;
-  bool gone = false;
 
   memset(&pi, 0, sizeof(pi));
   memset(&ref, 0, sizeof(ref));
@@ -90,8 +89,7 @@ static void test_terminate_and_wait(void) {
     TEST_CHECK(process_path_matches_name(image, "cmd.exe") == true);
   }
   TEST_SUCCEEDED(process_ref_terminate(&ref, &err), &err);
-  TEST_SUCCEEDED(process_ref_wait(&ref, 5000, &gone, &err), &err);
-  TEST_CHECK(gone == true);
+  TEST_CHECK(process_ref_wait(&ref, 5000, &err) == ov_true);
   TEST_CHECK(process_ref_alive(&ref) == false);
 
   if (pi.hProcess != NULL) {
@@ -100,6 +98,38 @@ static void test_terminate_and_wait(void) {
 
 cleanup:
   process_string_free(&image);
+  process_ref_close(&ref);
+  if (pi.hProcess != NULL) {
+    TerminateProcess(pi.hProcess, 0);
+    WaitForSingleObject(pi.hProcess, 5000);
+    close_pi(&pi);
+  }
+}
+
+/**
+ * @brief A process that is still there when the time is up answers so, without a reason
+ *
+ * A wait that ran out of time is an answer of the wait, not a failure of it, so the caller
+ * can tell "still there" from "could not tell".
+ */
+static void test_wait_times_out(void) {
+  struct ov_error err = {0};
+  PROCESS_INFORMATION pi;
+  struct process_ref ref;
+
+  memset(&pi, 0, sizeof(pi));
+  memset(&ref, 0, sizeof(ref));
+  ref.handle = NULL;
+  if (!spawn_dummy("cmd.exe /c ping -n 30 127.0.0.1 > nul", &pi)) {
+    TEST_SKIP("cannot spawn here");
+    goto cleanup;
+  }
+  if (!TEST_SUCCEEDED(process_ref_open(&ref, (uint32_t)pi.dwProcessId, false, &err), &err)) {
+    goto cleanup;
+  }
+  TEST_CHECK(process_ref_wait(&ref, 0, &err) == ov_false);
+
+cleanup:
   process_ref_close(&ref);
   if (pi.hProcess != NULL) {
     TerminateProcess(pi.hProcess, 0);
@@ -128,7 +158,6 @@ static void test_null_arguments(void) {
   char *text = NULL;
   struct process_ref ref;
   struct ov_error err = {0};
-  bool gone = false;
   bool ok = false;
 
   memset(&ref, 0, sizeof(ref));
@@ -141,8 +170,7 @@ static void test_null_arguments(void) {
   TEST_FAILED_WITH(ok, &err, ov_error_type_generic, ov_error_generic_invalid_argument);
   ok = process_ref_open(&ref, 1, false, NULL);
   TEST_CHECK(ok == false);
-  ok = process_ref_wait(&ref, 10, &gone, &err);
-  TEST_FAILED_WITH(ok, &err, ov_error_type_generic, ov_error_generic_invalid_argument);
+  TEST_FAILED_WITH(process_ref_wait(&ref, 10, &err) != ov_indeterminate, &err, ov_error_type_generic, ov_error_generic_invalid_argument);
   ok = process_ref_terminate(&ref, &err);
   TEST_FAILED_WITH(ok, &err, ov_error_type_generic, ov_error_generic_invalid_argument);
 }
@@ -186,6 +214,7 @@ static void test_path_matches_name(void) {
 
 TEST_LIST = {
     {"terminate_and_wait", test_terminate_and_wait},
+    {"wait_times_out", test_wait_times_out},
     {"terminate_unknown_pid", test_terminate_unknown_pid},
     {"start_matches_event_time", test_start_matches_event_time},
     {"path_matches_name", test_path_matches_name},

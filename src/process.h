@@ -92,15 +92,15 @@ bool process_ref_terminate(struct process_ref const *const ref, struct ov_error 
 /**
  * @brief Wait until this instance is gone
  *
- * out_gone tells whether it exited in time; a process that is already gone counts as gone.
+ * The wait counts as answered when the process is already gone.
  *
  * @param ref the instance to wait for
  * @param timeout_ms how long to wait
- * @param out_gone receives whether the process is gone
  * @param err receives the failure of the wait
- * @return false when the wait could not be answered
+ * @return ov_true when the process is gone, ov_false when it is still there after the
+ *         timeout, ov_indeterminate when the wait could not be answered, with err set
  */
-bool process_ref_wait(struct process_ref const *const ref, uint32_t const timeout_ms, bool *const out_gone, struct ov_error *const err);
+ov_tribool process_ref_wait(struct process_ref const *const ref, uint32_t const timeout_ms, struct ov_error *const err);
 
 /**
  * @brief Give the handle back

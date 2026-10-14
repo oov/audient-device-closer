@@ -111,7 +111,6 @@ cleanup:
  */
 bool mixer_close(struct mixer_target *const target, struct ov_error *const err) {
   bool success = false;
-  bool gone = false;
   struct process_ref ref;
   char *image = NULL;
 
@@ -158,12 +157,14 @@ bool mixer_close(struct mixer_target *const target, struct ov_error *const err) 
     OV_ERROR_ADD_TRACE(err);
     goto cleanup;
   }
-  if (!process_ref_wait(&ref, 5000, &gone, err)) {
-    OV_ERROR_ADD_TRACE(err);
-    goto cleanup;
-  }
-  if (!gone) {
+  switch (process_ref_wait(&ref, 5000, err)) {
+  case ov_true:
+    break;
+  case ov_false:
     OV_ERROR_SET(err, ov_error_type_generic, ov_error_generic_fail, "the process did not exit within 5 seconds");
+    goto cleanup;
+  case ov_indeterminate:
+    OV_ERROR_ADD_TRACE(err);
     goto cleanup;
   }
   logger_notef("process", "closed pid=%lu start=%lld image=%s", (unsigned long)target->pid, ref.start_ms_utc, image);
