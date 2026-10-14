@@ -347,38 +347,28 @@ cleanup:
  * @param devices the devices this program looks at, NULL or empty means
  *                no entry covers any devnode
  * @param device_count how many devices the list holds
- * @param out_found receives the answer
- * @param out_index receives the entry out_found says yes to
- * @param err receives nothing but the refused arguments
- * @return false when the arguments are refused
+ * @param err receives the refused arguments, or a not_found for a devnode no entry names
+ * @return the index of the entry, SIZE_MAX when no entry names the devnode
  */
-bool device_find_entry(char const *const devnode,
-                       struct device_entry const *const devices,
-                       size_t const device_count,
-                       bool *const out_found,
-                       size_t *const out_index,
-                       struct ov_error *const err) {
-  bool success = false;
-
-  if ((devnode == NULL) || (devnode[0] == '\0') || (out_found == NULL) || (out_index == NULL)) {
+size_t device_find_entry(char const *const devnode,
+                         struct device_entry const *const devices,
+                         size_t const device_count,
+                         struct ov_error *const err) {
+  if ((devnode == NULL) || (devnode[0] == '\0')) {
     OV_ERROR_SET_GENERIC(err, ov_error_generic_invalid_argument);
-    goto cleanup;
+    return SIZE_MAX;
   }
-  *out_found = false;
-  *out_index = 0;
   if ((devices != NULL) && (device_count > 0)) {
     for (size_t i = 0; i < device_count; ++i) {
       if (device_is_same(devnode, devices[i].id)) {
-        *out_found = true;
-        *out_index = i;
-        break;
+        return i;
       }
     }
   }
-  success = true;
-
-cleanup:
-  return success;
+  // a devnode no entry names is not a failure of the call, and the caller tells it apart
+  // from one by this code
+  OV_ERROR_SET_GENERIC(err, ov_error_generic_not_found);
+  return SIZE_MAX;
 }
 
 /**
@@ -682,20 +672,19 @@ void device_targets_keep_faulted(struct device_target **const targets) {
  * @param service DEVPKEY_Device_Service of the KS devnodes
  * @param devices the devices this program looks at, may not be NULL or empty here
  * @param device_count how many devices the list holds
- * @param out_targets receives an array of the targets
- * @param err receives the failure of the queries
- * @return false when a devnode could not be measured
+ * @param err receives the failure of the queries, or a not_found for a service no device
+ *            of it is present
+ * @return the list of the targets, NULL when no device is present or the queries failed;
+ *         release with device_targets_release
  */
-bool device_probe_all(char const *const service,
-                      struct device_entry const *const devices,
-                      size_t const device_count,
-                      struct device_target **const out_targets,
-                      struct ov_error *const err) {
-  bool success = false;
+struct device_target *device_probe_all(char const *const service,
+                                       struct device_entry const *const devices,
+                                       size_t const device_count,
+                                       struct ov_error *const err) {
   struct targets_ctx ctx;
 
   ctx.targets = NULL;
-  if ((service == NULL) || (out_targets == NULL)) {
+  if (service == NULL) {
     OV_ERROR_SET_GENERIC(err, ov_error_generic_invalid_argument);
     goto cleanup;
   }
@@ -705,18 +694,16 @@ bool device_probe_all(char const *const service,
     OV_ERROR_ADD_TRACE(err);
     goto cleanup;
   }
-  *out_targets = ctx.targets;
-  ctx.targets = NULL;
-  success = true;
+  if (OV_ARRAY_LENGTH(ctx.targets) == 0) {
+    // no device of the service is present, which is not a failure of the call
+    OV_ERROR_SET_GENERIC(err, ov_error_generic_not_found);
+    goto cleanup;
+  }
+  return ctx.targets;
 
 cleanup:
-  if (!success) {
-    device_targets_release(&ctx.targets);
-    if (out_targets != NULL) {
-      *out_targets = NULL;
-    }
-  }
-  return success;
+  device_targets_release(&ctx.targets);
+  return NULL;
 }
 
 /**
@@ -773,24 +760,19 @@ enum { kKsAncestorDepth = 4 };
  *
  * @param device_instance the DeviceInstance of the removal record, UTF-8, may not be NULL
  * @param devnode instance ID of the KS devnode, UTF-8, may not be NULL
- * @param out_named receives the answer
  * @param err receives the failure of the queries
- * @return false when the ancestors could not be walked
+ * @return ov_true when the record names an ancestor, ov_false when it does not,
+ *         ov_indeterminate when the ancestors could not be walked, with err set
  */
-bool device_culprit_names_ancestor(char const *const device_instance,
-                                   char const *const devnode,
-                                   bool *const out_named,
-                                   struct ov_error *const err) {
-  bool named = false;
-  bool success = false;
+ov_tribool device_culprit_names_ancestor(char const *const device_instance, char const *const devnode, struct ov_error *const err) {
+  ov_tribool result = ov_indeterminate;
   wchar_t *native = NULL;
   WCHAR id[MAX_DEVICE_ID_LEN];
   DEVINST devinst = 0;
   CONFIGRET cr = 0;
   size_t level = 0;
 
-  *out_named = false;
-  if ((device_instance == NULL) || (device_instance[0] == '\0') || (devnode == NULL) || (devnode[0] == '\0') || (out_named == NULL)) {
+  if ((device_instance == NULL) || (device_instance[0] == '\0') || (devnode == NULL) || (devnode[0] == '\0')) {
     OV_ERROR_SET_GENERIC(err, ov_error_generic_invalid_argument);
     goto cleanup;
   }
@@ -803,6 +785,7 @@ bool device_culprit_names_ancestor(char const *const device_instance,
     SET_CONFIGRET_ERROR(err, "CM_Locate_DevNodeW", cr);
     goto cleanup;
   }
+  result = ov_false;
   for (level = 0; level < (size_t)kKsAncestorDepth; level++) {
     DEVINST parent = 0;
     char *id_utf8 = NULL;
@@ -815,32 +798,32 @@ bool device_culprit_names_ancestor(char const *const device_instance,
         break;
       }
       SET_CONFIGRET_ERROR(err, "CM_Get_Parent", cr);
+      result = ov_indeterminate;
       goto cleanup;
     }
     cr = CM_Get_Device_IDW(parent, id, MAX_DEVICE_ID_LEN, 0);
     if (cr != CR_SUCCESS) {
       SET_CONFIGRET_ERROR(err, "CM_Get_Device_IDW", cr);
+      result = ov_indeterminate;
       goto cleanup;
     }
     if (!to_utf8(id, &id_utf8, err)) {
       OV_ERROR_ADD_TRACE(err);
+      result = ov_indeterminate;
       goto cleanup;
     }
     if (device_is_same(id_utf8, device_instance)) {
-      named = true;
-    }
-    OV_ARRAY_DESTROY(&id_utf8);
-    if (named) {
+      OV_ARRAY_DESTROY(&id_utf8);
+      result = ov_true;
       break;
     }
+    OV_ARRAY_DESTROY(&id_utf8);
     devinst = parent;
   }
-  *out_named = named;
-  success = true;
 
 cleanup:
   if (native) {
     OV_ARRAY_DESTROY(&native);
   }
-  return success;
+  return result;
 }

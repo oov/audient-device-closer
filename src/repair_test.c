@@ -88,13 +88,11 @@ cleanup:
 /**
  * @brief Every record belongs to the device the caller names
  */
-static bool
-fake_names_ancestor(char const *const device_instance, char const *const devnode, bool *const out_named, struct ov_error *const err) {
+static ov_tribool fake_names_ancestor(char const *const device_instance, char const *const devnode, struct ov_error *const err) {
   (void)device_instance;
   (void)devnode;
   (void)err;
-  *out_named = true;
-  return true;
+  return ov_true;
 }
 
 /**

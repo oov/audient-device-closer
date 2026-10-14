@@ -48,7 +48,7 @@ struct repair_deps {
   enum device_state (*probe_devnode)(char const *devnode, struct ov_error *err);
   bool (*removal_close)(char const *devnode, struct ov_error *err);
   struct culprit *(*read_veto)(char const *log_name, char const *provider_name, unsigned short event_id, struct ov_error *err);
-  bool (*names_ancestor)(char const *device_instance, char const *devnode, bool *out_named, struct ov_error *err);
+  ov_tribool (*names_ancestor)(char const *device_instance, char const *devnode, struct ov_error *err);
   bool (*mixer_take)(
       uint32_t pid, char const *exe_name, long long event_time_ms, bool *out_found, struct mixer_target *out, struct ov_error *err);
   bool (*mixer_close)(struct mixer_target *target, struct ov_error *err);
@@ -503,18 +503,18 @@ static bool culprit_keep_device(struct repair_deps const *const deps,
 
   for (i = 0; i < n; i++) {
     struct culprit *const record = &(*list)[i];
-    bool named = false;
 
     if (record->device_instance == NULL) {
       OV_ARRAY_DESTROY(&record->path);
       OV_ARRAY_DESTROY(&record->device_instance);
       continue;
     }
-    if (!deps->names_ancestor(record->device_instance, devnode, &named, err)) {
+    ov_tribool const named = deps->names_ancestor(record->device_instance, devnode, err);
+    if (named == ov_indeterminate) {
       OV_ERROR_ADD_TRACE(err);
       goto cleanup;
     }
-    if (!named) {
+    if (named == ov_false) {
       OV_ARRAY_DESTROY(&record->path);
       OV_ARRAY_DESTROY(&record->device_instance);
       continue;
@@ -948,11 +948,16 @@ static bool repair_run_with(struct settings const *const s,
   } else {
     ctx.step++;
     report_stage(&ctx, REPAIR_STAGE_PROBE);
-    if (!device_probe_all(s->ks_service, s->devices, OV_ARRAY_LENGTH(s->devices), &list, err)) {
-      OV_ERROR_ADD_TRACE(err);
-      out->outcome = REPAIR_OUTCOME_FAILED;
-      say(out, "The device state could not be determined.");
-      goto cleanup;
+    list = device_probe_all(s->ks_service, s->devices, OV_ARRAY_LENGTH(s->devices), err);
+    if (list == NULL) {
+      if (!ov_error_is(err, ov_error_type_generic, ov_error_generic_not_found)) {
+        OV_ERROR_ADD_TRACE(err);
+        out->outcome = REPAIR_OUTCOME_FAILED;
+        say(out, "The device state could not be determined.");
+        goto cleanup;
+      }
+      // no device of the service is present, which the run answers as ABSENT below
+      OV_ERROR_DESTROY(err);
     }
     owned = true;
     probed = true;

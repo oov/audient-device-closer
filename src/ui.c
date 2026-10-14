@@ -718,8 +718,13 @@ static int repair_thread(void *const userdata) {
     report_step(job, REPAIR_STAGE_WAIT, 1);
     Sleep((DWORD)job->settings->auto_run_delay_ms);
   }
-  if (device_probe_all(job->settings->ks_service, job->settings->devices, OV_ARRAY_LENGTH(job->settings->devices), &targets, &probe_err)) {
+  targets = device_probe_all(job->settings->ks_service, job->settings->devices, OV_ARRAY_LENGTH(job->settings->devices), &probe_err);
+  if (targets != NULL) {
     state = targets_state(targets, OV_ARRAY_LENGTH(targets), &faulted);
+  } else if (ov_error_is(&probe_err, ov_error_type_generic, ov_error_generic_not_found)) {
+    // no device of the service is present, which is not a failure
+    state = DEVICE_STATE_ABSENT;
+    OV_ERROR_DESTROY(&probe_err);
   }
   OV_ERROR_REPORT(&probe_err, NULL);
   device_targets_release(&targets);
@@ -1216,8 +1221,15 @@ static LRESULT CALLBACK wnd_proc(HWND const hwnd, UINT const msg, WPARAM const w
       struct device_target *targets = NULL;
       struct ov_error perr = {0};
 
-      if (!device_probe_all(st->settings->ks_service, st->settings->devices, OV_ARRAY_LENGTH(st->settings->devices), &targets, &perr)) {
-        OV_ERROR_REPORT(&perr, NULL);
+      targets = device_probe_all(st->settings->ks_service, st->settings->devices, OV_ARRAY_LENGTH(st->settings->devices), &perr);
+      if (targets == NULL) {
+        if (!ov_error_is(&perr, ov_error_type_generic, ov_error_generic_not_found)) {
+          OV_ERROR_REPORT(&perr, NULL);
+          report_not_repairable(hwnd);
+          return 0;
+        }
+        // no device of the service is present, which the press answers as not repairable
+        OV_ERROR_DESTROY(&perr);
         report_not_repairable(hwnd);
         return 0;
       }

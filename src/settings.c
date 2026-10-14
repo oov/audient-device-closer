@@ -432,8 +432,6 @@ cleanup:
 /**
  * @brief Read the device table of the settings file
  *
- * The key is optional: a file that an older build wrote named the devices another way.
- *
  * @param root the object that holds the key
  * @param out receives the growing list, owned by the caller afterwards
  * @param err receives the problem of the table

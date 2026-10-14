@@ -25,7 +25,7 @@ enum device_state {
  */
 struct device_entry {
   char *id;   //!< device instance identifier, a prefix of the devnode, never NULL
-  char *name; //!< the name the device is known by, NULL only where an older settings file implied one
+  char *name; //!< the name of the product the settings show, never NULL
 };
 
 /**
@@ -46,17 +46,13 @@ void device_string_free(char **const value);
  * @param devices the devices this program looks at, NULL or empty means
  *                no entry covers any devnode
  * @param device_count how many devices the list holds
- * @param out_found receives the answer
- * @param out_index receives the entry out_found says yes to
- * @param err receives nothing but the refused arguments
- * @return false when the arguments name no device
+ * @param err receives the refused arguments, or a not_found for a devnode no entry names
+ * @return the index of the entry, SIZE_MAX when no entry names the devnode
  */
-bool device_find_entry(char const *const devnode,
-                       struct device_entry const *const devices,
-                       size_t const device_count,
-                       bool *const out_found,
-                       size_t *const out_index,
-                       struct ov_error *const err);
+size_t device_find_entry(char const *const devnode,
+                         struct device_entry const *const devices,
+                         size_t const device_count,
+                         struct ov_error *const err);
 
 /**
  * @brief Does a devnode name the device an identifier names
@@ -94,16 +90,15 @@ struct device_target {
  * @param devices the devices this program looks at, NULL or empty says
  *                every devnode of the service is a match
  * @param device_count how many devices the list holds
- * @param out_targets receives the list of the targets, an empty or NULL one when no device
- *                    is present, release with device_targets_release
- * @param err receives the failure of the queries
- * @return false when a devnode could not be measured
+ * @param err receives the failure of the queries, or a not_found for a service no device
+ *            of it is present
+ * @return the list of the targets, NULL when no device is present or the queries failed;
+ *         release with device_targets_release
  */
-bool device_probe_all(char const *const service,
-                      struct device_entry const *const devices,
-                      size_t const device_count,
-                      struct device_target **const out_targets,
-                      struct ov_error *const err);
+struct device_target *device_probe_all(char const *const service,
+                                       struct device_entry const *const devices,
+                                       size_t const device_count,
+                                       struct ov_error *const err);
 
 /**
  * @brief Release the list of the targets
@@ -146,11 +141,8 @@ enum device_state device_probe_devnode(char const *const devnode, struct ov_erro
  *
  * @param device_instance the DeviceInstance of the removal record, UTF-8, may not be NULL
  * @param devnode instance ID of the KS devnode, UTF-8, may not be NULL
- * @param out_named receives the answer
  * @param err receives the failure of the queries
- * @return false when the ancestors could not be walked
+ * @return ov_true when the record names an ancestor, ov_false when it does not,
+ *         ov_indeterminate when the ancestors could not be walked, with err set
  */
-bool device_culprit_names_ancestor(char const *const device_instance,
-                                   char const *const devnode,
-                                   bool *const out_named,
-                                   struct ov_error *const err);
+ov_tribool device_culprit_names_ancestor(char const *const device_instance, char const *const devnode, struct ov_error *const err);

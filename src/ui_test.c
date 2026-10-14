@@ -991,25 +991,21 @@ static void test_result_dialog_only_for_a_window_that_stays(void) {
  *
  * The driver package lists one name for more than one device,
  * and the same device can be connected more than once, so the
- * line carries the devnode of the unit.  A unit no entry names
- * is told by the only string it has.
+ * line carries the devnode of the unit.  Only a unit an entry
+ * names reaches here, so the name is always there.
  */
 static void test_device_picker_label(void) {
-  struct device_entry const named = {.id = "TUSBAUDIO_ENUM\\VID_2708&PID_0008&KS", .name = "iD14"};
-  struct device_entry const nameless = {.id = "TUSBAUDIO_ENUM\\VID_2708&PID_000B&KS", .name = NULL};
+  struct device_entry const entry = {.id = "TUSBAUDIO_ENUM\\VID_2708&PID_0008&KS", .name = "iD14"};
   char line[256];
   char const unit[] = "TUSBAUDIO_ENUM\\VID_2708&PID_0008&KS\\6&D6CB2A&0&2";
 
-  TEST_CHECK(ui_device_picker_label(&named, unit, line, sizeof(line)) == true);
+  TEST_CHECK(ui_device_picker_label(&entry, unit, line, sizeof(line)) == true);
   TEST_CHECK(strcmp(line, "iD14 (TUSBAUDIO_ENUM\\VID_2708&PID_0008&KS\\6&D6CB2A&0&2)") == 0);
-  TEST_CHECK(ui_device_picker_label(&nameless, unit, line, sizeof(line)) == true);
-  TEST_CHECK(strcmp(line, "TUSBAUDIO_ENUM\\VID_2708&PID_0008&KS\\6&D6CB2A&0&2") == 0);
-  TEST_CHECK(ui_device_picker_label(NULL, unit, line, sizeof(line)) == true);
-  TEST_CHECK(strcmp(line, "TUSBAUDIO_ENUM\\VID_2708&PID_0008&KS\\6&D6CB2A&0&2") == 0);
-  TEST_CHECK(ui_device_picker_label(&named, NULL, line, sizeof(line)) == false);
-  TEST_CHECK(ui_device_picker_label(&named, unit, NULL, sizeof(line)) == false);
-  TEST_CHECK(ui_device_picker_label(&named, unit, line, 0) == false);
-  TEST_CHECK(ui_device_picker_label(&named, "", line, sizeof(line)) == false);
+  TEST_CHECK(ui_device_picker_label(NULL, unit, line, sizeof(line)) == false);
+  TEST_CHECK(ui_device_picker_label(&entry, NULL, line, sizeof(line)) == false);
+  TEST_CHECK(ui_device_picker_label(&entry, unit, NULL, sizeof(line)) == false);
+  TEST_CHECK(ui_device_picker_label(&entry, unit, line, 0) == false);
+  TEST_CHECK(ui_device_picker_label(&entry, "", line, sizeof(line)) == false);
 }
 
 /**

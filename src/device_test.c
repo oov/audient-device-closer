@@ -117,8 +117,6 @@ static void test_devnode_guards(void) {
   char const *const ks_devnode = "TUSBAUDIO_ENUM\\VID_2708&PID_0008&KS\\6&deadbee&0&2";
   char const *const usb_devnode = "USB\\VID_2708&PID_0008\\6&deadbee&0&2";
   struct device_entry const *const devices = make_devices();
-  struct device_target *targets = NULL;
-  bool named = true;
   struct ov_error err = {0};
 
   TEST_FAILED_WITH(
@@ -126,20 +124,24 @@ static void test_devnode_guards(void) {
   TEST_FAILED_WITH(
       device_probe_devnode("", &err) != DEVICE_STATE_QUERY_FAILED, &err, ov_error_type_generic, ov_error_generic_invalid_argument);
 
-  TEST_FAILED_WITH(
-      device_culprit_names_ancestor(NULL, ks_devnode, &named, &err), &err, ov_error_type_generic, ov_error_generic_invalid_argument);
-  TEST_FAILED_WITH(
-      device_culprit_names_ancestor("", ks_devnode, &named, &err), &err, ov_error_type_generic, ov_error_generic_invalid_argument);
-  TEST_FAILED_WITH(
-      device_culprit_names_ancestor(usb_devnode, NULL, &named, &err), &err, ov_error_type_generic, ov_error_generic_invalid_argument);
-  TEST_FAILED_WITH(
-      device_culprit_names_ancestor(usb_devnode, "", &named, &err), &err, ov_error_type_generic, ov_error_generic_invalid_argument);
+  TEST_FAILED_WITH(device_culprit_names_ancestor(NULL, ks_devnode, &err) != ov_indeterminate,
+                   &err,
+                   ov_error_type_generic,
+                   ov_error_generic_invalid_argument);
+  TEST_FAILED_WITH(device_culprit_names_ancestor("", ks_devnode, &err) != ov_indeterminate,
+                   &err,
+                   ov_error_type_generic,
+                   ov_error_generic_invalid_argument);
+  TEST_FAILED_WITH(device_culprit_names_ancestor(usb_devnode, NULL, &err) != ov_indeterminate,
+                   &err,
+                   ov_error_type_generic,
+                   ov_error_generic_invalid_argument);
+  TEST_FAILED_WITH(device_culprit_names_ancestor(usb_devnode, "", &err) != ov_indeterminate,
+                   &err,
+                   ov_error_type_generic,
+                   ov_error_generic_invalid_argument);
 
-  TEST_FAILED_WITH(device_probe_all(NULL, devices, 2, &targets, &err), &err, ov_error_type_generic, ov_error_generic_invalid_argument);
-  TEST_CHECK(targets == NULL);
-  TEST_FAILED_WITH(
-      device_probe_all("audientusbaudioks", devices, 2, NULL, &err), &err, ov_error_type_generic, ov_error_generic_invalid_argument);
-  TEST_CHECK(targets == NULL);
+  TEST_FAILED_WITH(device_probe_all(NULL, devices, 2, &err) != NULL, &err, ov_error_type_generic, ov_error_generic_invalid_argument);
 }
 
 /**
@@ -147,13 +149,11 @@ static void test_devnode_guards(void) {
  */
 static void test_culprit_ancestor_refuses_unknown_devnode(void) {
   struct ov_error err = {0};
-  bool named = true;
 
-  TEST_FAILED_WITH(device_culprit_names_ancestor("USB\\VID_2708&PID_0008\\6&deadbee&0&2", "NOTAREALBUS_NOTHING", &named, &err),
+  TEST_FAILED_WITH(device_culprit_names_ancestor("USB\\VID_2708&PID_0008\\6&deadbee&0&2", "NOTAREALBUS_NOTHING", &err) != ov_indeterminate,
                    &err,
                    ov_error_type_generic,
                    ov_error_generic_fail);
-  TEST_CHECK(named == false);
 }
 
 /**
@@ -167,33 +167,17 @@ static void test_find_entry(void) {
   char const *const devnode_0008 = "TUSBAUDIO_ENUM\\VID_2708&PID_0008&KS\\6&deadbee&0&2";
   char const *const devnode_000b = "TUSBAUDIO_ENUM\\VID_2708&PID_000B&KS\\9&12ab34cd&0&1";
   char const *const devnode_0009 = "TUSBAUDIO_ENUM\\VID_2708&PID_0009&KS\\6&deadbee&0&2";
-  bool found = true;
-  size_t index = 0;
   struct ov_error err = {0};
   struct device_entry const *const devices = make_devices();
 
-  TEST_FAILED_WITH(
-      device_find_entry(NULL, devices, 2, &found, &index, &err), &err, ov_error_type_generic, ov_error_generic_invalid_argument);
-  TEST_FAILED_WITH(device_find_entry("", devices, 2, &found, &index, &err), &err, ov_error_type_generic, ov_error_generic_invalid_argument);
-  TEST_FAILED_WITH(
-      device_find_entry(devnode_0008, devices, 2, NULL, &index, &err), &err, ov_error_type_generic, ov_error_generic_invalid_argument);
-  TEST_FAILED_WITH(
-      device_find_entry(devnode_0008, devices, 2, &found, NULL, &err), &err, ov_error_type_generic, ov_error_generic_invalid_argument);
+  TEST_FAILED_WITH(device_find_entry(NULL, devices, 2, &err) != SIZE_MAX, &err, ov_error_type_generic, ov_error_generic_invalid_argument);
+  TEST_FAILED_WITH(device_find_entry("", devices, 2, &err) != SIZE_MAX, &err, ov_error_type_generic, ov_error_generic_invalid_argument);
 
-  if (TEST_SUCCEEDED(device_find_entry(devnode_000b, devices, 2, &found, &index, &err), &err)) {
-    TEST_CHECK_(found == true, "want the entry of the list the devnode names");
-    TEST_CHECK_(index == 1, "want the second entry, got %zu", index);
-  }
-  if (TEST_SUCCEEDED(device_find_entry("tusbaudio_enum\\vid_2708&pid_0008&ks\\6&deadbee&0&2", devices, 2, &found, &index, &err), &err)) {
-    TEST_CHECK_(found == true, "want the entry of the list the devnode names");
-    TEST_CHECK_(index == 0, "want the first entry, got %zu", index);
-  }
-  if (TEST_SUCCEEDED(device_find_entry(devnode_0009, devices, 2, &found, &index, &err), &err)) {
-    TEST_CHECK_(found == false, "want no entry for a devnode no entry names");
-  }
-  if (TEST_SUCCEEDED(device_find_entry(devnode_0008, NULL, 0, &found, &index, &err), &err)) {
-    TEST_CHECK_(found == false, "want no entry for a list that holds none");
-  }
+  TEST_CHECK_(device_find_entry(devnode_000b, devices, 2, &err) == 1, "want the second entry");
+  TEST_CHECK_(device_find_entry("tusbaudio_enum\\vid_2708&pid_0008&ks\\6&deadbee&0&2", devices, 2, &err) == 0,
+              "want the first entry, the case of the devnode does not matter");
+  TEST_FAILED_WITH(device_find_entry(devnode_0009, devices, 2, &err) != SIZE_MAX, &err, ov_error_type_generic, ov_error_generic_not_found);
+  TEST_FAILED_WITH(device_find_entry(devnode_0008, NULL, 0, &err) != SIZE_MAX, &err, ov_error_type_generic, ov_error_generic_not_found);
 }
 
 /**

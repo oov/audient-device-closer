@@ -82,8 +82,7 @@ struct picker_window {
  * carries the devnode of the unit: the reader sees which device,
  * and which unit of it, is which.
  *
- * @param entry the settings entry the devnode belongs to, NULL when
- *        no entry names it
+ * @param entry the settings entry the devnode belongs to
  * @param devnode the devnode of the connected unit, may not be NULL
  * @param out receives the line, UTF-8
  * @param out_size room of out
@@ -91,16 +90,10 @@ struct picker_window {
  */
 static bool
 ui_device_picker_label(struct device_entry const *const entry, char const *const devnode, char *const out, size_t const out_size) {
-  char const *const name = (entry != NULL) ? entry->name : NULL;
-
-  if ((devnode == NULL) || (devnode[0] == '\0') || (out == NULL) || (out_size == 0)) {
+  if ((entry == NULL) || (entry->name == NULL) || (devnode == NULL) || (devnode[0] == '\0') || (out == NULL) || (out_size == 0)) {
     return false;
   }
-  if (name == NULL) {
-    OV_SNPRINTF(out, out_size, "%1$s", "%1$s", devnode); // no entry names the unit: the devnode is the only name
-  } else {
-    OV_SNPRINTF(out, out_size, "%1$s (%2$s)", "%1$s (%2$s)", name, devnode);
-  }
+  OV_SNPRINTF(out, out_size, "%1$s (%2$s)", "%1$s (%2$s)", entry->name, devnode);
   return true;
 }
 
@@ -552,16 +545,17 @@ bool ui_device_picker_show(HWND const owner,
   for (i = 0; i < OV_ARRAY_LENGTH(targets); i++) {
     char line[ADC_PICKER_TEXT_CHARS];
     wchar_t wline[ADC_PICKER_TEXT_CHARS];
-    bool found = false;
     size_t index = 0;
     struct device_entry const *entry = NULL;
     char const *text = NULL;
 
-    if (!device_find_entry(targets[i].devnode, s->devices, OV_ARRAY_LENGTH(s->devices), &found, &index, err)) {
+    index = device_find_entry(targets[i].devnode, s->devices, OV_ARRAY_LENGTH(s->devices), err);
+    if (index == SIZE_MAX) {
       OV_ERROR_ADD_TRACE(err);
       goto cleanup;
     }
-    entry = found ? &s->devices[index] : NULL;
+    entry = &s->devices[index];
+
     if (!ui_device_picker_label(entry, targets[i].devnode, line, sizeof(line))) {
       OV_ERROR_SET_GENERIC(err, ov_error_generic_invalid_argument);
       goto cleanup;
