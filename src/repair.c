@@ -320,14 +320,13 @@ read_veto_events(struct repair_ctx *const ctx, struct repair_deps const *const d
  * @param name_count how many image names the list holds
  * @param out array to fill, NULL counts the matches only
  * @param max_count maximum number of entries to fill
- * @return number of blockers collected
+ * @return the number of blockers collected, SIZE_MAX when there are more than max_count
  */
 static size_t pick_all(struct culprit const *const culprits,
                        char const *const *names,
                        size_t const name_count,
                        struct repair_blocker *const out,
-                       size_t const max_count,
-                       bool *const truncated) {
+                       size_t const max_count) {
   size_t count = 0;
   size_t const n = culprit_count(culprits);
   size_t i = 0;
@@ -336,9 +335,6 @@ static size_t pick_all(struct culprit const *const culprits,
 
   if ((culprits == NULL) || (names == NULL) || (name_count == 0) || (max_count == 0)) {
     return 0;
-  }
-  if (truncated != NULL) {
-    *truncated = false;
   }
   for (i = 0; i < n; i++) {
     if (culprits[i].pid == 0) {
@@ -362,10 +358,7 @@ static size_t pick_all(struct culprit const *const culprits,
         continue;
       }
       if (count >= max_count) {
-        if (truncated != NULL) {
-          *truncated = true;
-        }
-        break;
+        return SIZE_MAX; // more than this tool carries room for, the caller says so
       }
       out[count].found = true;
       out[count].pid = culprits[i].pid;
@@ -389,7 +382,9 @@ static size_t pick_all(struct culprit const *const culprits,
  * @param mixer_count how many entries the mixer holds
  * @param allow_mixer_close the user allowed closing the mixer
  * @param allow_audiodg_close the user allowed closing the audio engine
- * @return the blockers to close
+ * @param err receives the failure, the records outnumbering what this tool carries
+ * @return the blockers to close; a count that is SIZE_MAX says the records name more
+ *         blockers of that kind than this tool may close at once
  */
 static struct repair_blockers repair_pick_blockers(struct culprit const *const culprits,
                                                    char const *const *mixer_matches,
@@ -398,32 +393,35 @@ static struct repair_blockers repair_pick_blockers(struct culprit const *const c
                                                    bool const allow_audiodg_close,
                                                    struct ov_error *const err) {
   struct repair_blockers b;
-  bool mixer_truncated = false;
-  bool audiodg_truncated = false;
-  bool success = false;
+  size_t const audiodg_count = 1;
+  size_t mixer_picked = 0;
+  size_t audiodg_picked = 0;
+  char const *const audiodg_names[] = {REPAIR_AUDIODG_NAME};
+  bool too_many = false;
 
   memset(&b, 0, sizeof(b));
   if (allow_mixer_close) {
-    b.mixer_count = pick_all(culprits, mixer_matches, mixer_count, b.mixer, REPAIR_MAX_BLOCKERS, &mixer_truncated);
+    mixer_picked = pick_all(culprits, mixer_matches, mixer_count, b.mixer, REPAIR_MAX_BLOCKERS);
+    too_many = (mixer_picked == SIZE_MAX);
+    b.mixer_count = mixer_picked;
   }
   if (allow_audiodg_close) {
-    char const *const audiodg_names[] = {REPAIR_AUDIODG_NAME};
-    b.audiodg_count = pick_all(culprits, audiodg_names, 1, b.audiodg, REPAIR_MAX_BLOCKERS, &audiodg_truncated);
+    audiodg_picked = pick_all(culprits, audiodg_names, audiodg_count, b.audiodg, REPAIR_MAX_BLOCKERS);
+    too_many = too_many || (audiodg_picked == SIZE_MAX);
+    b.audiodg_count = audiodg_picked;
   }
-  if (mixer_truncated || audiodg_truncated) {
+  if (too_many) {
     OV_ERROR_SETF(err,
                   ov_error_type_generic,
                   ov_error_generic_fail,
                   "%1$hs",
                   gettext("Too many blocker processes are named in the record, more than this tool can close at once."),
                   NULL);
-    goto cleanup;
-  }
-  success = true;
-
-cleanup:
-  if (!success) {
     memset(&b, 0, sizeof(b));
+    // the counts are what the caller reads the failure off, so they say which kind ran
+    // over: the one that did carries SIZE_MAX
+    b.mixer_count = mixer_picked;
+    b.audiodg_count = audiodg_picked;
   }
   return b;
 }
@@ -755,6 +753,13 @@ static enum repair_outcome repair_target(struct repair_ctx *const ctx,
 
   picked = repair_pick_blockers(
       culprits, settings_mixer_names(s), settings_mixer_name_count(s), ctx->allow_mixer_close, ctx->allow_audiodg_close, err);
+  if ((picked.mixer_count == SIZE_MAX) || (picked.audiodg_count == SIZE_MAX)) {
+    // the records name more blockers than this tool carries room for, so there is nothing
+    // to close and the reason is the one the pick raised
+    OV_ERROR_ADD_TRACE(err);
+    outcome = REPAIR_OUTCOME_FAILED;
+    goto cleanup;
+  }
   if (picked.mixer_count == 0 && picked.audiodg_count == 0) {
     char option_buf[256] = {0};
     char const *option = NULL;
@@ -765,10 +770,10 @@ static enum repair_outcome repair_target(struct repair_ctx *const ctx,
     // pick with both flags up says which option would have helped
     {
       char const *const audiodg_names[] = {REPAIR_AUDIODG_NAME};
-      if (pick_all(culprits, settings_mixer_names(s), settings_mixer_name_count(s), NULL, REPAIR_MAX_BLOCKERS, NULL) > 0) {
+      if (pick_all(culprits, settings_mixer_names(s), settings_mixer_name_count(s), NULL, REPAIR_MAX_BLOCKERS) > 0) {
         repair_option_mixer_label(s, option_buf, sizeof(option_buf));
         option = option_buf;
-      } else if (pick_all(culprits, audiodg_names, 1, NULL, REPAIR_MAX_BLOCKERS, NULL) > 0) {
+      } else if (pick_all(culprits, audiodg_names, 1, NULL, REPAIR_MAX_BLOCKERS) > 0) {
         option = repair_option_audiodg_label();
       }
     }

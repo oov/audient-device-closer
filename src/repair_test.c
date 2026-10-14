@@ -25,6 +25,7 @@ static struct {
   bool removal_recovers; //!< the removal succeeds from this call on
   size_t veto_records;   //!< how many records the veto read hands back
   size_t mixer_closed;   //!< how many blockers were closed
+  char const *image;     //!< the image the veto records name, NULL for the mixer of the run
 } g_retry;
 
 /**
@@ -59,17 +60,18 @@ fake_read_veto(char const *const log_name, char const *const provider_name, unsi
   (void)err;
   for (size_t i = 0; i < g_retry.veto_records; i++) {
     static char const instance[] = "USB\\VID_2708&PID_0008\\6&deadbee&0&2";
-    static char const image[] = "\\Device\\HarddiskVolume2\\Program Files\\Audient\\iD\\iD.exe";
+    char const *const image = (g_retry.image != NULL) ? g_retry.image : "\\Device\\HarddiskVolume2\\Program Files\\Audient\\iD\\iD.exe";
+    size_t const image_bytes = strlen(image) + 1;
 
     if (!OV_REALLOC(&c.device_instance, sizeof(instance), sizeof(c.device_instance[0]))) {
       goto cleanup;
     }
     memcpy(c.device_instance, instance, sizeof(instance));
-    if (!OV_REALLOC(&c.path, sizeof(image), sizeof(c.path[0]))) {
+    if (!OV_REALLOC(&c.path, image_bytes, sizeof(c.path[0]))) {
       OV_FREE(&c.device_instance);
       goto cleanup;
     }
-    memcpy(c.path, image, sizeof(image));
+    memcpy(c.path, image, image_bytes);
     c.pid = 100 + (uint32_t)i;
     c.event_time_ms = process_now_ms() + 1000; // newer than the attempt, so the prune keeps it
     if (!OV_ARRAY_PUSH(&list, c)) {
@@ -315,9 +317,8 @@ static void test_pick_blockers(void) {
       }
     }
     picked = repair_pick_blockers(many, names, 2, false, true, &err);
-    TEST_CHECK(picked.audiodg_count == 0);
-    TEST_CHECK(picked.audiodg[0].pid == 0);
-    TEST_FAILED_WITH(picked.audiodg_count != 0, &err, ov_error_type_generic, ov_error_generic_fail);
+    TEST_CHECK(picked.audiodg_count == SIZE_MAX);
+    TEST_FAILED_WITH(false, &err, ov_error_type_generic, ov_error_generic_fail);
     OV_ARRAY_DESTROY(&many);
   }
 
@@ -798,6 +799,55 @@ cleanup:
   }
 }
 
+/**
+ * @brief More blockers than the run may close is a failure, not "still in use"
+ *
+ * The records may name more processes than the run carries room for.  That is a failure of
+ * its own and not the same answer as a device that no record named: a caller that reads
+ * the two as one would say the device is still in use and stop without saying why.
+ */
+static void test_too_many_blockers_is_a_failure(void) {
+  char service_name[] = "adc-repair-test-no-such-service";
+  char devnode[] = "TUSBAUDIO_ENUM\\VID_2708&PID_0008&KS\\6&deadbee&0&2";
+  struct settings s;
+  struct repair_result r;
+  struct repair_ctx run = {0};
+  struct repair_deps deps = {0};
+  struct device_target target;
+  struct ov_error err = {0};
+  enum repair_outcome outcome;
+
+  memset(&s, 0, sizeof(s));
+  memset(&r, 0, sizeof(r));
+  memset(&target, 0, sizeof(target));
+  memset(&g_retry, 0, sizeof(g_retry));
+  s.ks_service = service_name;
+  s.confirm_max_wait_ms = 1000;
+  target.devnode = devnode;
+  target.state = DEVICE_STATE_FAULTED;
+  run.settings = &s;
+  run.allow_audiodg_close = true;
+  run.out = &r;
+  run.total = REPAIR_STEPS_PER_TARGET;
+  deps.removal_close = fake_vetoed_removal;
+  deps.read_veto = fake_read_veto;
+  deps.names_ancestor = fake_names_ancestor;
+  deps.mixer_take = fake_mixer_take;
+  deps.mixer_close = fake_mixer_close;
+  deps.mixer_target_release = fake_mixer_target_release;
+  deps.probe_devnode = fake_probe_healthy;
+  g_retry.veto_records = REPAIR_MAX_BLOCKERS + 1;
+  g_retry.image = "\\Device\\HarddiskVolume2\\Windows\\System32\\audiodg.exe";
+
+  TEST_CASE("more blockers than the run carries room for");
+  outcome = repair_target(&run, &deps, &target, &err);
+  TEST_CHECK_(outcome == REPAIR_OUTCOME_FAILED, "want the failed outcome, got %d", (int)outcome);
+  TEST_CHECK_(ov_error_is(&err, ov_error_type_generic, ov_error_generic_fail), "want a reason for the failure");
+
+  OV_ERROR_REPORT(&err, NULL);
+  repair_result_release(&r);
+}
+
 TEST_LIST = {
     {"path_matches_name", test_path_matches_name},
     {"pick_blockers", test_pick_blockers},
@@ -813,5 +863,6 @@ TEST_LIST = {
     {"confirm_poll_count_from_the_wait", test_confirm_poll_count_from_the_wait},
     {"confirm_survives_a_failed_look", test_confirm_survives_a_failed_look},
     {"second_veto_is_answered", test_second_veto_is_answered},
+    {"too_many_blockers_is_a_failure", test_too_many_blockers_is_a_failure},
     {NULL, NULL},
 };
