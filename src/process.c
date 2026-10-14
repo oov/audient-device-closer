@@ -54,8 +54,8 @@ bool process_path_matches_name(char const *const path, char const *const name) {
  * @param event_time_ms when the event was written, epoch milliseconds UTC
  * @return false when one of the two is unknown or the process is younger than the event
  */
-bool process_start_matches_event_time(long long const start_ms_utc, long long const event_time_ms) {
-  if ((start_ms_utc <= 0) || (event_time_ms <= 0)) {
+bool process_start_matches_event_time(uint64_t const start_ms_utc, uint64_t const event_time_ms) {
+  if ((start_ms_utc == 0) || (event_time_ms == 0)) {
     return false; // without both times there is nothing to compare
   }
   return start_ms_utc <= event_time_ms;
@@ -67,7 +67,7 @@ bool process_start_matches_event_time(long long const start_ms_utc, long long co
  * @param ft the time to convert
  * @return the moment in epoch milliseconds UTC
  */
-static long long filetime_to_ms(FILETIME const *const ft) {
+static uint64_t filetime_to_ms(FILETIME const *const ft) {
   ULARGE_INTEGER u;
 
   u.LowPart = ft->dwLowDateTime;
@@ -75,7 +75,7 @@ static long long filetime_to_ms(FILETIME const *const ft) {
   if (u.QuadPart == 0) {
     return 0;
   }
-  return (long long)((u.QuadPart - 116444736000000000ULL) / 10000ULL);
+  return (uint64_t)((u.QuadPart - 116444736000000000ULL) / 10000ULL);
 }
 
 /**
@@ -83,7 +83,7 @@ static long long filetime_to_ms(FILETIME const *const ft) {
  *
  * @return the moment in epoch milliseconds UTC
  */
-long long process_now_ms(void) {
+uint64_t process_now_ms(void) {
   FILETIME ft;
 
   GetSystemTimeAsFileTime(&ft);
@@ -147,17 +147,18 @@ cleanup:
 }
 
 /**
- * @brief Open a process, with SeDebugPrivilege when a plain open is refused
+ * @brief Open a process, with SeDebugPrivilege when the caller allows it and a plain open was refused
  *
- * Opens the process, and when the refusal is a plain access denial, tries the same open
- * once more with SeDebugPrivilege enabled.
+ * Opens the process; when the refusal is a plain access denial and the caller allowed the
+ * privilege, the same open is tried once more with SeDebugPrivilege enabled.
  *
  * @param pid the process to open
  * @param access what OpenProcess should be asked for
+ * @param allow_privilege allow SeDebugPrivilege for the retry
  * @param err receives the reason of the last refusal
  * @return the handle, NULL when the process could not be opened
  */
-static HANDLE open_with_debug_privilege(uint32_t const pid, DWORD const access, struct ov_error *const err) {
+static HANDLE open_process(uint32_t const pid, DWORD const access, bool const allow_privilege, struct ov_error *const err) {
   HANDLE h = NULL;
   bool was_on = false;
   bool changed = false;
@@ -168,7 +169,7 @@ static HANDLE open_with_debug_privilege(uint32_t const pid, DWORD const access, 
     return h;
   }
   last_error = GetLastError();
-  if (last_error != ERROR_ACCESS_DENIED) {
+  if ((last_error != ERROR_ACCESS_DENIED) || !allow_privilege) {
     OV_ERROR_SET_HRESULT(err, HRESULT_FROM_WIN32(last_error));
     return NULL;
   }
@@ -200,23 +201,18 @@ static HANDLE open_with_debug_privilege(uint32_t const pid, DWORD const access, 
 /**
  * @brief Open one exact process instance
  *
- * The handle is opened once and every check runs through it, so the instance that is acted
- * on is the one that was checked.
- *
  * @param out receives the instance, release with process_ref_close
  * @param pid the process the record named
  * @param need_terminate ask for the right to terminate the process
+ * @param allow_privilege allow SeDebugPrivilege when a plain open was refused
  * @param err receives the refusal of the system
  * @return false when the process could not be opened
  */
-bool process_ref_open(struct process_ref *const out, uint32_t const pid, bool const need_terminate, struct ov_error *const err) {
+bool process_ref_open(
+    struct process_ref *const out, uint32_t const pid, bool const need_terminate, bool const allow_privilege, struct ov_error *const err) {
   bool success = false;
   DWORD const access = (need_terminate ? PROCESS_TERMINATE : 0) | PROCESS_QUERY_LIMITED_INFORMATION | SYNCHRONIZE;
   HANDLE h = NULL;
-  FILETIME creation;
-  FILETIME exit;
-  FILETIME kernel;
-  FILETIME user;
 
   if (out == NULL) {
     OV_ERROR_SET_GENERIC(err, ov_error_generic_invalid_argument);
@@ -224,22 +220,12 @@ bool process_ref_open(struct process_ref *const out, uint32_t const pid, bool co
   }
   memset(out, 0, sizeof(*out));
   out->handle = INVALID_HANDLE_VALUE;
-  out->pid = pid;
 
-  h = open_with_debug_privilege(pid, access, err);
+  h = open_process(pid, access, allow_privilege, err);
   if (h == NULL) {
     OV_ERROR_ADD_TRACE(err);
     goto cleanup;
   }
-  memset(&creation, 0, sizeof(creation));
-  memset(&exit, 0, sizeof(exit));
-  memset(&kernel, 0, sizeof(kernel));
-  memset(&user, 0, sizeof(user));
-  if (!GetProcessTimes(h, &creation, &exit, &kernel, &user)) {
-    OV_ERROR_SET_HRESULT(err, HRESULT_FROM_WIN32(GetLastError()));
-    goto cleanup;
-  }
-  out->start_ms_utc = filetime_to_ms(&creation);
   out->handle = h;
   h = NULL;
   success = true;
@@ -255,56 +241,61 @@ cleanup:
  * @brief Is the instance still running
  *
  * @param ref the instance to look at
- * @return true while the process is alive
+ * @param err receives the failure of the question
+ * @return ov_true while the process is alive, ov_false when it has exited, and
+ *         ov_indeterminate when whether it is alive could not be read, with err set
  */
-bool process_ref_alive(struct process_ref const *const ref) {
+ov_tribool process_ref_alive(struct process_ref const *const ref, struct ov_error *const err) {
+  ov_tribool result = ov_indeterminate;
   DWORD code = 0;
-
-  if ((ref == NULL) || (ref->handle == NULL) || (ref->handle == INVALID_HANDLE_VALUE)) {
-    return false;
-  }
-  if (!GetExitCodeProcess((HANDLE)ref->handle, &code)) {
-    return false; // an unreadable state is not evidence that it is still there
-  }
-  return code == STILL_ACTIVE;
-}
-
-/**
- * @brief The win32 path of the image this instance runs
- *
- * @param ref the instance to look at
- * @param err receives the refusal of the system
- * @return the path in UTF-8, NULL when it could not be read
- * @note Release with process_string_free.
- */
-char *process_ref_image_path(struct process_ref const *const ref, struct ov_error *const err) {
-  char *result = NULL;
-  wchar_t buf[512];
-  DWORD chars = (DWORD)(sizeof(buf) / sizeof(buf[0]));
-  bool success = false;
 
   if ((ref == NULL) || (ref->handle == NULL) || (ref->handle == INVALID_HANDLE_VALUE)) {
     OV_ERROR_SET_GENERIC(err, ov_error_generic_invalid_argument);
     goto cleanup;
   }
-  if (!QueryFullProcessImageNameW((HANDLE)ref->handle, 0, buf, &chars) || (chars == 0)) {
-    DWORD const le = (GetLastError() != 0) ? GetLastError() : ERROR_NOT_FOUND;
-    OV_ERROR_SET_HRESULT(err, HRESULT_FROM_WIN32(le));
+  if (!GetExitCodeProcess((HANDLE)ref->handle, &code)) {
+    OV_ERROR_SET_HRESULT(err, HRESULT_FROM_WIN32(GetLastError()));
     goto cleanup;
   }
-  if (!ov_sprintf_char(&result, err, NULL, "%ls", buf)) {
-    OV_ERROR_ADD_TRACE(err);
-    goto cleanup;
-  }
-  success = true;
+  result = (code == STILL_ACTIVE) ? ov_true : ov_false;
 
 cleanup:
-  if (!success) {
-    if (result != NULL) {
-      OV_ARRAY_DESTROY(&result);
-    }
+  return result;
+}
+
+/**
+ * @brief Did this instance start before the event it is measured against
+ *
+ * @param ref the instance to look at
+ * @param event_time_ms when the event was written, epoch milliseconds UTC
+ * @param err receives the failure of the read
+ * @return ov_true when the instance started at or before the event, ov_false when it
+ *         started after it, and ov_indeterminate when the time could not be read, with err
+ *         set
+ */
+ov_tribool process_ref_started_before_event(struct process_ref const *const ref, uint64_t const event_time_ms, struct ov_error *const err) {
+  ov_tribool result = ov_indeterminate;
+  FILETIME creation;
+  FILETIME exit;
+  FILETIME kernel;
+  FILETIME user;
+
+  if ((ref == NULL) || (ref->handle == NULL) || (ref->handle == INVALID_HANDLE_VALUE)) {
+    OV_ERROR_SET_GENERIC(err, ov_error_generic_invalid_argument);
+    goto cleanup;
   }
-  return success ? result : NULL;
+  memset(&creation, 0, sizeof(creation));
+  memset(&exit, 0, sizeof(exit));
+  memset(&kernel, 0, sizeof(kernel));
+  memset(&user, 0, sizeof(user));
+  if (!GetProcessTimes((HANDLE)ref->handle, &creation, &exit, &kernel, &user)) {
+    OV_ERROR_SET_HRESULT(err, HRESULT_FROM_WIN32(GetLastError()));
+    goto cleanup;
+  }
+  result = process_start_matches_event_time(filetime_to_ms(&creation), event_time_ms) ? ov_true : ov_false;
+
+cleanup:
+  return result;
 }
 
 /**
@@ -350,8 +341,14 @@ ov_tribool process_ref_wait(struct process_ref const *const ref, uint32_t const 
     OV_ERROR_SET_GENERIC(err, ov_error_generic_invalid_argument);
     goto cleanup;
   }
-  if (!process_ref_alive(ref)) {
+  switch (process_ref_alive(ref, err)) {
+  case ov_true:
+    break;
+  case ov_false:
     result = ov_true;
+    goto cleanup;
+  case ov_indeterminate:
+    OV_ERROR_ADD_TRACE(err);
     goto cleanup;
   }
   wait = WaitForSingleObject((HANDLE)ref->handle, timeout_ms);
@@ -380,8 +377,6 @@ void process_ref_close(struct process_ref *const ref) {
   }
   CloseHandle((HANDLE)ref->handle);
   ref->handle = INVALID_HANDLE_VALUE;
-  ref->pid = 0;
-  ref->start_ms_utc = 0;
 }
 
 /**

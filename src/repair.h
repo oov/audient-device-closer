@@ -10,7 +10,8 @@
 #include "removal.h"
 
 struct settings;
-struct culprit;
+struct veto_event;
+struct blocker;
 
 /**
  * @brief What came of the run
@@ -24,7 +25,7 @@ enum repair_outcome {
   REPAIR_OUTCOME_ABSENT,        // no device of that service is present
   REPAIR_OUTCOME_OTHER_PROBLEM, // the device is there, but not with the problem this tool removes
   REPAIR_OUTCOME_CLOSED,        // the removal succeeded
-  REPAIR_OUTCOME_VETOED,        // still blocked; culprits may name who blocks it
+  REPAIR_OUTCOME_VETOED,        // still blocked; events may name who blocks it
   REPAIR_OUTCOME_FAILED,        // any other failure
   REPAIR_OUTCOME_ABORTED,       // the reader stopped it and it quit between its steps
 };
@@ -36,11 +37,14 @@ enum repair_outcome {
  * themselves are chosen by the UI, next to the dialog that shows them; the numbers stay in
  * the log.  The reason of a refusal is carried as the code of the removal error, 0 when
  * the outcome is not a refusal of the removal.
+ *
+ * The events are the records of the veto, shown as they were written; the processes this
+ * run closed are not among them.
  */
 struct repair_result {
   enum repair_outcome outcome;
   enum removal_error_code removal_error; // 0 unless the removal was refused
-  struct culprit *culprits;              // ovarray or NULL.  released by repair_result_release
+  struct veto_event *events;             // ovarray or NULL.  released by repair_result_release
   char message[512];                     // UTF-8, meant for the UI log
 };
 
@@ -68,30 +72,24 @@ void repair_option_mixer_label(struct settings const *const s, char *const out, 
 void repair_stage_mixer_caption(struct settings const *const s, char *const out, size_t const out_size);
 
 /**
- * @brief The words of the setting that lets this tool close the audio engine
+ * @brief The words of the setting that lets this tool pause the audio service
  *
  * @return the caption, UTF-8
  */
 char const *repair_option_audiodg_label(void);
 
 /**
- * @brief The process the veto record names as a blocker this tool may close
+ * @brief May this build pause the audio service for these settings at all
  *
- * The answer is the exact instance the record points at: its pid and the time the record was
- * written.  Closing is then carried out through that identity, never through a name search,
- * so a process with the same image name somewhere else is out of reach by construction.
+ * Pausing it takes the sound away from the whole machine, so a build that ships only does
+ * it when the settings say so in as many words, and the window does not offer the choice
+ * either.  A debug build is free to do it without that, so the behaviour can be tried out
+ * at all.
+ *
+ * @param s the settings that may allow it, may be NULL
+ * @return true when the service may be paused and the window offers the choice
  */
-struct repair_blocker {
-  bool found; //!< false when the record names only blockers this tool may not close
-  uint32_t pid;
-  long long event_time_ms;
-  char const *name; //!< the mixer image name of the settings that matched, borrowed
-};
-
-/**
- * @brief Maximum number of blockers this tool will close at once
- */
-#define REPAIR_MAX_BLOCKERS 32
+bool repair_can_pause_audio_service(struct settings const *const s);
 
 /**
  * @brief How long the confirmation waits between two looks at a released device
@@ -102,19 +100,6 @@ struct repair_blocker {
  * back is reported as a failure the reason of which is not known.
  */
 #define REPAIR_CONFIRM_POLL_INTERVAL_MS 1000
-
-/**
- * @brief The blockers the run may close, in the order they are closed
- *
- * The same image may run several times on this machine, one per logged-in session, so the
- * records may name more than one blocker per image; every one of them is closed.
- */
-struct repair_blockers {
-  struct repair_blocker mixer[REPAIR_MAX_BLOCKERS];
-  struct repair_blocker audiodg[REPAIR_MAX_BLOCKERS];
-  size_t mixer_count;
-  size_t audiodg_count;
-};
 
 /**
  * @brief The audio engine, a blocker as often as the mixer is
@@ -163,7 +148,7 @@ typedef void (*repair_progress_fn)(enum repair_stage const stage, size_t const s
 /**
  * @brief Run the repair
  *
- * The documented sequence: remove, look up the culprits when vetoed, optionally close the
+ * The documented sequence: remove, look up the events when vetoed, optionally close the
  * blockers (the mixer and audiodg) and remove again.  It never touches anything outside the
  * settings.
  *

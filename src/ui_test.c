@@ -23,7 +23,6 @@
 #include <ovprintf_ex.h>
 #include <ovthreads.h>
 
-#include "culprit.h"
 #include "device.h"
 #include "layout.h"
 #include "options.h"
@@ -35,6 +34,7 @@
 #include "ui.h"
 #include "ui_blockers_window.h"
 #include "ui_progress_window.h"
+#include "veto_event.h"
 #include <uxtheme.h>
 
 #define IDC_PROGRESS_CANCEL 14 // the cancel button of the progress window, from ui_progress_window.c
@@ -1785,24 +1785,24 @@ static void CALLBACK blockers_test_timer(HWND const hwnd, UINT const msg, UINT_P
 }
 
 static void test_blockers_window_shows_the_processes(void) {
-  struct culprit *culprits = NULL;
-  struct culprit record;
+  struct veto_event *events = NULL;
+  struct veto_event record;
   struct ov_error berr = {0};
   ATOM atom = 0;
   HFONT font = NULL;
   HWND owner = NULL;
-  HWND blockers = NULL;
+  HWND blockers_wnd = NULL;
   WNDCLASSEXW wc;
 
   memset(&record, 0, sizeof(record));
   record.pid = 100;
   record.path = "\\Device\\HarddiskVolume1\\Program Files\\Audient\\iD\\iD.exe";
   record.device_instance = "USB\\VID_2708&PID_0008";
-  TEST_CHECK(OV_ARRAY_PUSH(&culprits, record));
+  TEST_CHECK(OV_ARRAY_PUSH(&events, record));
   record.pid = 200;
   record.path = "C:\\WINDOWS\\system32\\audiodg.exe";
   record.device_instance = NULL;
-  TEST_CHECK(OV_ARRAY_PUSH(&culprits, record));
+  TEST_CHECK(OV_ARRAY_PUSH(&events, record));
 
   TEST_CHECK(theme_init(true, &berr));
   memset(&wc, 0, sizeof(wc));
@@ -1847,23 +1847,23 @@ static void test_blockers_window_shows_the_processes(void) {
     if (!TEST_CHECK(timer != 0)) {
       goto cleanup;
     }
-    if (!TEST_SUCCEEDED(ui_blockers_window_show(owner, culprits, &berr), &berr)) {
+    if (!TEST_SUCCEEDED(ui_blockers_window_show(owner, events, &berr), &berr)) {
       goto cleanup;
     }
     KillTimer(owner, ADC_BLOCKERS_TEST_TIMER_ID);
-    TEST_CHECK(!IsWindow(blockers));
+    TEST_CHECK(!IsWindow(blockers_wnd));
     TEST_MSG("want the blockers window gone after the press of its OK button");
     TEST_CHECK(IsWindowEnabled(owner) != 0);
     TEST_MSG("want the owner unlocked when the list is done");
     TEST_CHECK(GetActiveWindow() == owner);
     TEST_MSG("want the owner active again after the popup is gone");
-    blockers = NULL;
+    blockers_wnd = NULL;
   }
   TEST_CASE_(NULL);
 
 cleanup:
-  if ((blockers != NULL) && IsWindow(blockers)) {
-    DestroyWindow(blockers);
+  if ((blockers_wnd != NULL) && IsWindow(blockers_wnd)) {
+    DestroyWindow(blockers_wnd);
   }
   if (owner != NULL) {
     DestroyWindow(owner);
@@ -1874,7 +1874,7 @@ cleanup:
   if (atom != 0) {
     UnregisterClassW(wc.lpszClassName, wc.hInstance);
   }
-  OV_ARRAY_DESTROY(&culprits);
+  OV_ARRAY_DESTROY(&events);
 }
 
 /**

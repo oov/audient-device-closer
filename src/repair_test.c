@@ -21,11 +21,17 @@ static void *g_confirm_ctx = NULL;
  * @brief What the retry of a vetoed removal is answered with
  */
 static struct {
-  size_t removal_calls;  //!< how often the removal was asked for
-  bool removal_recovers; //!< the removal succeeds from this call on
-  size_t veto_records;   //!< how many records the veto read hands back
-  size_t mixer_closed;   //!< how many blockers were closed
-  char const *image;     //!< the image the veto records name, NULL for the mixer of the run
+  size_t removal_calls;   //!< how often the removal was asked for
+  bool removal_recovers;  //!< the removal succeeds from this call on
+  size_t veto_records;    //!< how many records the veto read hands back
+  size_t veto_reads;      //!< how often the veto was read
+  uint32_t second_pid;    //!< the pid the second read names, 0 to keep the first ones
+  size_t mixer_closed;    //!< how many blockers were closed
+  size_t service_paused;  //!< how often the audio service was paused
+  size_t service_resumed; //!< how often the audio service was started again
+  bool resume_fails;      //!< the service refuses to start again
+  char const *image;      //!< the image the blockers report, NULL for the mixer of the run
+  bool mixer_seen;        //!< whether a blocker the run may close was seen
 } g_retry;
 
 /**
@@ -47,36 +53,45 @@ static bool fake_vetoed_removal(char const *const devnode, struct ov_error *cons
 }
 
 /**
- * @brief Hand back the records of a veto, made the way culprit_read makes them
+ * @brief Hand back the records of a veto, made the way veto_event_read makes them
  */
-static struct culprit *
+static struct veto_event *
 fake_read_veto(char const *const log_name, char const *const provider_name, unsigned short const event_id, struct ov_error *const err) {
-  struct culprit *list = NULL;
-  struct culprit c = {0};
+  struct veto_event *list = NULL;
+  struct veto_event c = {0};
 
   (void)log_name;
   (void)provider_name;
   (void)event_id;
   (void)err;
-  for (size_t i = 0; i < g_retry.veto_records; i++) {
+  g_retry.veto_reads++;
+  if ((g_retry.second_pid != 0) && (g_retry.veto_reads >= 2)) {
+    // the second read is the one of the second attempt: the record that named the process
+    // this run closed is history, and what blocks the device now is somebody else
     static char const instance[] = "USB\\VID_2708&PID_0008\\6&deadbee&0&2";
-    char const *const image = (g_retry.image != NULL) ? g_retry.image : "\\Device\\HarddiskVolume2\\Program Files\\Audient\\iD\\iD.exe";
-    size_t const image_bytes = strlen(image) + 1;
 
     if (!OV_REALLOC(&c.device_instance, sizeof(instance), sizeof(c.device_instance[0]))) {
       goto cleanup;
     }
     memcpy(c.device_instance, instance, sizeof(instance));
-    if (!OV_REALLOC(&c.path, image_bytes, sizeof(c.path[0]))) {
-      OV_FREE(&c.device_instance);
+    c.pid = g_retry.second_pid;
+    c.event_time_ms = process_now_ms() + 1000;
+    if (!OV_ARRAY_PUSH(&list, c)) {
       goto cleanup;
     }
-    memcpy(c.path, image, image_bytes);
+    return list;
+  }
+  for (size_t i = 0; i < g_retry.veto_records; i++) {
+    static char const instance[] = "USB\\VID_2708&PID_0008\\6&deadbee&0&2";
+
+    if (!OV_REALLOC(&c.device_instance, sizeof(instance), sizeof(c.device_instance[0]))) {
+      goto cleanup;
+    }
+    memcpy(c.device_instance, instance, sizeof(instance));
     c.pid = 100 + (uint32_t)i;
     c.event_time_ms = process_now_ms() + 1000; // newer than the attempt, so the prune keeps it
     if (!OV_ARRAY_PUSH(&list, c)) {
       OV_FREE(&c.device_instance);
-      OV_FREE(&c.path);
       goto cleanup;
     }
     memset(&c, 0, sizeof(c));
@@ -96,40 +111,73 @@ static ov_tribool fake_names_ancestor(char const *const device_instance, char co
 }
 
 /**
- * @brief The record names the instance that is running
+ * @brief The veto records name processes that are running, one per record
+ *
+ * The records carry no image of their own: what the process is is read from the machine,
+ * which the fake stands in for.  The kind of each entry follows g_retry.image.
  */
-static bool fake_mixer_take(uint32_t const pid,
-                            char const *const exe_name,
-                            long long const event_time_ms,
-                            bool *const out_found,
-                            struct mixer_target *const out,
-                            struct ov_error *const err) {
-  (void)event_time_ms;
+static struct blocker *fake_blocker_list_build(struct veto_event const *const events,
+                                               char const *const *const mixer_names,
+                                               size_t const mixer_name_count,
+                                               struct ov_error *const err) {
+  struct blocker *list = NULL;
+  size_t const n = veto_event_count(events);
+  char const *const name = g_retry.image ? g_retry.image : "iD.exe";
+  size_t i = 0;
+
   (void)err;
-  *out_found = true;
-  out->pid = pid;
-  if (!ov_sprintf_char(&out->path, NULL, NULL, "C:\\Program Files\\Audient\\iD\\%s", exe_name)) {
-    return false;
+  for (i = 0; i < n; i++) {
+    struct blocker b;
+
+    memset(&b, 0, sizeof(b));
+    b.pid = events[i].pid;
+    b.event_time_ms = events[i].event_time_ms;
+    b.kind = ((mixer_name_count > 0) && (mixer_names != NULL) && process_path_matches_name(name, mixer_names[0])) ? BLOCKER_KIND_MIXER
+                                                                                                                  : BLOCKER_KIND_AUDIODG;
+    if (!OV_ARRAY_PUSH(&list, b)) {
+      goto cleanup;
+    }
   }
-  return true;
+  if ((list == NULL) && !OV_ARRAY_GROW(&list, 1)) {
+    goto cleanup;
+  }
+  return list;
+
+cleanup:
+  blocker_list_destroy(&list);
+  return NULL;
 }
 
 /**
  * @brief The blocker goes when the run asks it to
  */
-static bool fake_mixer_close(struct mixer_target *const target, struct ov_error *const err) {
-  (void)target;
+static bool fake_blocker_close(struct blocker const *const b, bool const allow_privilege, struct ov_error *const err) {
+  (void)b;
+  (void)allow_privilege;
   (void)err;
   g_retry.mixer_closed++;
   return true;
 }
 
-static void fake_mixer_target_release(struct mixer_target *const target) {
-  if ((target == NULL) || (target->path == NULL)) {
-    return;
+/**
+ * @brief The audio service is paused when the run asks for it
+ */
+static bool fake_audio_service_pause(struct ov_error *const err) {
+  (void)err;
+  g_retry.service_paused++;
+  return true;
+}
+
+/**
+ * @brief The audio service is started again when the run asks for it
+ */
+static bool fake_audio_service_resume(struct ov_error *const err) {
+  g_retry.service_resumed++;
+  if (g_retry.resume_fails) {
+    OV_ERROR_SET_GENERIC(err, ov_error_generic_fail);
+    return false;
   }
-  OV_ARRAY_DESTROY(&target->path);
-  target->pid = 0;
+  return true;
 }
 
 /**
@@ -158,174 +206,38 @@ static void test_path_matches_name(void) {
 }
 
 /**
- * @brief The blocker picks the exact instance out of a veto record
+ * @brief The kind of a blocker is what the lookup decided
  *
- * The pid and the time of the record, not a name.  A record that names a process somewhere
- * else must still be picked (the record is the truth), while the later check in mixer_take
- * is what keeps the close away from any other process.
+ * The kind is not read off a path at the time of the close: it is settled when the machine
+ * is asked what the process is, so the run reads it from the entry and nothing else.
  */
-static void test_pick_blockers(void) {
-  /* the mixer names come from the settings; the audio engine is named inside repair_pick_blockers */
-  struct ov_error err = {0};
-  struct culprit *list = NULL;
-  struct repair_blockers b;
-  char mixer_path[] = "\\Device\\HarddiskVolume1\\Program Files\\Audient\\iD\\iD.exe";
-  char audiodg_path[] = "\\Device\\HarddiskVolume1\\Windows\\System32\\audiodg.exe";
-  char audiodg_elsewhere[] = "\\Device\\HarddiskVolume1\\Users\\x\\Downloads\\audiodg.exe";
-  char other_path[] = "\\Device\\HarddiskVolume1\\Apps\\holder.exe";
-  struct culprit c;
-  static char const *const names[] = {"iD.exe", "EVO.exe"};
+static void test_blocker_kind(void) {
+  struct blocker *blockers = NULL;
+  struct blocker b;
 
-  memset(&c, 0, sizeof(c));
-  c.pid = 100;
-  c.path = mixer_path;
-  c.event_time_ms = 111;
-  if (!TEST_CHECK(OV_ARRAY_PUSH(&list, c))) {
+  memset(&b, 0, sizeof(b));
+  b.pid = 100;
+  b.kind = BLOCKER_KIND_MIXER;
+  if (!TEST_CHECK(OV_ARRAY_PUSH(&blockers, b))) {
     goto cleanup;
   }
-  c.pid = 200;
-  c.path = audiodg_path;
-  c.event_time_ms = 222;
-  if (!TEST_CHECK(OV_ARRAY_PUSH(&list, c))) {
-    goto cleanup;
-  }
-  c.pid = 300;
-  c.path = other_path;
-  c.event_time_ms = 333;
-  if (!TEST_CHECK(OV_ARRAY_PUSH(&list, c))) {
-    goto cleanup;
-  }
+  b.pid = 200;
+  b.kind = BLOCKER_KIND_AUDIODG;
+  TEST_CHECK(OV_ARRAY_PUSH(&blockers, b));
+  b.pid = 300;
+  TEST_CHECK(OV_ARRAY_PUSH(&blockers, b));
 
-  TEST_CASE("both allowed");
-  b = repair_pick_blockers(list, names, 2, true, true, &err);
-  TEST_CHECK(b.mixer_count == 1);
-  TEST_CHECK(b.mixer[0].found == true);
-  TEST_CHECK(b.mixer[0].pid == 100);
-  TEST_CHECK(b.mixer[0].event_time_ms == 111);
-  TEST_CHECK(b.mixer[0].name != NULL && strcmp(b.mixer[0].name, "iD.exe") == 0);
-  TEST_CHECK(b.audiodg_count == 1);
-  TEST_CHECK(b.audiodg[0].found == true);
-  TEST_CHECK(b.audiodg[0].pid == 200);
-  TEST_CHECK(b.audiodg[0].event_time_ms == 222);
-  TEST_CHECK(b.audiodg[0].name != NULL && strcmp(b.audiodg[0].name, "audiodg.exe") == 0);
+  TEST_CASE("the count follows the entries");
+  TEST_CHECK(blocker_count(blockers) == 3);
+  TEST_CHECK(blocker_mixer_count(blockers) == 1);
 
-  TEST_CASE("mixer allowed only");
-  b = repair_pick_blockers(list, names, 2, true, false, &err);
-  TEST_CHECK(b.mixer_count == 1);
-  TEST_CHECK(b.mixer[0].pid == 100);
-  TEST_CHECK(b.mixer[0].name != NULL && strcmp(b.mixer[0].name, "iD.exe") == 0);
-  TEST_CHECK(b.audiodg_count == 0);
-
-  {
-    struct culprit *mixed = NULL;
-    c.pid = 150;
-    c.path = "\\Device\\HarddiskVolume1\\Program Files\\Audient\\EVO\\EVO.exe";
-    c.event_time_ms = 555;
-    if (TEST_CHECK(OV_ARRAY_PUSH(&mixed, c))) {
-      struct repair_blockers const picked = repair_pick_blockers(mixed, names, 2, true, false, &err);
-      TEST_CHECK(picked.mixer_count == 1);
-      TEST_CHECK(picked.mixer[0].pid == 150);
-      TEST_CHECK(picked.mixer[0].name != NULL && strcmp(picked.mixer[0].name, "EVO.exe") == 0);
-      OV_ARRAY_DESTROY(&mixed);
-    }
-  }
-
-  TEST_CASE("audiodg allowed only");
-  b = repair_pick_blockers(list, names, 2, false, true, &err);
-  TEST_CHECK(b.mixer_count == 0);
-  TEST_CHECK(b.audiodg_count == 1);
-  TEST_CHECK(b.audiodg[0].pid == 200);
-
-  TEST_CASE("nothing allowed");
-  b = repair_pick_blockers(list, names, 2, false, false, &err);
-  TEST_CHECK(b.mixer_count == 0);
-  TEST_CHECK(b.audiodg_count == 0);
-
-  TEST_CASE("no blockers");
-  b = repair_pick_blockers(NULL, names, 2, true, true, &err);
-  TEST_CHECK(b.mixer_count == 0);
-  TEST_CHECK(b.audiodg_count == 0);
-
-  TEST_CASE("a record outside the system32 folder is still the record");
-  {
-    struct culprit *only = NULL;
-    c.pid = 400;
-    c.path = audiodg_elsewhere;
-    c.event_time_ms = 444;
-    if (TEST_CHECK(OV_ARRAY_PUSH(&only, c))) {
-      struct repair_blockers const picked = repair_pick_blockers(only, names, 2, false, true, &err);
-      TEST_CHECK(picked.audiodg_count == 1);
-      TEST_CHECK(picked.audiodg[0].pid == 400);
-      TEST_CHECK(picked.mixer_count == 0);
-      OV_ARRAY_DESTROY(&only);
-    }
-  }
-
-  TEST_CASE("every instance of the same image is picked");
-  {
-    struct culprit *dup = NULL;
-    c.pid = 500;
-    c.path = audiodg_path;
-    c.event_time_ms = 999;
-    if (TEST_CHECK(OV_ARRAY_PUSH(&dup, c))) {
-      c.pid = 501;
-      c.event_time_ms = 1000;
-      if (TEST_CHECK(OV_ARRAY_PUSH(&dup, c))) {
-        struct repair_blockers const picked = repair_pick_blockers(dup, names, 2, false, true, &err);
-        TEST_CHECK(picked.audiodg_count == 2);
-        TEST_CHECK(picked.audiodg[0].pid == 500);
-        TEST_CHECK(picked.audiodg[1].pid == 501);
-        TEST_CHECK(picked.audiodg[1].event_time_ms == 1000);
-      }
-      OV_ARRAY_DESTROY(&dup);
-    }
-  }
-
-  TEST_CASE("a repeated pid is picked once");
-  {
-    struct culprit *dup = NULL;
-    c.pid = 600;
-    c.path = audiodg_path;
-    c.event_time_ms = 100;
-    if (TEST_CHECK(OV_ARRAY_PUSH(&dup, c))) {
-      c.event_time_ms = 200;
-      if (TEST_CHECK(OV_ARRAY_PUSH(&dup, c))) {
-        struct repair_blockers const picked = repair_pick_blockers(dup, names, 2, false, true, &err);
-        TEST_CHECK(picked.audiodg_count == 1);
-        TEST_CHECK(picked.audiodg[0].pid == 600);
-        TEST_CHECK(picked.audiodg[0].event_time_ms == 100);
-      }
-      OV_ARRAY_DESTROY(&dup);
-    }
-  }
-
-  TEST_CASE_(NULL);
-
-  TEST_CASE("more blockers than this tool carries are refused");
-  {
-    struct culprit *many = NULL;
-    struct repair_blockers picked;
-    size_t i = 0;
-    for (i = 0; i <= REPAIR_MAX_BLOCKERS; i++) {
-      c.pid = (uint32_t)(700 + i);
-      c.path = audiodg_path;
-      c.event_time_ms = (long long)(1000 + i);
-      if (!TEST_CHECK(OV_ARRAY_PUSH(&many, c))) {
-        goto cleanup;
-      }
-    }
-    picked = repair_pick_blockers(many, names, 2, false, true, &err);
-    TEST_CHECK(picked.audiodg_count == SIZE_MAX);
-    TEST_FAILED_WITH(false, &err, ov_error_type_generic, ov_error_generic_fail);
-    OV_ARRAY_DESTROY(&many);
-  }
+  TEST_CASE("an empty list has no mixer");
+  TEST_CHECK(blocker_mixer_count(NULL) == 0);
 
   TEST_CASE_(NULL);
 
 cleanup:
-  if (list != NULL) {
-    OV_ARRAY_DESTROY(&list);
-  }
+  blocker_list_destroy(&blockers);
 }
 
 /**
@@ -357,58 +269,6 @@ cleanup:
  * @brief Releasing what is not there must not crash
  */
 static void test_release_null(void) { repair_result_release(NULL); }
-
-/**
- * @brief The pids of the processes a run closed, which the caller keeps out of the list it
- *        shows
- *
- * The rule is short and it is the whole point of the feature: what was closed is not a
- * blocker any more, and a name is not an identity.
- */
-static void test_closed_pids(void) {
-  struct repair_blockers b;
-  uint32_t out[2 * REPAIR_MAX_BLOCKERS];
-
-  memset(&b, 0, sizeof(b));
-
-  TEST_CASE("nothing was closed");
-  memset(out, 0, sizeof(out));
-  TEST_CHECK(repair_closed_pids(&b, out) == 0);
-
-  TEST_CASE("only the mixer was closed");
-  b.mixer_count = 1;
-  b.mixer[0].found = true;
-  b.mixer[0].pid = 100;
-  TEST_CHECK(repair_closed_pids(&b, out) == 1);
-  TEST_CHECK(out[0] == 100);
-
-  TEST_CASE("both were closed");
-  b.audiodg_count = 1;
-  b.audiodg[0].found = true;
-  b.audiodg[0].pid = 200;
-  TEST_CHECK(repair_closed_pids(&b, out) == 2);
-  TEST_CHECK(out[0] == 100);
-  TEST_CHECK(out[1] == 200);
-
-  TEST_CASE("every closed instance is listed");
-  b.mixer_count = 2;
-  b.mixer[1].found = true;
-  b.mixer[1].pid = 101;
-  b.audiodg_count = 2;
-  b.audiodg[1].found = true;
-  b.audiodg[1].pid = 201;
-  TEST_CHECK(repair_closed_pids(&b, out) == 4);
-  TEST_CHECK(out[0] == 100);
-  TEST_CHECK(out[1] == 101);
-  TEST_CHECK(out[2] == 200);
-  TEST_CHECK(out[3] == 201);
-
-  TEST_CASE("the arguments may be absent");
-  TEST_CHECK(repair_closed_pids(NULL, out) == 0);
-  TEST_CHECK(repair_closed_pids(&b, NULL) == 0);
-
-  TEST_CASE_(NULL);
-}
 
 /**
  * @brief The sentence of a run reads like a system message: what happened, in one sentence
@@ -715,7 +575,7 @@ static void test_option_labels_are_named_once(void) {
 
   repair_option_mixer_label(NULL, label, sizeof(label));
   TEST_CHECK(strcmp(label, "Close the Audient mixer automatically") == 0);
-  TEST_CHECK(strcmp(repair_option_audiodg_label(), "Close audiodg (audiodg.exe) automatically") == 0);
+  TEST_CHECK(strcmp(repair_option_audiodg_label(), "Allow pausing the Windows Audio service") == 0);
 }
 
 /**
@@ -765,9 +625,8 @@ static void test_second_veto_is_answered(void) {
   deps.removal_close = fake_vetoed_removal;
   deps.read_veto = fake_read_veto;
   deps.names_ancestor = fake_names_ancestor;
-  deps.mixer_take = fake_mixer_take;
-  deps.mixer_close = fake_mixer_close;
-  deps.mixer_target_release = fake_mixer_target_release;
+  deps.blocker_list_build = fake_blocker_list_build;
+  deps.blocker_close = fake_blocker_close;
   deps.probe_devnode = fake_probe_healthy;
   g_retry.veto_records = 1;
 
@@ -779,6 +638,7 @@ static void test_second_veto_is_answered(void) {
 
   TEST_CASE("the removal succeeds on the second try");
   memset(&g_retry, 0, sizeof(g_retry));
+  repair_result_release(&r);
   memset(&r, 0, sizeof(r));
   g_retry.veto_records = 1;
   g_retry.removal_recovers = true;
@@ -798,13 +658,109 @@ cleanup:
 }
 
 /**
- * @brief More blockers than the run may close is a failure, not "still in use"
+ * @brief A blocker the user did not allow is left alone and named
  *
- * The records may name more processes than the run carries room for.  That is a failure of
- * its own and not the same answer as a device that no record named: a caller that reads
- * the two as one would say the device is still in use and stop without saying why.
+ * The run may only close what the settings and the two checkboxes allow.  A device that is
+ * held by a process the user kept it away from is still in use, and the sentence says which
+ * setting would have helped instead of the run stopping without a reason.
  */
-static void test_too_many_blockers_is_a_failure(void) {
+static void test_blocker_not_allowed_is_left_alone(void) {
+  char service_name[] = "adc-repair-test-no-such-service";
+  char devnode[] = "TUSBAUDIO_ENUM\\VID_2708&PID_0008&KS\\6&deadbee&0&2";
+  struct settings s;
+  struct repair_result r;
+  struct repair_ctx run = {0};
+  struct repair_deps deps = {0};
+  struct device_target target;
+  struct ov_error err = {0};
+  enum repair_outcome outcome;
+
+  memset(&s, 0, sizeof(s));
+  memset(&r, 0, sizeof(r));
+  memset(&target, 0, sizeof(target));
+  memset(&g_retry, 0, sizeof(g_retry));
+  s.ks_service = service_name;
+  s.confirm_max_wait_ms = 1000;
+  {
+    static char const mixer_name[] = "iD.exe";
+    char *name = NULL;
+
+    if (!OV_REALLOC(&name, sizeof(mixer_name), sizeof(name[0]))) {
+      goto cleanup;
+    }
+    memcpy(name, mixer_name, sizeof(mixer_name));
+    if (!TEST_CHECK(OV_ARRAY_PUSH(&s.mixer_process_names, name))) {
+      OV_FREE(&name);
+      goto cleanup;
+    }
+  }
+  target.devnode = devnode;
+  target.state = DEVICE_STATE_FAULTED;
+  run.settings = &s;
+  run.out = &r;
+  run.total = REPAIR_STEPS_PER_TARGET;
+  deps.removal_close = fake_vetoed_removal;
+  deps.read_veto = fake_read_veto;
+  deps.names_ancestor = fake_names_ancestor;
+  deps.blocker_list_build = fake_blocker_list_build;
+  deps.blocker_close = fake_blocker_close;
+  deps.probe_devnode = fake_probe_healthy;
+  g_retry.veto_records = 1;
+
+  TEST_CASE("the mixer is allowed, so it is closed");
+  run.allow_mixer_close = true;
+  outcome = repair_target(&run, &deps, &target, &err);
+  TEST_CHECK_(outcome == REPAIR_OUTCOME_VETOED, "want the vetoed outcome, got %d", (int)outcome);
+  TEST_CHECK_(g_retry.mixer_closed == 1, "want the blocker closed once, got %zu", g_retry.mixer_closed);
+  TEST_CHECK_(g_retry.removal_calls == 2, "want two removal attempts, got %zu", g_retry.removal_calls);
+  TEST_CHECK_(g_retry.veto_reads == 2, "want the veto read once per attempt, got %zu", g_retry.veto_reads);
+
+  TEST_CASE("nobody allowed the mixer, so nothing is closed and the run says so");
+  memset(&g_retry, 0, sizeof(g_retry));
+  repair_result_release(&r);
+  memset(&r, 0, sizeof(r));
+  g_retry.veto_records = 1;
+  run.allow_mixer_close = false;
+  outcome = repair_target(&run, &deps, &target, &err);
+  TEST_CHECK_(outcome == REPAIR_OUTCOME_VETOED, "want the vetoed outcome, got %d", (int)outcome);
+  TEST_CHECK_(g_retry.mixer_closed == 0, "want nothing closed, got %zu", g_retry.mixer_closed);
+  TEST_CHECK_(g_retry.removal_calls == 1, "want a single removal attempt, got %zu", g_retry.removal_calls);
+  TEST_CHECK(veto_event_count(r.events) == 1);
+
+  TEST_CASE("the second attempt names somebody else, and that one is shown");
+  memset(&g_retry, 0, sizeof(g_retry));
+  repair_result_release(&r);
+  memset(&r, 0, sizeof(r));
+  g_retry.veto_records = 1;
+  g_retry.second_pid = 700; // what the records of the second attempt name
+  run.allow_mixer_close = true;
+  run.allow_audiodg_close = true;
+  outcome = repair_target(&run, &deps, &target, &err);
+  TEST_CHECK_(outcome == REPAIR_OUTCOME_VETOED, "want the vetoed outcome, got %d", (int)outcome);
+  TEST_CHECK_(g_retry.veto_reads == 2, "want the veto read once per attempt, got %zu", g_retry.veto_reads);
+  if (TEST_CHECK(veto_event_count(r.events) == 1)) {
+    TEST_CHECK_(r.events[0].pid == 700, "want the record of the second attempt, got %lu", (unsigned long)r.events[0].pid);
+  }
+
+cleanup:
+  OV_ERROR_REPORT(&err, NULL);
+  repair_result_release(&r);
+  if (s.mixer_process_names != NULL) {
+    for (size_t i = 0; i < OV_ARRAY_LENGTH(s.mixer_process_names); i++) {
+      OV_FREE(&s.mixer_process_names[i]);
+    }
+    OV_ARRAY_DESTROY(&s.mixer_process_names);
+  }
+}
+
+/**
+ * @brief The audio engine is answered by pausing the service that starts it, and it always comes back
+ *
+ * Terminating audiodg is useless, because Windows starts a new one within milliseconds.  The
+ * service that starts it is paused instead, and it has to be started again whatever else
+ * happened, or the machine is left without sound.
+ */
+static void test_audiodg_is_answered_by_pausing_the_service(void) {
   char service_name[] = "adc-repair-test-no-such-service";
   char devnode[] = "TUSBAUDIO_ENUM\\VID_2708&PID_0008&KS\\6&deadbee&0&2";
   struct settings s;
@@ -824,23 +780,54 @@ static void test_too_many_blockers_is_a_failure(void) {
   target.devnode = devnode;
   target.state = DEVICE_STATE_FAULTED;
   run.settings = &s;
-  run.allow_audiodg_close = true;
   run.out = &r;
   run.total = REPAIR_STEPS_PER_TARGET;
+  run.allow_audiodg_close = true;
+  run.can_pause_audio_service = true;
   deps.removal_close = fake_vetoed_removal;
   deps.read_veto = fake_read_veto;
   deps.names_ancestor = fake_names_ancestor;
-  deps.mixer_take = fake_mixer_take;
-  deps.mixer_close = fake_mixer_close;
-  deps.mixer_target_release = fake_mixer_target_release;
+  deps.blocker_list_build = fake_blocker_list_build;
+  deps.blocker_close = fake_blocker_close;
+  deps.audio_service_pause = fake_audio_service_pause;
+  deps.audio_service_resume = fake_audio_service_resume;
   deps.probe_devnode = fake_probe_healthy;
-  g_retry.veto_records = REPAIR_MAX_BLOCKERS + 1;
-  g_retry.image = "\\Device\\HarddiskVolume2\\Windows\\System32\\audiodg.exe";
+  g_retry.veto_records = 1;
+  g_retry.image = "audiodg.exe"; // the records name the audio engine
 
-  TEST_CASE("more blockers than the run carries room for");
+  TEST_CASE("the audio engine is there, so the service is paused and started again");
+  run.allow_mixer_close = true;
+  outcome = repair_target(&run, &deps, &target, &err);
+  TEST_CHECK_(outcome == REPAIR_OUTCOME_VETOED, "want the vetoed outcome, got %d", (int)outcome);
+  TEST_CHECK_(g_retry.service_paused == 1, "want the service paused once, got %zu", g_retry.service_paused);
+  TEST_CHECK_(g_retry.service_resumed == 1, "want the service started again once, got %zu", g_retry.service_resumed);
+  TEST_CHECK_(g_retry.mixer_closed == 0, "want no mixer closed, got %zu", g_retry.mixer_closed);
+  TEST_CHECK_(g_retry.removal_calls == 2, "want two removal attempts, got %zu", g_retry.removal_calls);
+
+  TEST_CASE("nobody allowed it, so the service is left alone");
+  memset(&g_retry, 0, sizeof(g_retry));
+  repair_result_release(&r);
+  memset(&r, 0, sizeof(r));
+  g_retry.veto_records = 1;
+  g_retry.image = "audiodg.exe";
+  run.allow_audiodg_close = false;
+  outcome = repair_target(&run, &deps, &target, &err);
+  TEST_CHECK_(outcome == REPAIR_OUTCOME_VETOED, "want the vetoed outcome, got %d", (int)outcome);
+  TEST_CHECK_(g_retry.service_paused == 0, "want nothing paused, got %zu", g_retry.service_paused);
+  TEST_CHECK_(g_retry.service_resumed == 0, "want nothing to start again, got %zu", g_retry.service_resumed);
+  TEST_CHECK_(g_retry.removal_calls == 1, "want a single removal attempt, got %zu", g_retry.removal_calls);
+
+  TEST_CASE("the service does not come back: the run says so as a failure");
+  memset(&g_retry, 0, sizeof(g_retry));
+  repair_result_release(&r);
+  memset(&r, 0, sizeof(r));
+  g_retry.veto_records = 1;
+  g_retry.image = "audiodg.exe";
+  g_retry.resume_fails = true;
+  run.allow_audiodg_close = true;
   outcome = repair_target(&run, &deps, &target, &err);
   TEST_CHECK_(outcome == REPAIR_OUTCOME_FAILED, "want the failed outcome, got %d", (int)outcome);
-  TEST_CHECK_(ov_error_is(&err, ov_error_type_generic, ov_error_generic_fail), "want a reason for the failure");
+  TEST_CHECK_(g_retry.service_resumed == 1, "want the start to be tried once, got %zu", g_retry.service_resumed);
 
   OV_ERROR_REPORT(&err, NULL);
   repair_result_release(&r);
@@ -848,10 +835,9 @@ static void test_too_many_blockers_is_a_failure(void) {
 
 TEST_LIST = {
     {"path_matches_name", test_path_matches_name},
-    {"pick_blockers", test_pick_blockers},
+    {"blocker_kind", test_blocker_kind},
     {"run_requires_arguments", test_run_requires_arguments},
     {"release_null", test_release_null},
-    {"closed_pids", test_closed_pids},
     {"result_sentence", test_result_sentence},
     {"blocked_sentence", test_blocked_sentence},
     {"option_labels", test_option_labels_are_named_once},
@@ -861,6 +847,7 @@ TEST_LIST = {
     {"confirm_poll_count_from_the_wait", test_confirm_poll_count_from_the_wait},
     {"confirm_survives_a_failed_look", test_confirm_survives_a_failed_look},
     {"second_veto_is_answered", test_second_veto_is_answered},
-    {"too_many_blockers_is_a_failure", test_too_many_blockers_is_a_failure},
+    {"blocker_not_allowed_is_left_alone", test_blocker_not_allowed_is_left_alone},
+    {"audiodg_is_answered_by_pausing_the_service", test_audiodg_is_answered_by_pausing_the_service},
     {NULL, NULL},
 };

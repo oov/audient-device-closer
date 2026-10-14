@@ -147,7 +147,7 @@ static size_t append_field(char *const out, size_t const pos, size_t const size,
  */
 static size_t logger_format_line(char *const out,
                                  size_t const size,
-                                 long long const time_ms_utc,
+                                 uint64_t const time_ms_utc,
                                  enum ov_error_severity const level,
                                  char const *const tag,
                                  char const *const message) {

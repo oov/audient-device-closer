@@ -576,6 +576,10 @@ static bool settings_apply_json(char const *const json_utf8, struct settings *co
     OV_ERROR_ADD_TRACE(err);
     goto cleanup;
   }
+  if (!get_bool_optional(root, "allow_audio_service_pause", false, &out->allow_audio_service_pause, err)) {
+    OV_ERROR_ADD_TRACE(err);
+    goto cleanup;
+  }
   success = true;
 
 cleanup:

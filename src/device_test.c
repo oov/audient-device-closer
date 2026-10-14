@@ -124,19 +124,19 @@ static void test_devnode_guards(void) {
   TEST_FAILED_WITH(
       device_probe_devnode("", &err) != DEVICE_STATE_QUERY_FAILED, &err, ov_error_type_generic, ov_error_generic_invalid_argument);
 
-  TEST_FAILED_WITH(device_culprit_names_ancestor(NULL, ks_devnode, &err) != ov_indeterminate,
+  TEST_FAILED_WITH(device_veto_event_names_ancestor(NULL, ks_devnode, &err) != ov_indeterminate,
                    &err,
                    ov_error_type_generic,
                    ov_error_generic_invalid_argument);
-  TEST_FAILED_WITH(device_culprit_names_ancestor("", ks_devnode, &err) != ov_indeterminate,
+  TEST_FAILED_WITH(device_veto_event_names_ancestor("", ks_devnode, &err) != ov_indeterminate,
                    &err,
                    ov_error_type_generic,
                    ov_error_generic_invalid_argument);
-  TEST_FAILED_WITH(device_culprit_names_ancestor(usb_devnode, NULL, &err) != ov_indeterminate,
+  TEST_FAILED_WITH(device_veto_event_names_ancestor(usb_devnode, NULL, &err) != ov_indeterminate,
                    &err,
                    ov_error_type_generic,
                    ov_error_generic_invalid_argument);
-  TEST_FAILED_WITH(device_culprit_names_ancestor(usb_devnode, "", &err) != ov_indeterminate,
+  TEST_FAILED_WITH(device_veto_event_names_ancestor(usb_devnode, "", &err) != ov_indeterminate,
                    &err,
                    ov_error_type_generic,
                    ov_error_generic_invalid_argument);
@@ -147,10 +147,11 @@ static void test_devnode_guards(void) {
 /**
  * @brief An instance Windows does not report anything for answers no
  */
-static void test_culprit_ancestor_refuses_unknown_devnode(void) {
+static void test_veto_event_ancestor_refuses_unknown_devnode(void) {
   struct ov_error err = {0};
 
-  TEST_FAILED_WITH(device_culprit_names_ancestor("USB\\VID_2708&PID_0008\\6&deadbee&0&2", "NOTAREALBUS_NOTHING", &err) != ov_indeterminate,
+  TEST_FAILED_WITH(device_veto_event_names_ancestor("USB\\VID_2708&PID_0008\\6&deadbee&0&2", "NOTAREALBUS_NOTHING", &err) !=
+                       ov_indeterminate,
                    &err,
                    ov_error_type_generic,
                    ov_error_generic_fail);
@@ -294,7 +295,7 @@ TEST_LIST = {
     {"keep_faulted_accepts_null", test_keep_faulted_accepts_null},
     {"string_free_null", test_string_free_null},
     {"devnode_guards", test_devnode_guards},
-    {"culprit_ancestor_unknown_devnode", test_culprit_ancestor_refuses_unknown_devnode},
+    {"veto_event_ancestor_unknown_devnode", test_veto_event_ancestor_refuses_unknown_devnode},
     {"targets_release_null", test_targets_release_null},
     {NULL, NULL},
 };

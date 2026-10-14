@@ -70,7 +70,6 @@ static void test_terminate_and_wait(void) {
   struct ov_error err = {0};
   PROCESS_INFORMATION pi;
   struct process_ref ref;
-  char *image = NULL;
 
   memset(&pi, 0, sizeof(pi));
   memset(&ref, 0, sizeof(ref));
@@ -79,25 +78,19 @@ static void test_terminate_and_wait(void) {
     TEST_SKIP("cannot spawn here");
     goto cleanup;
   }
-  if (!TEST_SUCCEEDED(process_ref_open(&ref, (uint32_t)pi.dwProcessId, true, &err), &err)) {
+  if (!TEST_SUCCEEDED(process_ref_open(&ref, (uint32_t)pi.dwProcessId, true, false, &err), &err)) {
     goto cleanup;
   }
-  TEST_CHECK(process_ref_alive(&ref) == true);
-  TEST_CHECK(ref.start_ms_utc > 0);
-  image = process_ref_image_path(&ref, &err);
-  if (TEST_SUCCEEDED(image != NULL, &err)) {
-    TEST_CHECK(process_path_matches_name(image, "cmd.exe") == true);
-  }
+  TEST_CHECK(process_ref_alive(&ref, &err) == ov_true);
   TEST_SUCCEEDED(process_ref_terminate(&ref, &err), &err);
   TEST_CHECK(process_ref_wait(&ref, 5000, &err) == ov_true);
-  TEST_CHECK(process_ref_alive(&ref) == false);
+  TEST_CHECK(process_ref_alive(&ref, &err) == ov_false);
 
   if (pi.hProcess != NULL) {
     WaitForSingleObject(pi.hProcess, 5000);
   }
 
 cleanup:
-  process_string_free(&image);
   process_ref_close(&ref);
   if (pi.hProcess != NULL) {
     TerminateProcess(pi.hProcess, 0);
@@ -124,7 +117,7 @@ static void test_wait_times_out(void) {
     TEST_SKIP("cannot spawn here");
     goto cleanup;
   }
-  if (!TEST_SUCCEEDED(process_ref_open(&ref, (uint32_t)pi.dwProcessId, false, &err), &err)) {
+  if (!TEST_SUCCEEDED(process_ref_open(&ref, (uint32_t)pi.dwProcessId, false, false, &err), &err)) {
     goto cleanup;
   }
   TEST_CHECK(process_ref_wait(&ref, 0, &err) == ov_false);
@@ -147,8 +140,10 @@ static void test_terminate_unknown_pid(void) {
 
   memset(&ref, 0, sizeof(ref));
   ref.handle = NULL;
-  TEST_FAILED_WITH(
-      process_ref_open(&ref, 0xFFFFFFFFu, true, &err), &err, ov_error_type_hresult, (int)HRESULT_FROM_WIN32(ERROR_INVALID_PARAMETER));
+  TEST_FAILED_WITH(process_ref_open(&ref, 0xFFFFFFFFu, true, false, &err),
+                   &err,
+                   ov_error_type_hresult,
+                   (int)HRESULT_FROM_WIN32(ERROR_INVALID_PARAMETER));
 }
 
 /**
@@ -165,10 +160,12 @@ static void test_null_arguments(void) {
   process_string_free(&text); // NULL string must be tolerated
   process_ref_close(&ref);    // a ref that was never opened must be tolerated
   TEST_CHECK(text == NULL);
-  TEST_CHECK(process_ref_alive(&ref) == false);
-  ok = process_ref_open(NULL, 1, false, &err);
+  TEST_CHECK(process_ref_alive(&ref, &err) == ov_indeterminate);
+  TEST_CHECK(ov_error_is(&err, ov_error_type_generic, ov_error_generic_invalid_argument) == true);
+  OV_ERROR_DESTROY(&err);
+  ok = process_ref_open(NULL, 1, false, false, &err);
   TEST_FAILED_WITH(ok, &err, ov_error_type_generic, ov_error_generic_invalid_argument);
-  ok = process_ref_open(&ref, 1, false, NULL);
+  ok = process_ref_open(&ref, 1, false, false, NULL);
   TEST_CHECK(ok == false);
   TEST_FAILED_WITH(process_ref_wait(&ref, 10, &err) != ov_indeterminate, &err, ov_error_type_generic, ov_error_generic_invalid_argument);
   ok = process_ref_terminate(&ref, &err);
@@ -189,8 +186,6 @@ static void test_start_matches_event_time(void) {
   TEST_CHECK(process_start_matches_event_time(2001, 2000) == false); // started after the event: another instance
   TEST_CHECK(process_start_matches_event_time(0, 2000) == false);    // the start time is unknown
   TEST_CHECK(process_start_matches_event_time(1000, 0) == false);    // the event time is unknown
-  TEST_CHECK(process_start_matches_event_time(-1, 2000) == false);
-  TEST_CHECK(process_start_matches_event_time(1000, -1) == false);
 }
 
 /**

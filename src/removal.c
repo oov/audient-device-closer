@@ -47,7 +47,7 @@ enum removal_error_code removal_error_of(struct ov_error const *const err) {
 /**
  * @brief Release the device with CM_Query_And_Remove_SubTreeW only
  *
- * Does not detect, does not look up the culprit, does not close any process.
+ * Does not detect, does not look up the event, does not close any process.
  *
  * @param ks_devnode the devnode to release
  * @param err receives the failure of the call

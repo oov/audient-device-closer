@@ -159,10 +159,10 @@ static void blockers_layout(struct blockers_window *const bw) {
  * may release the records as soon as this returns.
  *
  * @param bw the blockers window that shows them
- * @param culprits the records to show, NULL shows none
+ * @param events the records to show, NULL shows none
  */
-static void blockers_fill(struct blockers_window *const bw, struct culprit const *const culprits) {
-  size_t const n = culprit_count(culprits);
+static void blockers_fill(struct blockers_window *const bw, struct veto_event const *const events) {
+  size_t const n = veto_event_count(events);
   size_t i = 0;
   int row = 0;
 
@@ -173,12 +173,12 @@ static void blockers_fill(struct blockers_window *const bw, struct culprit const
     wchar_t path[256];
     LVITEMW item;
 
-    if (culprits[i].pid == 0) {
+    if (events[i].pid == 0) {
       continue;
     }
-    OV_SNPRINTF(pid, sizeof(pid) / sizeof(WCHAR), L"%1$lu", L"%1$lu", (unsigned long)culprits[i].pid);
-    OV_SNPRINTF(dev, sizeof(dev) / sizeof(WCHAR), ph, ph, culprits[i].device_instance ? culprits[i].device_instance : "");
-    OV_SNPRINTF(path, sizeof(path) / sizeof(WCHAR), ph, ph, culprits[i].path ? culprits[i].path : "");
+    OV_SNPRINTF(pid, sizeof(pid) / sizeof(WCHAR), L"%1$lu", L"%1$lu", (unsigned long)events[i].pid);
+    OV_SNPRINTF(dev, sizeof(dev) / sizeof(WCHAR), ph, ph, events[i].device_instance ? events[i].device_instance : "");
+    OV_SNPRINTF(path, sizeof(path) / sizeof(WCHAR), ph, ph, events[i].path ? events[i].path : "");
 
     memset(&item, 0, sizeof(item));
     item.mask = LVIF_TEXT;
@@ -343,7 +343,7 @@ static bool blockers_register_class(struct ov_error *const err) {
   return true;
 }
 
-bool ui_blockers_window_show(HWND const owner, struct culprit const *const culprits, struct ov_error *const err) {
+bool ui_blockers_window_show(HWND const owner, struct veto_event const *const events, struct ov_error *const err) {
   struct blockers_window *bw = NULL;
   wchar_t title[128];
   wchar_t label_text[256];
@@ -458,7 +458,7 @@ bool ui_blockers_window_show(HWND const owner, struct culprit const *const culpr
   theme_attach_list(bw->list);
   blockers_apply_font(bw, dpi);
   blockers_fit(bw, label_text);
-  blockers_fill(bw, culprits);
+  blockers_fill(bw, events);
   blockers_layout(bw);
   EnableWindow(owner, FALSE); // the dialog holds its owner until the reader is done
   ShowWindow(bw->hwnd, SW_SHOW);

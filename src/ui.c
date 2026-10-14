@@ -17,13 +17,13 @@
 #include <ovprintf.h>
 #include <ovthreads.h>
 
-#include "culprit.h"
 #include "device.h"
 #include "layout.h"
 #include "logger.h"
 #include "options.h"
 #include "repair.h"
 #include "settings.h"
+#include "veto_event.h"
 
 #define IDC_CLOSE_BTN 2
 #define IDC_CHK_MIXER 5
@@ -181,7 +181,7 @@ static void stage_text(enum repair_stage const stage, struct settings const *con
     repair_stage_mixer_caption(s, out, out_size);
     return;
   case REPAIR_STAGE_AUDIODG:
-    strncpy(out, gettext("Closing audiodg (audiodg.exe)..."), out_size - 1);
+    strncpy(out, gettext("Pausing the Windows Audio service..."), out_size - 1);
     out[out_size - 1] = '\0';
     return;
   case REPAIR_STAGE_REMOVE:
@@ -978,7 +978,7 @@ static void finish_repair(struct ui_state *const st, HWND const hwnd) {
   if (job->result.outcome == REPAIR_OUTCOME_VETOED) {
     struct ov_error berr = {0};
 
-    if (!ui_blockers_window_show(hwnd, job->result.culprits, &berr)) {
+    if (!ui_blockers_window_show(hwnd, job->result.events, &berr)) {
       OV_ERROR_REPORT(&berr, NULL);
       show_result_dialog(hwnd, job->result.outcome, job->result.removal_error);
     }
@@ -1186,6 +1186,11 @@ static LRESULT CALLBACK wnd_proc(HWND const hwnd, UINT const msg, WPARAM const w
       st->close_btn = child(st, hwnd, L"BUTTON", button, BS_PUSHBUTTON | WS_TABSTOP, 0, 0, 0, 0, IDC_CLOSE_BTN);
       st->chk_mixer = child(st, hwnd, L"BUTTON", check_mixer, BS_AUTOCHECKBOX | WS_TABSTOP, 0, 0, 0, 0, IDC_CHK_MIXER);
       st->chk_audiodg = child(st, hwnd, L"BUTTON", check_audiodg, BS_AUTOCHECKBOX | WS_TABSTOP, 0, 0, 0, 0, IDC_CHK_AUDIODG);
+      // the choice to pause the audio service takes the sound away from the whole machine,
+      // so a build that ships only offers it when the settings say so in as many words
+      if (!repair_can_pause_audio_service(st->settings)) {
+        ShowWindow(st->chk_audiodg, SW_HIDE);
+      }
       st->task_install = child(st, hwnd, L"BUTTON", task_install, BS_PUSHBUTTON | WS_TABSTOP, 0, 0, 0, 0, IDC_TASK_INSTALL);
       st->task_remove = child(st, hwnd, L"BUTTON", task_remove, BS_PUSHBUTTON | WS_TABSTOP, 0, 0, 0, 0, IDC_TASK_REMOVE);
       apply_dpi(st, hwnd, st->dpi);

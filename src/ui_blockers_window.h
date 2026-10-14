@@ -4,7 +4,7 @@
 
 #include <windows.h>
 
-#include "culprit.h"
+#include "veto_event.h"
 
 /**
  * @brief The window that names the processes that hold the device
@@ -28,8 +28,8 @@
  * its own and deletes it when it goes.
  *
  * @param owner the window that waits while the list is read
- * @param culprits the records to show, may be NULL
+ * @param events the records to show, may be NULL
  * @param err receives the failure of the start-up
  * @return false when the window could not be made
  */
-bool ui_blockers_window_show(HWND const owner, struct culprit const *const culprits, struct ov_error *const err);
+bool ui_blockers_window_show(HWND const owner, struct veto_event const *const events, struct ov_error *const err);

@@ -1,4 +1,4 @@
-#include "culprit.h"
+#include "veto_event.h"
 
 #include <windows.h>
 
@@ -179,7 +179,7 @@ static char *read_data_dup(char const *const xml, char const *const name MEM_FIL
  * @param value the attribute value, "2000-01-01T00:00:00.0000000Z"
  * @return the moment in epoch milliseconds UTC, 0 when the value cannot be read
  */
-static long long parse_system_time_ms(char const *const value) {
+static uint64_t parse_system_time_ms(char const *const value) {
   struct tm tmv;
   int year = 0;
   int month = 0;
@@ -190,7 +190,7 @@ static long long parse_system_time_ms(char const *const value) {
   int parsed = 0;
   char const *dot = NULL;
   long long seconds = 0;
-  long long ms = 0;
+  uint64_t ms = 0;
 
   memset(&tmv, 0, sizeof(tmv));
   parsed = sscanf(value, "%4d-%2d-%2dT%2d:%2d:%2d", &year, &month, &day, &hour, &minute, &second);
@@ -217,10 +217,10 @@ static long long parse_system_time_ms(char const *const value) {
     }
     int64_t frac_ms = 0;
     if (ov_atoi_char(frac, &frac_ms, true)) {
-      ms = frac_ms;
+      ms = (uint64_t)frac_ms;
     }
   }
-  return (seconds * 1000LL) + ms;
+  return ((uint64_t)seconds * 1000ULL) + ms;
 }
 
 /**
@@ -273,7 +273,7 @@ static bool read_attr(char const *const xml, char const *const name, char *const
  * @param out filled in when the event names a process; the strings become the caller's
  * @return false when the event carries no readable process id, true otherwise
  */
-static bool culprit_parse_xml(char const *const xml_utf8, struct culprit *const out) {
+static bool veto_event_parse_xml(char const *const xml_utf8, struct veto_event *const out) {
   char text[64];
   char time_value[64];
   uint64_t pid = 0;
@@ -324,7 +324,7 @@ cleanup:
  * @param list the list to shrink in place
  * @param since_ms events older than this are dropped, 0 keeps every age
  */
-void culprit_prune(struct culprit **const list, long long const since_ms) {
+void veto_event_prune(struct veto_event **const list, uint64_t const since_ms) {
   size_t n = 0;
   size_t kept = 0;
 
@@ -350,7 +350,7 @@ void culprit_prune(struct culprit **const list, long long const since_ms) {
       if (!same_device) {
         continue;
       }
-      struct culprit *const loser = ((*list)[i].event_time_ms >= (*list)[j].event_time_ms) ? &(*list)[j] : &(*list)[i];
+      struct veto_event *const loser = ((*list)[i].event_time_ms >= (*list)[j].event_time_ms) ? &(*list)[j] : &(*list)[i];
       loser->pid = 0;
       if (loser == &(*list)[i]) {
         break;
@@ -364,7 +364,7 @@ void culprit_prune(struct culprit **const list, long long const since_ms) {
       continue;
     }
     if (kept != i) {
-      struct culprit tmp = (*list)[kept];
+      struct veto_event tmp = (*list)[kept];
       (*list)[kept] = (*list)[i];
       (*list)[i] = tmp;
     }
@@ -386,7 +386,7 @@ cleanup:
  * @param list NULL is allowed
  * @return the number of records, 0 for NULL
  */
-size_t culprit_count(struct culprit const *const list) {
+size_t veto_event_count(struct veto_event const *const list) {
   if (list == NULL) {
     return 0;
   }
@@ -394,18 +394,17 @@ size_t culprit_count(struct culprit const *const list) {
 }
 
 /**
- * @brief Drop every entry that names one of the given processes
+ * @brief Drop every record that names one of the given processes
  *
- * A process this tool closed on its own is not a reason the device was blocked, so it must
- * not appear in the list the user is shown.  The caller passes the processes it closed, not
- * the image names, so an entry is dropped only when it is the exact instance that was
- * closed: the same image running somewhere else is a different blocker.
+ * A process this run closed is gone from the machine, so the record that named it is no
+ * longer a reason the device is held and must not be shown as one.  The caller passes the
+ * ids it closed, so a record that names anybody else stays.
  *
  * @param list the list to shrink in place
  * @param pids the process ids that were closed
  * @param count how many of them there are
  */
-void culprit_drop_pids(struct culprit **const list, uint32_t const *const pids, size_t const count) {
+void veto_event_drop_pids(struct veto_event **const list, uint32_t const *const pids, size_t const count) {
   size_t n = 0;
   size_t kept = 0;
 
@@ -425,7 +424,7 @@ void culprit_drop_pids(struct culprit **const list, uint32_t const *const pids, 
       continue;
     }
     if (kept != i) {
-      struct culprit tmp = (*list)[kept];
+      struct veto_event tmp = (*list)[kept];
       (*list)[kept] = (*list)[i];
       (*list)[i] = tmp;
     }
@@ -440,32 +439,11 @@ void culprit_drop_pids(struct culprit **const list, uint32_t const *const pids, 
 }
 
 /**
- * @brief Drop the members of the list and leave it empty
- *
- * Used when the device was closed: nothing blocks it any more, so whatever a record named
- * before is history.  An empty list and an absent one mean the same thing to the caller.
- *
- * @param list the list to empty in place
- */
-void culprit_clear(struct culprit **const list) {
-  if ((list == NULL) || (*list == NULL)) {
-    return;
-  }
-  size_t const n = OV_ARRAY_LENGTH(*list);
-  for (size_t i = 0; i < n; i++) {
-    OV_FREE(&(*list)[i].path);
-    OV_FREE(&(*list)[i].device_instance);
-    (*list)[i].pid = 0;
-  }
-  OV_ARRAY_SET_LENGTH(*list, 0);
-}
-
-/**
  * @brief Release the list and every record in it
  *
  * @param list set to NULL afterwards
  */
-void culprit_destroy_list(struct culprit **const list) {
+void veto_event_destroy_list(struct veto_event **const list) {
   if ((list == NULL) || (*list == NULL)) {
     return;
   }
@@ -490,11 +468,11 @@ void culprit_destroy_list(struct culprit **const list) {
  * @param err receives a failure that is worth stopping the query for
  * @return false on such a failure; an event that cannot be read is not one
  */
-static bool
-harvest_event(EVT_HANDLE const event, wchar_t **const xml, char **const utf8, struct culprit **const out_list, struct ov_error *const err) {
+static bool harvest_event(
+    EVT_HANDLE const event, wchar_t **const xml, char **const utf8, struct veto_event **const out_list, struct ov_error *const err) {
   bool success = false;
   DWORD used = 0;
-  struct culprit item;
+  struct veto_event item;
 
   memset(&item, 0, sizeof(item));
   if (!EvtRender(NULL, event, EvtRenderEventXml, 0, NULL, &used, NULL) && (GetLastError() != ERROR_INSUFFICIENT_BUFFER)) {
@@ -513,7 +491,7 @@ harvest_event(EVT_HANDLE const event, wchar_t **const xml, char **const utf8, st
     OV_ERROR_ADD_TRACE(err);
     goto cleanup;
   }
-  if (!culprit_parse_xml(*utf8, &item)) {
+  if (!veto_event_parse_xml(*utf8, &item)) {
     success = true; // an event we cannot read must not fail the whole query
     goto cleanup;
   }
@@ -548,7 +526,7 @@ static bool harvest_batch(EVT_HANDLE const *const items,
                           DWORD const got,
                           wchar_t **const xml,
                           char **const utf8,
-                          struct culprit **const out_list,
+                          struct veto_event **const out_list,
                           struct ov_error *const err) {
   for (DWORD i = 0; i < got; i++) {
     if (!harvest_event(items[i], xml, utf8, out_list, err)) {
@@ -578,8 +556,8 @@ enum batch_result {
  * @param err receives the failure of the read
  * @return BATCH_DONE at the end of the query, BATCH_FAILED when err says why
  */
-static enum batch_result
-query_events_step(EVT_HANDLE const q, wchar_t **const xml, char **const utf8, struct culprit **const out_list, struct ov_error *const err) {
+static enum batch_result query_events_step(
+    EVT_HANDLE const q, wchar_t **const xml, char **const utf8, struct veto_event **const out_list, struct ov_error *const err) {
   enum batch_result result = BATCH_FAILED;
   EVT_HANDLE items[8] = {0};
   DWORD got = 0;
@@ -618,7 +596,7 @@ cleanup:
  * @return false when the query itself failed
  */
 static bool
-query_events(wchar_t const *const channel, wchar_t const *const query, struct culprit **const out_list, struct ov_error *const err) {
+query_events(wchar_t const *const channel, wchar_t const *const query, struct veto_event **const out_list, struct ov_error *const err) {
   bool success = false;
   EVT_HANDLE q = NULL;
   wchar_t *xml = NULL;
@@ -662,9 +640,9 @@ cleanup:
  * @param err receives the failure of the query itself
  * @return NULL only when the query itself failed; an empty array means there is no veto event
  */
-struct culprit *
-culprit_read(char const *const log_name, char const *const provider_name, unsigned short const event_id, struct ov_error *const err) {
-  struct culprit *list = NULL;
+struct veto_event *
+veto_event_read(char const *const log_name, char const *const provider_name, unsigned short const event_id, struct ov_error *const err) {
+  struct veto_event *list = NULL;
   wchar_t *channel = NULL;
   wchar_t *query = NULL;
   bool success = false;
@@ -705,7 +683,7 @@ cleanup:
     success = false;
   }
   if (!success) {
-    culprit_destroy_list(&list);
+    veto_event_destroy_list(&list);
   }
   return success ? list : NULL;
 }

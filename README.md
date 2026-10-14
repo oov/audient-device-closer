@@ -26,10 +26,9 @@ Having several Audient devices at once is also accounted for, but that is untest
 Some of the operations this application performs to fix the problem, as well as registering the task that launches it when the computer resumes from sleep or hibernation, require administrator privileges.  
 Since those operations would fail without elevation, this application is configured to elevate itself at startup.
 
-This application requires privileges for the following three things:
+This application requires privileges for the following things:
 
 - Releasing the Audient device specified in the settings file
-- Forcefully terminating audiodg.exe when allowed in the settings
 - Registering or removing the scheduled task
 
 Note that this application exits as soon as the recovery process finishes, so it never stays resident.  
@@ -69,14 +68,6 @@ The ones this tool looks for are `iD.exe`, `EVO.exe`, `Sono.exe` and `ORIA Contr
 These programs are expected to be launched automatically from `AudientAppLauncher.exe` when the device reconnects.  
 This option is enabled by default.
 
-#### Close audiodg (audiodg.exe) automatically
-
-With this checked, `audiodg` is closed automatically when it is holding the device.  
-This program is launched automatically from `Audiosrv` when it is terminated.  
-However, since this process may also be holding other audio devices,  
-it can affect other devices and programs as well, so this option is generally not recommended.  
-This option is disabled by default.
-
 ### Install
 
 Registering the scheduled task uses the current location of the exe file.  
@@ -101,7 +92,7 @@ A rough outline of what this tool actually does:
    1. Try to release the device
    2. If it was released, check whether it has come back as an audio device. Once that is confirmed, this device is done
    3. If the release was refused, look up the applications that caused it
-   4. If the option is enabled, force the mixer and `audiodg.exe` to quit and try to release the device again
+   4. If the option is enabled, force the mixer to quit and try to release the device again
    5. If it was released, check whether it has come back as an audio device. Once that is confirmed, this device is done
    6. It could not be released, so show a list of the applications that caused it and stop the remaining devices as well
 

@@ -764,7 +764,7 @@ enum { kKsAncestorDepth = 4 };
  * @return ov_true when the record names an ancestor, ov_false when it does not,
  *         ov_indeterminate when the ancestors could not be walked, with err set
  */
-ov_tribool device_culprit_names_ancestor(char const *const device_instance, char const *const devnode, struct ov_error *const err) {
+ov_tribool device_veto_event_names_ancestor(char const *const device_instance, char const *const devnode, struct ov_error *const err) {
   ov_tribool result = ov_indeterminate;
   wchar_t *native = NULL;
   WCHAR id[MAX_DEVICE_ID_LEN];

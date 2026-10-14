@@ -1,4 +1,4 @@
-#include "culprit.c"
+#include "veto_event.c"
 
 #include <ovtest.h>
 
@@ -35,39 +35,38 @@ static char const kXmlAudiodg[] = "<Event><System><TimeCreated SystemTime='2000-
  * @brief Every field of a real veto record ends up in the right member
  */
 static void test_parse_fields(void) {
-  struct culprit c;
-  struct culprit *list = NULL;
+  struct veto_event c;
+  struct veto_event *list = NULL;
 
   memset(&c, 0, sizeof(c));
-  if (!TEST_CHECK(culprit_parse_xml(kXmlOtherApp, &c) == true)) {
+  if (!TEST_CHECK(veto_event_parse_xml(kXmlOtherApp, &c) == true)) {
     goto cleanup;
   }
   TEST_CHECK(c.pid == 4321);
-  TEST_CHECK(c.path != NULL && strcmp(c.path, "\\Device\\HarddiskVolume1\\Apps\\holder.exe") == 0);
   TEST_CHECK(c.device_instance != NULL && strcmp(c.device_instance, "USB\\VID_2708&PID_0008\\6&deadbee&0&2") == 0);
   TEST_CHECK(c.event_time_ms != 0);
-  culprit_prune(NULL, 0);
+  veto_event_prune(NULL, 0);
   TEST_CHECK(OV_ARRAY_PUSH(&list, c));
   memset(&c, 0, sizeof(c));
 
 cleanup:
-  culprit_destroy_list(&list);
+  veto_event_destroy_list(&list);
 }
 
 /**
  * @brief The moment of the record is read from its SystemTime attribute
  */
 static void test_parse_time(void) {
-  struct culprit c;
-  struct culprit d;
-  struct culprit *list = NULL;
+  struct veto_event c;
+  struct veto_event d;
+  struct veto_event *list = NULL;
 
   memset(&c, 0, sizeof(c));
   memset(&d, 0, sizeof(d));
-  if (!TEST_CHECK(culprit_parse_xml(kXmlOtherApp, &c) == true)) {
+  if (!TEST_CHECK(veto_event_parse_xml(kXmlOtherApp, &c) == true)) {
     goto cleanup;
   }
-  if (!TEST_CHECK(culprit_parse_xml(kXmlAudiodg, &d) == true)) {
+  if (!TEST_CHECK(veto_event_parse_xml(kXmlAudiodg, &d) == true)) {
     goto cleanup;
   }
   TEST_CHECK(d.event_time_ms > c.event_time_ms);
@@ -79,17 +78,17 @@ static void test_parse_time(void) {
   memset(&d, 0, sizeof(d));
 
 cleanup:
-  culprit_destroy_list(&list);
+  veto_event_destroy_list(&list);
 }
 
 /**
  * @brief A record that names no process is refused
  */
 static void test_parse_garbage(void) {
-  struct culprit c;
-  TEST_CHECK(culprit_parse_xml(NULL, &c) == false);
-  TEST_CHECK(culprit_parse_xml("<Event><EventData></EventData></Event>", &c) == false);
-  TEST_CHECK(culprit_parse_xml("<Event><EventData><Data Name='ProcessId'>0</Data></EventData></Event>", &c) == false);
+  struct veto_event c;
+  TEST_CHECK(veto_event_parse_xml(NULL, &c) == false);
+  TEST_CHECK(veto_event_parse_xml("<Event><EventData></EventData></Event>", &c) == false);
+  TEST_CHECK(veto_event_parse_xml("<Event><EventData><Data Name='ProcessId'>0</Data></EventData></Event>", &c) == false);
 }
 
 /**
@@ -101,8 +100,8 @@ static void test_parse_garbage(void) {
 static void test_parse_long_value(void) {
   static char const head[] = "<Event><EventData><Data Name='ProcessId'>7</Data><Data Name='DeviceInstance'>";
   static char const tail[] = "</Data></EventData></Event>";
-  struct culprit c;
-  struct culprit *list = NULL;
+  struct veto_event c;
+  struct veto_event *list = NULL;
   char xml[sizeof(head) + 2048 + sizeof(tail)];
   static size_t const want = 1500;
 
@@ -110,7 +109,7 @@ static void test_parse_long_value(void) {
   memcpy(xml, head, sizeof(head) - 1);
   memset(xml + (sizeof(head) - 1), 'x', want);
   memcpy(xml + (sizeof(head) - 1) + want, tail, sizeof(tail));
-  if (!TEST_CHECK(culprit_parse_xml(xml, &c) == true)) {
+  if (!TEST_CHECK(veto_event_parse_xml(xml, &c) == true)) {
     goto cleanup;
   }
   if (TEST_CHECK(c.device_instance != NULL)) {
@@ -124,7 +123,7 @@ static void test_parse_long_value(void) {
   memset(&c, 0, sizeof(c));
 
 cleanup:
-  culprit_destroy_list(&list);
+  veto_event_destroy_list(&list);
 }
 
 /**
@@ -135,8 +134,8 @@ cleanup:
  * @param ms the moment of the record
  * @return the record to hand to the list helpers
  */
-static struct culprit make_item(uint32_t const pid, char const *const device, long long const ms) {
-  struct culprit c;
+static struct veto_event make_item(uint32_t const pid, char const *const device, uint64_t const ms) {
+  struct veto_event c;
   memset(&c, 0, sizeof(c));
   c.pid = pid;
   c.event_time_ms = ms;
@@ -153,17 +152,17 @@ static struct culprit make_item(uint32_t const pid, char const *const device, lo
  * @brief The newest of the duplicates is the one that survives
  */
 static void test_prune_duplicates_keeps_newest(void) {
-  struct culprit *list = NULL;
-  struct culprit a = make_item(100, "USB\\dev", 1000);
-  struct culprit b = make_item(100, "USB\\dev", 2000); // newer duplicate
-  struct culprit d = make_item(100, "TUSBAUDIO\\ks", 1500);
+  struct veto_event *list = NULL;
+  struct veto_event a = make_item(100, "USB\\dev", 1000);
+  struct veto_event b = make_item(100, "USB\\dev", 2000); // newer duplicate
+  struct veto_event d = make_item(100, "TUSBAUDIO\\ks", 1500);
 
   if (!TEST_CHECK(OV_ARRAY_PUSH(&list, a))) {
     goto cleanup;
   }
   TEST_CHECK(OV_ARRAY_PUSH(&list, b));
   TEST_CHECK(OV_ARRAY_PUSH(&list, d));
-  culprit_prune(&list, 0);
+  veto_event_prune(&list, 0);
   TEST_CHECK(OV_ARRAY_LENGTH(list) == 2);
   for (size_t i = 0; i < OV_ARRAY_LENGTH(list); i++) {
     if (list[i].device_instance && strcmp(list[i].device_instance, "USB\\dev") == 0) {
@@ -172,138 +171,40 @@ static void test_prune_duplicates_keeps_newest(void) {
   }
 
 cleanup:
-  culprit_destroy_list(&list);
+  veto_event_destroy_list(&list);
 }
 
 /**
  * @brief Records older than the window are gone
  */
 static void test_prune_since(void) {
-  struct culprit *list = NULL;
-  struct culprit a = make_item(1, "USB\\a", 100);
-  struct culprit b = make_item(2, "USB\\b", 500);
-  struct culprit c = make_item(3, "USB\\c", 900);
+  struct veto_event *list = NULL;
+  struct veto_event a = make_item(1, "USB\\a", 100);
+  struct veto_event b = make_item(2, "USB\\b", 500);
+  struct veto_event c = make_item(3, "USB\\c", 900);
 
   if (!TEST_CHECK(OV_ARRAY_PUSH(&list, a))) {
     goto cleanup;
   }
   TEST_CHECK(OV_ARRAY_PUSH(&list, b));
   TEST_CHECK(OV_ARRAY_PUSH(&list, c));
-  culprit_prune(&list, 500);
+  veto_event_prune(&list, 500);
   TEST_CHECK(OV_ARRAY_LENGTH(list) == 2);
   TEST_CHECK(list[0].pid == 2);
   TEST_CHECK(list[1].pid == 3);
 
 cleanup:
-  culprit_destroy_list(&list);
+  veto_event_destroy_list(&list);
 }
 
 /**
  * @brief A prune that drops nothing must not shuffle the list
  */
 static void test_prune_empty(void) {
-  struct culprit *list = NULL;
-  culprit_prune(&list, 10);
+  struct veto_event *list = NULL;
+  veto_event_prune(&list, 10);
   TEST_CHECK(list == NULL);
-  culprit_destroy_list(&list);
-}
-
-/**
- * @brief A process this tool closed is not a reason the device was blocked
- *
- * The list the user is shown must not name it, or the dialog contradicts what the user
- * just watched happen.
- */
-static void test_drop_pids(void) {
-  struct culprit *list = NULL;
-  static uint32_t const gone[] = {100, 300};
-  struct culprit a = make_item(100, "USB\\dev", 1000); // closed by this run
-  struct culprit b = make_item(200, "USB\\dev", 2000); // still blocking
-  struct culprit c = make_item(300, "USB\\dev", 3000); // closed by this run
-  struct culprit d = make_item(400, "USB\\dev", 4000); // still blocking
-
-  if (!TEST_CHECK(OV_ARRAY_PUSH(&list, a))) {
-    goto cleanup;
-  }
-  TEST_CHECK(OV_ARRAY_PUSH(&list, b));
-  TEST_CHECK(OV_ARRAY_PUSH(&list, c));
-  TEST_CHECK(OV_ARRAY_PUSH(&list, d));
-
-  culprit_drop_pids(&list, gone, sizeof(gone) / sizeof(gone[0]));
-  if (!TEST_CHECK(OV_ARRAY_LENGTH(list) == 2)) {
-    goto cleanup;
-  }
-  TEST_CHECK(list[0].pid == 200);
-  TEST_CHECK(list[1].pid == 400);
-
-cleanup:
-  culprit_destroy_list(&list);
-}
-
-/**
- * @brief Dropping everything leaves an empty list, not a list that still holds dead entries
- */
-static void test_drop_pids_all(void) {
-  struct culprit *list = NULL;
-  static uint32_t const gone[] = {100, 200};
-  struct culprit a = make_item(100, "USB\\dev", 1000);
-  struct culprit b = make_item(200, "USB\\dev", 2000);
-
-  if (!TEST_CHECK(OV_ARRAY_PUSH(&list, a))) {
-    goto cleanup;
-  }
-  TEST_CHECK(OV_ARRAY_PUSH(&list, b));
-  culprit_drop_pids(&list, gone, sizeof(gone) / sizeof(gone[0]));
-  TEST_CHECK(culprit_count(list) == 0);
-
-cleanup:
-  culprit_destroy_list(&list);
-}
-
-/**
- * @brief An empty set of pids must not touch the list, and the arguments may be absent
- */
-static void test_drop_pids_noop(void) {
-  struct culprit *list = NULL;
-  static uint32_t const gone[] = {999};
-  struct culprit a = make_item(100, "USB\\dev", 1000);
-
-  if (!TEST_CHECK(OV_ARRAY_PUSH(&list, a))) {
-    goto cleanup;
-  }
-  culprit_drop_pids(&list, gone, 0);
-  TEST_CHECK(culprit_count(list) == 1);
-  culprit_drop_pids(&list, NULL, 1);
-  TEST_CHECK(culprit_count(list) == 1);
-  culprit_drop_pids(NULL, gone, 1);
-  TEST_CHECK(culprit_count(list) == 1);
-
-cleanup:
-  culprit_destroy_list(&list);
-}
-
-/**
- * @brief A list kept from an earlier attempt is history once the device was closed
- *
- * Nothing blocks the device any more, so the records must not reach the user.
- */
-static void test_clear(void) {
-  struct culprit *list = NULL;
-  struct culprit a = make_item(100, "USB\\dev", 1000);
-  struct culprit b = make_item(200, "USB\\dev", 2000);
-
-  if (!TEST_CHECK(OV_ARRAY_PUSH(&list, a))) {
-    goto cleanup;
-  }
-  TEST_CHECK(OV_ARRAY_PUSH(&list, b));
-  culprit_clear(&list);
-  TEST_CHECK(culprit_count(list) == 0);
-  culprit_clear(&list);
-  TEST_CHECK(culprit_count(list) == 0);
-  culprit_clear(NULL);
-
-cleanup:
-  culprit_destroy_list(&list);
+  veto_event_destroy_list(&list);
 }
 
 TEST_LIST = {
@@ -314,9 +215,5 @@ TEST_LIST = {
     {"prune_duplicates", test_prune_duplicates_keeps_newest},
     {"prune_since", test_prune_since},
     {"prune_empty", test_prune_empty},
-    {"drop_pids", test_drop_pids},
-    {"drop_pids_all", test_drop_pids_all},
-    {"drop_pids_noop", test_drop_pids_noop},
-    {"clear", test_clear},
     {NULL, NULL},
 };

@@ -145,4 +145,4 @@ enum device_state device_probe_devnode(char const *const devnode, struct ov_erro
  * @return ov_true when the record names an ancestor, ov_false when it does not,
  *         ov_indeterminate when the ancestors could not be walked, with err set
  */
-ov_tribool device_culprit_names_ancestor(char const *const device_instance, char const *const devnode, struct ov_error *const err);
+ov_tribool device_veto_event_names_ancestor(char const *const device_instance, char const *const devnode, struct ov_error *const err);

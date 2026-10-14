@@ -6,9 +6,9 @@
 
 #include <windows.h>
 
-#include "culprit.h"
 #include "device.h"
 #include "repair.h"
+#include "veto_event.h"
 
 struct options;
 struct settings;

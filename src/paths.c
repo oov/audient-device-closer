@@ -33,9 +33,6 @@ char *paths_executable(struct ov_error *const err) {
   wchar_t self[PATHS_MAX];
   DWORD len = 0;
 
-  if (err == NULL) {
-    return NULL;
-  }
   len = GetModuleFileNameW(NULL, self, (DWORD)(sizeof(self) / sizeof(self[0])));
   if ((len == 0) || (len >= (DWORD)(sizeof(self) / sizeof(self[0])))) {
     OV_ERROR_SET_HRESULT(err, HRESULT_FROM_WIN32(GetLastError()));

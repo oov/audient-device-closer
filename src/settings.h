@@ -20,6 +20,7 @@ struct settings {
   unsigned long auto_run_delay_ms;   // optional: delay before probing in auto-run mode, milliseconds
   unsigned long confirm_max_wait_ms; // optional: how long the confirmation waits for the device to come back
   bool use_theme;                    // optional: draw the windows with the theme of this program, default true
+  bool allow_audio_service_pause;    // optional: let this tool pause the Windows Audio service, default false
 };
 
 /**

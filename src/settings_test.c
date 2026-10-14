@@ -145,6 +145,56 @@ cleanup:
 }
 
 /**
+ * @brief The audio service is only paused when the settings say so
+ *
+ * Pausing it takes the sound away from the whole machine, so the default is no and a file
+ * that does not mention the key leaves it off.
+ */
+static void test_allow_audio_service_pause_key(void) {
+  struct settings s;
+  struct ov_error err = {0};
+
+  TEST_CASE("a file that does not mention the key leaves it off");
+  memset(&s, 0, sizeof(s));
+  if (TEST_SUCCEEDED(settings_apply_json(kThemeOn, &s, &err), &err)) {
+    TEST_CHECK(s.allow_audio_service_pause == false);
+  }
+  settings_release(&s);
+
+  TEST_CASE("a file that turns it on is read");
+  memset(&s, 0, sizeof(s));
+  if (TEST_SUCCEEDED(settings_apply_json("{\"ks_service\":\"a\",\"veto_log_name\":\"b\",\"veto_provider_name\":\"c\","
+                                         "\"veto_event_id\":1,\"mixer_process_names\":[\"d\"],\"allow_audio_service_pause\":true,"
+                                         "\"devices\":[{\"name\": \"iD14mkII\", \"id\": \"TUSBAUDIO_ENUM\\\\VID_2708&PID_0008&KS\"}]}",
+                                         &s,
+                                         &err),
+                     &err)) {
+    TEST_CHECK(s.allow_audio_service_pause == true);
+  }
+  settings_release(&s);
+}
+
+/**
+ * @brief An audio service key of the wrong type is refused
+ */
+static void test_allow_audio_service_pause_wrong_type(void) {
+  struct settings s;
+  struct ov_error err = {0};
+
+  memset(&s, 0, sizeof(s));
+  TEST_FAILED_WITH(settings_apply_json("{\"ks_service\":\"a\",\"veto_log_name\":\"b\",\"veto_provider_name\":\"c\","
+                                       "\"veto_event_id\":1,\"mixer_process_names\":[\"d\"],\"allow_audio_service_pause\":\"no\","
+                                       "\"devices\":[{\"name\": \"iD14mkII\", \"id\": \"TUSBAUDIO_ENUM\\\\VID_2708&PID_0008&KS\"}]}",
+                                       &s,
+                                       &err),
+                   &err,
+                   ov_error_type_generic,
+                   ov_error_generic_invalid_argument);
+  TEST_CHECK(s.ks_service == NULL); // released on failure
+  settings_release(&s);
+}
+
+/**
  * @brief A theme key of the wrong type is refused
  */
 static void test_use_theme_wrong_type(void) {
@@ -637,6 +687,8 @@ TEST_LIST = {
     {"mixer_names", test_mixer_names},
     {"use_theme_key", test_use_theme_key},
     {"use_theme_wrong_type", test_use_theme_wrong_type},
+    {"allow_audio_service_pause_key", test_allow_audio_service_pause_key},
+    {"allow_audio_service_pause_wrong_type", test_allow_audio_service_pause_wrong_type},
     {"confirm_max_wait_key", test_confirm_max_wait_key},
     {"confirm_max_wait_out_of_range", test_confirm_max_wait_out_of_range},
     {"legacy_healthy_key", test_legacy_healthy_key},

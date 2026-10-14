@@ -10,13 +10,14 @@
 #include <ovprintf.h>
 #include <ovprintf_ex.h>
 
-#include "culprit.h"
+#include "audio_service.h"
+#include "blocker.h"
 #include "device.h"
 #include "logger.h"
-#include "mixer.h"
 #include "process.h"
 #include "removal.h"
 #include "settings.h"
+#include "veto_event.h"
 
 /**
  * @brief The work a run does, and where it stands
@@ -29,7 +30,8 @@
 struct repair_ctx {
   struct settings const *settings; //!< the settings this run works for
   bool allow_mixer_close;          //!< the user allowed closing the mixer
-  bool allow_audiodg_close;        //!< the user allowed closing the audio engine
+  bool allow_audiodg_close;        //!< the user allowed pausing the audio engine
+  bool can_pause_audio_service;    //!< pausing the audio service is allowed on this build and by these settings
   repair_progress_fn progress;     //!< may be NULL; called from the thread that runs the repair
   void *progress_userdata;         //!< handed back to progress
   bool *cancel;                    //!< may be NULL; the run reads it between its steps
@@ -37,6 +39,29 @@ struct repair_ctx {
   size_t step;                     //!< the step the run is at, counted from zero
   size_t total;                    //!< how many steps the longest way takes
 };
+
+/**
+ * @brief May this build pause the audio service at all
+ *
+ * Pausing it takes the sound away from the whole machine, so a build that ships only does it
+ * when the settings say so in as many words.  A debug build is free to do it without that,
+ * so the behaviour can be tried out at all.
+ *
+ * @param setting the value of allow_audio_service_pause from the settings file
+ * @return true when the service may be paused
+ */
+static bool adc_can_pause_audio_service(bool const setting) {
+#ifdef NDEBUG
+  return setting;
+#else
+  (void)setting;
+  return true;
+#endif
+}
+
+bool repair_can_pause_audio_service(struct settings const *const s) {
+  return adc_can_pause_audio_service((s != NULL) && s->allow_audio_service_pause);
+}
 
 /**
  * @brief The system calls a run goes through
@@ -47,12 +72,15 @@ struct repair_ctx {
 struct repair_deps {
   enum device_state (*probe_devnode)(char const *devnode, struct ov_error *err);
   bool (*removal_close)(char const *devnode, struct ov_error *err);
-  struct culprit *(*read_veto)(char const *log_name, char const *provider_name, unsigned short event_id, struct ov_error *err);
+  struct veto_event *(*read_veto)(char const *log_name, char const *provider_name, unsigned short event_id, struct ov_error *err);
   ov_tribool (*names_ancestor)(char const *device_instance, char const *devnode, struct ov_error *err);
-  bool (*mixer_take)(
-      uint32_t pid, char const *exe_name, long long event_time_ms, bool *out_found, struct mixer_target *out, struct ov_error *err);
-  bool (*mixer_close)(struct mixer_target *target, struct ov_error *err);
-  void (*mixer_target_release)(struct mixer_target *target);
+  struct blocker *(*blocker_list_build)(struct veto_event const *events,
+                                        char const *const *mixer_names,
+                                        size_t mixer_name_count,
+                                        struct ov_error *err);
+  bool (*blocker_close)(struct blocker const *b, bool allow_privilege, struct ov_error *err);
+  bool (*audio_service_pause)(struct ov_error *err);
+  bool (*audio_service_resume)(struct ov_error *err);
 };
 
 /**
@@ -61,11 +89,12 @@ struct repair_deps {
 static struct repair_deps const kDefaultDeps = {
     .probe_devnode = device_probe_devnode,
     .removal_close = removal_close,
-    .read_veto = culprit_read,
-    .names_ancestor = device_culprit_names_ancestor,
-    .mixer_take = mixer_take,
-    .mixer_close = mixer_close,
-    .mixer_target_release = mixer_target_release,
+    .read_veto = veto_event_read,
+    .names_ancestor = device_veto_event_names_ancestor,
+    .blocker_list_build = blocker_list_build,
+    .blocker_close = blocker_close,
+    .audio_service_pause = audio_service_pause,
+    .audio_service_resume = audio_service_resume,
 };
 
 /**
@@ -136,7 +165,7 @@ void repair_stage_mixer_caption(struct settings const *const s, char *const out,
  *
  * @return the caption, UTF-8
  */
-char const *repair_option_audiodg_label(void) { return gettext("Close audiodg (audiodg.exe) automatically"); }
+char const *repair_option_audiodg_label(void) { return gettext("Allow pausing the Windows Audio service"); }
 
 /**
  * @brief The sentence of a veto that closed nothing for lack of a blocker this run may close
@@ -181,52 +210,6 @@ static void repair_blocked_sentence(char const *const option, size_t const block
  */
 static void sayf(struct repair_result *const out, char const *const reference, char const *const what) {
   OV_SNPRINTF(out->message, sizeof(out->message), reference, reference, what);
-}
-
-/**
- * @brief The pids of the blockers of a run
- *
- * The caller uses them to keep the processes it closed out of the list it shows.  A
- * process this tool closed is not a reason the device was blocked: it is gone, the user
- * watched it go, and a list that still names it says the opposite of what happened.  The
- * identity that is dropped is the exact instance that was closed, so the same image running
- * elsewhere stays on the list.
- *
- * @param blockers the blockers of the run
- * @param out receives the pids, capacity 2 * REPAIR_MAX_BLOCKERS
- * @return how many pids were written
- */
-static size_t repair_closed_pids(struct repair_blockers const *const blockers, uint32_t *const out) {
-  size_t n = 0;
-  size_t i = 0;
-
-  if ((blockers == NULL) || (out == NULL)) {
-    return 0;
-  }
-  for (i = 0; i < blockers->mixer_count; i++) {
-    if (blockers->mixer[i].found) {
-      out[n++] = blockers->mixer[i].pid;
-    }
-  }
-  for (i = 0; i < blockers->audiodg_count; i++) {
-    if (blockers->audiodg[i].found) {
-      out[n++] = blockers->audiodg[i].pid;
-    }
-  }
-  return n;
-}
-
-/**
- * @brief Keep the processes a run closed out of the list of the culprits
- *
- * @param list the list to shrink in place
- * @param closed the blockers the run closed
- */
-static void drop_closed(struct culprit **const list, struct repair_blockers const *const closed) {
-  uint32_t pids[2 * REPAIR_MAX_BLOCKERS];
-  size_t const n = repair_closed_pids(closed, pids);
-
-  culprit_drop_pids(list, pids, n);
 }
 
 /**
@@ -281,9 +264,9 @@ static void say_aborted(struct repair_result *const out) {
  * @param err receives the failure of the query
  * @return NULL when the query itself failed, an empty list when no veto record showed up
  */
-static struct culprit *
-read_veto_events(struct repair_ctx *const ctx, struct repair_deps const *const deps, long long const since_ms, struct ov_error *const err) {
-  struct culprit *list = NULL;
+static struct veto_event *
+read_veto_events(struct repair_ctx *const ctx, struct repair_deps const *const deps, uint64_t const since_ms, struct ov_error *const err) {
+  struct veto_event *list = NULL;
   size_t attempt = 0;
 
   for (;;) {
@@ -292,7 +275,7 @@ read_veto_events(struct repair_ctx *const ctx, struct repair_deps const *const d
     }
     report_stage(ctx, REPAIR_STAGE_VETO_RECORD);
     if (cancel_requested(ctx->cancel)) {
-      culprit_destroy_list(&list);
+      veto_event_destroy_list(&list);
       return NULL;
     }
     list =
@@ -300,181 +283,96 @@ read_veto_events(struct repair_ctx *const ctx, struct repair_deps const *const d
     if (list == NULL) {
       return NULL;
     }
-    culprit_prune(&list, since_ms);
-    if ((culprit_count(list) > 0) || (attempt >= 5)) {
+    veto_event_prune(&list, since_ms);
+    if ((veto_event_count(list) > 0) || (attempt >= 5)) {
       return list; // the last try hands back the empty list, the query itself worked
     }
-    culprit_destroy_list(&list);
+    veto_event_destroy_list(&list);
     attempt++;
   }
 }
 
 /**
- * @brief Collect all blockers of the given name
+ * @brief Close the mixers of the list and collect their ids
  *
- * All matching culprits are collected; duplicates by PID are skipped.  A NULL out asks
- * only for the count, so the caller can name the blockers it was not allowed to close.
+ * The audio engine is not closed here: it is started again within milliseconds of being
+ * terminated, so the service that starts it is paused instead (see pause_audio_engine).
  *
- * @param culprits the records to search in, may be NULL
- * @param names the image names to look for, a path matches when yes one names it
- * @param name_count how many image names the list holds
- * @param out array to fill, NULL counts the matches only
- * @param max_count maximum number of entries to fill
- * @return the number of blockers collected, SIZE_MAX when there are more than max_count
- */
-static size_t pick_all(struct culprit const *const culprits,
-                       char const *const *names,
-                       size_t const name_count,
-                       struct repair_blocker *const out,
-                       size_t const max_count) {
-  size_t count = 0;
-  size_t const n = culprit_count(culprits);
-  size_t i = 0;
-  size_t j = 0;
-  size_t k = 0;
-
-  if ((culprits == NULL) || (names == NULL) || (name_count == 0) || (max_count == 0)) {
-    return 0;
-  }
-  for (i = 0; i < n; i++) {
-    if (culprits[i].pid == 0) {
-      continue;
-    }
-    for (k = 0; k < name_count; k++) {
-      if (process_path_matches_name(culprits[i].path, names[k])) {
-        break;
-      }
-    }
-    if (k == name_count) {
-      continue;
-    }
-    if (out != NULL) {
-      for (j = 0; j < count; j++) {
-        if (out[j].pid == culprits[i].pid) {
-          break;
-        }
-      }
-      if (j < count) {
-        continue;
-      }
-      if (count >= max_count) {
-        return SIZE_MAX; // more than this tool carries room for, the caller says so
-      }
-      out[count].found = true;
-      out[count].pid = culprits[i].pid;
-      out[count].event_time_ms = culprits[i].event_time_ms;
-      out[count].name = names[k];
-    }
-    count++;
-  }
-  return count;
-}
-
-/**
- * @brief Which blockers of a veto record this run may close
- *
- * mixer_name is the image name from the settings, REPAIR_AUDIODG_NAME is the audio
- * engine; the two allow_* flags are the user's decision to let this tool close them at
- * all.
- *
- * @param culprits the records of the veto, may be NULL
- * @param mixer_matches the image names the settings name, count them flat out
- * @param mixer_count how many entries the mixer holds
- * @param allow_mixer_close the user allowed closing the mixer
- * @param allow_audiodg_close the user allowed closing the audio engine
- * @param err receives the failure, the records outnumbering what this tool carries
- * @return the blockers to close; a count that is SIZE_MAX says the records name more
- *         blockers of that kind than this tool may close at once
- */
-static struct repair_blockers repair_pick_blockers(struct culprit const *const culprits,
-                                                   char const *const *mixer_matches,
-                                                   size_t const mixer_count,
-                                                   bool const allow_mixer_close,
-                                                   bool const allow_audiodg_close,
-                                                   struct ov_error *const err) {
-  struct repair_blockers b;
-  size_t const audiodg_count = 1;
-  size_t mixer_picked = 0;
-  size_t audiodg_picked = 0;
-  char const *const audiodg_names[] = {REPAIR_AUDIODG_NAME};
-  bool too_many = false;
-
-  memset(&b, 0, sizeof(b));
-  if (allow_mixer_close) {
-    mixer_picked = pick_all(culprits, mixer_matches, mixer_count, b.mixer, REPAIR_MAX_BLOCKERS);
-    too_many = (mixer_picked == SIZE_MAX);
-    b.mixer_count = mixer_picked;
-  }
-  if (allow_audiodg_close) {
-    audiodg_picked = pick_all(culprits, audiodg_names, audiodg_count, b.audiodg, REPAIR_MAX_BLOCKERS);
-    too_many = too_many || (audiodg_picked == SIZE_MAX);
-    b.audiodg_count = audiodg_picked;
-  }
-  if (too_many) {
-    OV_ERROR_SETF(err,
-                  ov_error_type_generic,
-                  ov_error_generic_fail,
-                  "%1$hs",
-                  gettext("Too many blocker processes are named in the record, more than this tool can close at once."),
-                  NULL);
-    memset(&b, 0, sizeof(b));
-    // the counts are what the caller reads the failure off, so they say which kind ran
-    // over: the one that did carries SIZE_MAX
-    b.mixer_count = mixer_picked;
-    b.audiodg_count = audiodg_picked;
-  }
-  return b;
-}
-
-/**
- * @brief Close one blocking process and wait until it is gone
- *
- * The identity comes from the veto record, so only that instance is touched; a process
- * that is already gone is no blocker any more and costs nothing.  Only a hard failure
- * stops the run and folds its reason into the outcome.
- *
- * @param blocker the instance the record named
- * @param name the image name to check against
+ * @param ctx the run that closes
+ * @param deps the system calls the run goes through
+ * @param blockers the list to go through
  * @param stage the stage to report
- * @param target receives the identity that was closed
+ * @param out_pids receives the ids that were closed, may be NULL
+ * @param out_capacity room of out_pids
+ * @param out_count receives how many ids were written
  * @param err receives the hard failure
  * @return false only on a hard failure
  */
-static bool close_blocking_process(struct repair_ctx *const ctx,
-                                   struct repair_deps const *const deps,
-                                   struct repair_blocker const *const blocker,
-                                   char const *const name,
-                                   enum repair_stage const stage,
-                                   struct mixer_target *const target,
-                                   struct ov_error *const err) {
-  bool found = false;
+static bool close_mixer_blockers(struct repair_ctx *const ctx,
+                                 struct repair_deps const *const deps,
+                                 struct blocker const *const blockers,
+                                 enum repair_stage const stage,
+                                 uint32_t *const out_pids,
+                                 size_t const out_capacity,
+                                 size_t *const out_count,
+                                 struct ov_error *const err) {
+  size_t const n = blocker_count(blockers);
+  size_t i = 0;
   bool success = false;
-  struct repair_result *const out = ctx->out;
 
-  report_stage(ctx, stage);
-  logger_notef("close", "%s pid=%lu event_time=%lld", name, (unsigned long)blocker->pid, blocker->event_time_ms);
-  if (!deps->mixer_take(blocker->pid, name, blocker->event_time_ms, &found, target, err)) {
-    OV_ERROR_ADD_TRACE(err);
-    out->outcome = REPAIR_OUTCOME_FAILED;
-    sayf(out, "%1$hs could not be inspected.", name);
-    goto cleanup;
-  }
-  if (!found) {
-    logger_notef("close", "%s pid=%lu was not closed: it is not the instance the record named", name, (unsigned long)blocker->pid);
-    sayf(out, "%1$hs is no longer running.", name);
-    success = true;
-    goto cleanup;
-  }
-  if (!deps->mixer_close(target, err)) {
-    OV_ERROR_ADD_TRACE(err);
-    out->outcome = REPAIR_OUTCOME_FAILED;
-    sayf(out, "%1$hs could not be closed.", name);
-    goto cleanup;
+  for (i = 0; i < n; i++) {
+    if (blockers[i].kind != BLOCKER_KIND_MIXER) {
+      continue;
+    }
+    if (i == 0) {
+      report_stage(ctx, stage);
+    }
+    logger_notef("close", "mixer pid=%lu", (unsigned long)blockers[i].pid);
+    if (!deps->blocker_close(&blockers[i], false, err)) {
+      OV_ERROR_ADD_TRACE(err);
+      ctx->out->outcome = REPAIR_OUTCOME_FAILED;
+      sayf(ctx->out, "%1$hs could not be closed.", "The mixer");
+      goto cleanup;
+    }
+    if ((out_pids != NULL) && (*out_count < out_capacity)) {
+      out_pids[*out_count] = blockers[i].pid;
+      (*out_count)++;
+    }
   }
   success = true;
 
 cleanup:
   return success;
+}
+
+/**
+ * @brief Pause the audio engine, so it lets the device go
+ *
+ * The engine is started by the Windows Audio service and comes back within milliseconds of
+ * being terminated, so terminating it does not free the device.  Pausing the service does,
+ * and the caller starts it again when the device is done with.
+ *
+ * @param ctx the run that pauses
+ * @param deps the system calls the run goes through
+ * @param paused receives true when the service was paused and must be started again
+ * @param err receives the hard failure
+ * @return false only on a hard failure
+ */
+static bool
+pause_audio_engine(struct repair_ctx *const ctx, struct repair_deps const *const deps, bool *const paused, struct ov_error *const err) {
+  if (!ctx->can_pause_audio_service) {
+    logger_notef("close", "the audio engine holds the device, but pausing the service is not allowed");
+    return true;
+  }
+  report_stage(ctx, REPAIR_STAGE_AUDIODG);
+  if (!deps->audio_service_pause(err)) {
+    OV_ERROR_ADD_TRACE(err);
+    ctx->out->outcome = REPAIR_OUTCOME_FAILED;
+    say(ctx->out, "The Windows Audio service could not be paused.");
+    return false;
+  }
+  *paused = true;
+  return true;
 }
 
 /**
@@ -492,20 +390,19 @@ cleanup:
  * @param err receives the failure of the ancestor walk
  * @return false when the walk failed
  */
-static bool culprit_keep_device(struct repair_deps const *const deps,
-                                struct culprit **const list,
-                                char const *const devnode,
-                                struct ov_error *const err) {
+static bool veto_event_keep_device(struct repair_deps const *const deps,
+                                   struct veto_event **const list,
+                                   char const *const devnode,
+                                   struct ov_error *const err) {
   size_t kept = 0;
   size_t i = 0;
-  size_t const n = culprit_count(*list);
+  size_t const n = veto_event_count(*list);
   bool success = false;
 
   for (i = 0; i < n; i++) {
-    struct culprit *const record = &(*list)[i];
+    struct veto_event *const record = &(*list)[i];
 
     if (record->device_instance == NULL) {
-      OV_ARRAY_DESTROY(&record->path);
       OV_ARRAY_DESTROY(&record->device_instance);
       continue;
     }
@@ -515,44 +412,12 @@ static bool culprit_keep_device(struct repair_deps const *const deps,
       goto cleanup;
     }
     if (named == ov_false) {
-      OV_ARRAY_DESTROY(&record->path);
       OV_ARRAY_DESTROY(&record->device_instance);
       continue;
     }
     (*list)[kept++] = *record;
   }
   OV_ARRAY_SET_LENGTH(*list, kept);
-  success = true;
-
-cleanup:
-  return success;
-}
-
-/**
- * @brief Move every record of one list into another
- *
- * The records leave the list they came from without being copied, so the
- * strings travel with them and the shell of the list is left empty.
- *
- * @param dst the list to fill
- * @param src the list to empty
- * @param err receives the failure of the growth
- * @return false when the records could not all be moved
- */
-static bool culprit_move_all(struct culprit **const dst, struct culprit **const src, struct ov_error *const err) {
-  size_t i = 0;
-  size_t const n = culprit_count(*src);
-  bool success = false;
-
-  for (i = 0; i < n; i++) {
-    if (!OV_ARRAY_PUSH(dst, (*src)[i])) {
-      OV_ERROR_SET_GENERIC(err, ov_error_generic_out_of_memory);
-      goto cleanup;
-    }
-    (*src)[i].path = NULL;
-    (*src)[i].device_instance = NULL;
-  }
-  culprit_destroy_list(src);
   success = true;
 
 cleanup:
@@ -656,7 +521,7 @@ static enum repair_outcome confirm_recovered(struct repair_ctx *const ctx,
 /**
  * @brief Repair one device
  *
- * The documented sequence for the device: remove, look up the culprits when
+ * The documented sequence for the device: remove, look up the events when
  * vetoed, optionally close the blockers (the mixer and audiodg) and remove
  * again, then confirm that the device came back as an audio device.  The
  * records the run leaves behind belong to the device, so the caller can name
@@ -675,20 +540,16 @@ static enum repair_outcome repair_target(struct repair_ctx *const ctx,
   struct settings const *const s = ctx->settings;
   struct repair_result *const out = ctx->out;
   enum repair_outcome outcome = REPAIR_OUTCOME_FAILED;
-  long long since = 0;
-  struct repair_blockers picked;
-  struct mixer_target taken_mixer;
-  struct mixer_target taken_audiodg;
-  struct culprit *culprits = NULL;
-  struct culprit *current = NULL;
+  uint64_t since = 0;
+  struct blocker *blockers = NULL;
+  struct veto_event *events = NULL;
+  struct veto_event *current = NULL;
+  uint32_t closed[64] = {0};
+  size_t closed_count = 0;
   struct ov_error removal_err = {0};
   struct ov_error read_err = {0};
-  size_t i = 0;
+  bool audio_service_paused = false;
   bool success = false;
-
-  memset(&picked, 0, sizeof(picked));
-  memset(&taken_mixer, 0, sizeof(taken_mixer));
-  memset(&taken_audiodg, 0, sizeof(taken_audiodg));
 
   if (target->state == DEVICE_STATE_PROBLEM) {
     outcome = REPAIR_OUTCOME_OTHER_PROBLEM;
@@ -698,7 +559,7 @@ static enum repair_outcome repair_target(struct repair_ctx *const ctx,
   }
 
   since = process_now_ms();
-  logger_notef("remove", "first attempt, device=%s since=%lld", target->devnode, since);
+  logger_notef("remove", "first attempt, device=%s since=%llu", target->devnode, (unsigned long long)since);
   if (cancel_requested(ctx->cancel)) {
     say_aborted(out);
     outcome = REPAIR_OUTCOME_ABORTED;
@@ -731,8 +592,8 @@ static enum repair_outcome repair_target(struct repair_ctx *const ctx,
     success = true;
     goto cleanup;
   }
-  culprits = read_veto_events(ctx, deps, since, &read_err);
-  if (culprits == NULL) {
+  events = read_veto_events(ctx, deps, since, &read_err);
+  if (events == NULL) {
     if (cancel_requested(ctx->cancel)) {
       say_aborted(out);
       outcome = REPAIR_OUTCOME_ABORTED;
@@ -744,49 +605,24 @@ static enum repair_outcome repair_target(struct repair_ctx *const ctx,
     success = true;
     goto cleanup;
   }
-  logger_notef("veto", "the removal of device=%s was vetoed by %u record(s)", target->devnode, (unsigned)culprit_count(culprits));
-  if (!culprit_keep_device(deps, &culprits, target->devnode, err)) {
+  logger_notef("veto", "the removal of device=%s was vetoed by %u record(s)", target->devnode, (unsigned)veto_event_count(events));
+  if (!veto_event_keep_device(deps, &events, target->devnode, err)) {
     OV_ERROR_ADD_TRACE(err);
     outcome = REPAIR_OUTCOME_FAILED;
     goto cleanup;
   }
-
-  picked = repair_pick_blockers(
-      culprits, settings_mixer_names(s), settings_mixer_name_count(s), ctx->allow_mixer_close, ctx->allow_audiodg_close, err);
-  if ((picked.mixer_count == SIZE_MAX) || (picked.audiodg_count == SIZE_MAX)) {
-    // the records name more blockers than this tool carries room for, so there is nothing
-    // to close and the reason is the one the pick raised
+  // what a record says a process is called is what it was called then; the machine is
+  // asked what the process the id names is now, and a process that took the id over after
+  // the record was written is dropped by that same answer
+  blockers = deps->blocker_list_build(events, settings_mixer_names(s), settings_mixer_name_count(s), err);
+  if (blockers == NULL) {
     OV_ERROR_ADD_TRACE(err);
     outcome = REPAIR_OUTCOME_FAILED;
     goto cleanup;
   }
-  if (picked.mixer_count == 0 && picked.audiodg_count == 0) {
-    char option_buf[256] = {0};
-    char const *option = NULL;
-    char sentence[256];
-
-    outcome = REPAIR_OUTCOME_VETOED;
-    // the blockers the user did not allow this tool to close are still worth naming: the
-    // pick with both flags up says which option would have helped
-    {
-      char const *const audiodg_names[] = {REPAIR_AUDIODG_NAME};
-      if (pick_all(culprits, settings_mixer_names(s), settings_mixer_name_count(s), NULL, REPAIR_MAX_BLOCKERS) > 0) {
-        repair_option_mixer_label(s, option_buf, sizeof(option_buf));
-        option = option_buf;
-      } else if (pick_all(culprits, audiodg_names, 1, NULL, REPAIR_MAX_BLOCKERS) > 0) {
-        option = repair_option_audiodg_label();
-      }
-    }
-    repair_blocked_sentence(option, culprit_count(culprits), sentence, sizeof(sentence));
-    say(out, sentence);
-    if (culprit_count(culprits) > 0) {
-      if (!culprit_move_all(&out->culprits, &culprits, err)) {
-        OV_ERROR_ADD_TRACE(err);
-        outcome = REPAIR_OUTCOME_FAILED;
-      }
-    }
-    success = true;
-    goto cleanup;
+  if (blocker_count(blockers) == 0) {
+    // every process the records name is already gone or is not the one they named
+    logger_notef("probe", "none of the records names a running process");
   }
 
   if (cancel_requested(ctx->cancel)) {
@@ -795,8 +631,13 @@ static enum repair_outcome repair_target(struct repair_ctx *const ctx,
     success = true;
     goto cleanup;
   }
-  for (i = 0; i < picked.mixer_count; i++) {
-    if (!close_blocking_process(ctx, deps, &picked.mixer[i], picked.mixer[i].name, REPAIR_STAGE_MIXER, &taken_mixer, err)) {
+  if (blocker_count(blockers) > 0) {
+    size_t const mixers = blocker_mixer_count(blockers);
+    bool const has_audiodg = blocker_audiodg_count(blockers) > 0;
+    bool const may_close_mixer = ctx->allow_mixer_close && (mixers > 0);
+    bool const may_pause_audio = ctx->allow_audiodg_close && has_audiodg;
+
+    if (may_close_mixer && !close_mixer_blockers(ctx, deps, blockers, REPAIR_STAGE_MIXER, closed, 64, &closed_count, err)) {
       outcome = REPAIR_OUTCOME_FAILED;
       goto cleanup;
     }
@@ -806,15 +647,30 @@ static enum repair_outcome repair_target(struct repair_ctx *const ctx,
       success = true;
       goto cleanup;
     }
-  }
-  for (i = 0; i < picked.audiodg_count; i++) {
-    if (!close_blocking_process(ctx, deps, &picked.audiodg[i], REPAIR_AUDIODG_NAME, REPAIR_STAGE_AUDIODG, &taken_audiodg, err)) {
+    if (may_pause_audio && !pause_audio_engine(ctx, deps, &audio_service_paused, err)) {
       outcome = REPAIR_OUTCOME_FAILED;
       goto cleanup;
     }
-    if (cancel_requested(ctx->cancel)) {
-      say_aborted(out);
-      outcome = REPAIR_OUTCOME_ABORTED;
+    if (!may_close_mixer && !may_pause_audio) {
+      char option_buf[256] = {0};
+      char const *option = NULL;
+      char sentence[256];
+
+      outcome = REPAIR_OUTCOME_VETOED;
+      // the blockers the user did not allow this tool to close are still worth naming: the
+      // kind that is there says which option would have helped
+      if (mixers > 0) {
+        repair_option_mixer_label(s, option_buf, sizeof(option_buf));
+        option = option_buf;
+      } else if (has_audiodg) {
+        option = repair_option_audiodg_label();
+      }
+      repair_blocked_sentence(option, blocker_count(blockers), sentence, sizeof(sentence));
+      say(out, sentence);
+      if (veto_event_count(events) > 0) {
+        out->events = events;
+        events = NULL;
+      }
       success = true;
       goto cleanup;
     }
@@ -827,7 +683,7 @@ static enum repair_outcome repair_target(struct repair_ctx *const ctx,
     goto cleanup;
   }
   since = process_now_ms();
-  logger_notef("remove", "second attempt, device=%s since=%lld", target->devnode, since);
+  logger_notef("remove", "second attempt, device=%s since=%llu", target->devnode, (unsigned long long)since);
   ctx->step++;
   report_stage(ctx, REPAIR_STAGE_REMOVE);
   if (deps->removal_close(target->devnode, &removal_err)) {
@@ -846,24 +702,21 @@ static enum repair_outcome repair_target(struct repair_ctx *const ctx,
   }
   current = read_veto_events(ctx, deps, since, &read_err);
   if (current != NULL) {
-    drop_closed(&current, &picked);
-    culprit_destroy_list(&culprits);
-    culprits = current;
+    veto_event_destroy_list(&events);
+    events = current;
     current = NULL;
-    if (!culprit_keep_device(deps, &culprits, target->devnode, err)) {
+    if (!veto_event_keep_device(deps, &events, target->devnode, err)) {
       OV_ERROR_ADD_TRACE(err);
       outcome = REPAIR_OUTCOME_FAILED;
       goto cleanup;
     }
-  } else {
-    drop_closed(&culprits, &picked);
   }
-  if (culprit_count(culprits) > 0) {
-    if (!culprit_move_all(&out->culprits, &culprits, err)) {
-      OV_ERROR_ADD_TRACE(err);
-      outcome = REPAIR_OUTCOME_FAILED;
-      goto cleanup;
-    }
+  // the processes this run closed are gone from the machine, so the records that named them
+  // are not reasons the device is held any more and must not be shown as ones
+  veto_event_drop_pids(&events, closed, closed_count);
+  if (veto_event_count(events) > 0) {
+    out->events = events;
+    events = NULL;
   }
   outcome = REPAIR_OUTCOME_VETOED;
   say(out, "The device is still in use.");
@@ -871,15 +724,26 @@ static enum repair_outcome repair_target(struct repair_ctx *const ctx,
   success = true;
 
 cleanup:
+  if (audio_service_paused) {
+    struct ov_error resume_err = {0};
+    // whatever came of the device, the sound of the machine comes back here: a service left
+    // stopped is a machine with no audio at all, which is worse than the device this run
+    // was about
+    if (!deps->audio_service_resume(&resume_err)) {
+      OV_ERROR_REPORT(&resume_err, NULL);
+      ctx->out->outcome = REPAIR_OUTCOME_FAILED;
+      say(ctx->out, "The Windows Audio service could not be started again.");
+      outcome = REPAIR_OUTCOME_FAILED;
+    }
+  }
   if (success) {
     OV_ERROR_REPORT(err, NULL);
   }
   OV_ERROR_REPORT(&removal_err, NULL);
   OV_ERROR_REPORT(&read_err, NULL);
-  culprit_destroy_list(&culprits);
-  culprit_destroy_list(&current);
-  deps->mixer_target_release(&taken_mixer);
-  deps->mixer_target_release(&taken_audiodg);
+  veto_event_destroy_list(&events);
+  veto_event_destroy_list(&current);
+  blocker_list_destroy(&blockers);
   return outcome;
 }
 
@@ -933,6 +797,9 @@ static bool repair_run_with(struct settings const *const s,
   ctx.settings = s;
   ctx.allow_mixer_close = allow_mixer_close;
   ctx.allow_audiodg_close = allow_audiodg_close;
+  // the service is only paused when this build allows it, and, in a build that ships, only
+  // when the settings say so: pausing it takes the sound away from the whole machine
+  ctx.can_pause_audio_service = repair_can_pause_audio_service(s);
   ctx.progress = progress;
   ctx.progress_userdata = progress_userdata;
   ctx.cancel = cancel;
@@ -1023,6 +890,6 @@ void repair_result_release(struct repair_result *const r) {
   if (r == NULL) {
     return;
   }
-  culprit_destroy_list(&r->culprits);
+  veto_event_destroy_list(&r->events);
   r->outcome = REPAIR_OUTCOME_UNKNOWN;
 }

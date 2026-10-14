@@ -83,12 +83,13 @@ target_link_options(adc_intf INTERFACE
 
 # Everything that is not the window itself, so that the tests can reach it.
 add_library(adc_core STATIC
-  culprit.c
+  veto_event.c
+  blocker.c
+  audio_service.c
   layout.c
   settings.c
   logger.c
   paths.c
-  mixer.c
   process.c
   device.c
   loggate.c
@@ -257,12 +258,14 @@ add_dependencies(test_ui ${PROJECT_NAME}_generate_i18n_rc)
 add_test(NAME ui COMMAND test_ui)
 
 # Unit tests: the pure decision logic of each module, no real device needed.  A test that
-# writes a file next to itself (logger, mixer) cleans up after itself.
-foreach(adc_test device removal culprit process mixer settings repair options layout loggate logger paths task instance)
-  if(adc_test STREQUAL "culprit" OR adc_test STREQUAL "device" OR adc_test STREQUAL "removal" OR adc_test STREQUAL "repair" OR adc_test STREQUAL "settings" OR adc_test STREQUAL "task" OR adc_test STREQUAL "logger" OR adc_test STREQUAL "process")
+# writes a file next to itself (logger) cleans up after itself.
+foreach(adc_test device removal veto_event blocker process settings repair options layout loggate logger paths task instance)
+  if(adc_test STREQUAL "veto_event" OR adc_test STREQUAL "device" OR adc_test STREQUAL "removal" OR adc_test STREQUAL "repair" OR adc_test STREQUAL "settings" OR adc_test STREQUAL "task" OR adc_test STREQUAL "logger" OR adc_test STREQUAL "process")
     add_executable(test_${adc_test} ${adc_test}_test.c)
-    if(adc_test STREQUAL "culprit")
+    if(adc_test STREQUAL "veto_event")
       target_link_libraries(test_${adc_test} PRIVATE ovbase adc_intf wevtapi)
+    elseif(adc_test STREQUAL "blocker")
+      target_link_libraries(test_${adc_test} PRIVATE adc_core ovbase adc_intf)
     elseif(adc_test STREQUAL "removal" OR adc_test STREQUAL "device")
       target_link_libraries(test_${adc_test} PRIVATE ovbase adc_intf cfgmgr32)
     elseif(adc_test STREQUAL "process")
@@ -290,7 +293,7 @@ if(TARGET ${PROJECT_NAME}-format)
   foreach(adc_target adc_core adc test_dummy)
     add_dependencies(${adc_target} ${PROJECT_NAME}-format)
   endforeach()
-  foreach(adc_test device removal culprit process mixer settings repair options layout loggate logger paths task instance)
+  foreach(adc_test device removal veto_event blocker process settings repair options layout loggate logger paths task instance)
     add_dependencies(test_${adc_test} ${PROJECT_NAME}-format)
   endforeach()
   add_dependencies(test_ui ${PROJECT_NAME}-format)
