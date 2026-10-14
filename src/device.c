@@ -42,7 +42,7 @@ static enum device_state device_evaluate(
   if (registered) {
     return DEVICE_STATE_FAULTED;
   }
-  return DEVICE_STATE_UNKNOWN;
+  return DEVICE_STATE_NO_INTERFACE;
 }
 
 /**
@@ -722,12 +722,16 @@ cleanup:
 /**
  * @brief State one devnode the caller already knows by name
  *
+ * The state and the failure of the queries are told apart by the value the call answers
+ * with, so a caller that has to act on the failure can do so.
+ *
  * @param devnode instance ID of the KS devnode, UTF-8
  * @param err receives the failure of the queries
- * @return the state the devnode is in, DEVICE_STATE_UNKNOWN when nothing was registered
+ * @return the state the devnode is in, DEVICE_STATE_NO_INTERFACE when no endpoint is
+ *         registered for it, DEVICE_STATE_QUERY_FAILED when the queries failed
  */
 enum device_state device_probe_devnode(char const *const devnode, struct ov_error *const err) {
-  enum device_state state = DEVICE_STATE_UNKNOWN;
+  enum device_state state = DEVICE_STATE_QUERY_FAILED;
   wchar_t *native = NULL;
   unsigned long problem = 0;
   size_t render_present = 0;

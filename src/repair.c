@@ -615,26 +615,40 @@ static size_t confirm_poll_count(DWORD const max_wait_ms) {
  * @param ctx the run that confirms
  * @param deps the system calls the run goes through
  * @param target the device that was released
- * @param err receives the failure of the query
+ * @param err receives the failure of the last look
  * @return the outcome of the confirmation
  */
 static enum repair_outcome confirm_recovered(struct repair_ctx *const ctx,
                                              struct repair_deps const *const deps,
                                              struct device_target const *const target,
                                              struct ov_error *const err) {
+  bool failed = false;
+
   ctx->step++;
   report_stage(ctx, REPAIR_STAGE_CONFIRM);
   for (size_t poll = 0; poll < confirm_poll_count((DWORD)ctx->settings->confirm_max_wait_ms); poll++) {
+    enum device_state state = DEVICE_STATE_QUERY_FAILED;
+
+    if (failed) {
+      // the look before this one wrote its reason, and this one needs the struct back:
+      // a look that could not be taken is one the run does without, so its reason is
+      // spent here rather than carried to the caller
+      OV_ERROR_DESTROY(err);
+      failed = false;
+    }
     Sleep(REPAIR_CONFIRM_POLL_INTERVAL_MS);
     if (cancel_requested(ctx->cancel)) {
       say_aborted(ctx->out);
       return REPAIR_OUTCOME_ABORTED;
     }
-    enum device_state const state = deps->probe_devnode(target->devnode, err);
+    state = deps->probe_devnode(target->devnode, err);
+    failed = (state == DEVICE_STATE_QUERY_FAILED);
     if (state == DEVICE_STATE_HEALTHY) {
       return REPAIR_OUTCOME_CLOSED;
     }
   }
+  // the reason of the last look is the one worth keeping: it is the one the device stayed
+  // away for at the end of the wait
   OV_ERROR_REPORT(err, NULL);
   ctx->out->outcome = REPAIR_OUTCOME_FAILED;
   say(ctx->out, "The device did not come back as an audio device, and the reason is not known.");

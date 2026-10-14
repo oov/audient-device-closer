@@ -657,9 +657,9 @@ static enum device_state targets_state(struct device_target const *const targets
     }
     if (one == DEVICE_STATE_PROBLEM) {
       state = DEVICE_STATE_PROBLEM; // not this tool's to cure
-    } else if ((one == DEVICE_STATE_UNKNOWN) && (state != DEVICE_STATE_PROBLEM)) {
-      state = DEVICE_STATE_UNKNOWN; // nobody knows, so nothing is trusted
-    } else if ((one == DEVICE_STATE_FAULTED) && (state != DEVICE_STATE_PROBLEM) && (state != DEVICE_STATE_UNKNOWN)) {
+    } else if ((one == DEVICE_STATE_NO_INTERFACE) && (state != DEVICE_STATE_PROBLEM)) {
+      state = DEVICE_STATE_NO_INTERFACE; // nothing is registered, so nothing is trusted
+    } else if ((one == DEVICE_STATE_FAULTED) && (state != DEVICE_STATE_PROBLEM) && (state != DEVICE_STATE_NO_INTERFACE)) {
       state = DEVICE_STATE_FAULTED; // the fault this tool cures
     } else if ((one == DEVICE_STATE_HEALTHY) && (state == DEVICE_STATE_ABSENT)) {
       state = DEVICE_STATE_HEALTHY; // a device is there, and it works
@@ -710,7 +710,7 @@ static int repair_thread(void *const userdata) {
   struct repair_job *const job = (struct repair_job *)(void *)userdata;
   struct ov_error probe_err = {0};
   struct device_target *targets = NULL;
-  enum device_state state = DEVICE_STATE_UNKNOWN;
+  enum device_state state = DEVICE_STATE_QUERY_FAILED; // the fallback while the probe could not answer
   bool faulted = false;
 
   logger_log_run_start();
@@ -805,8 +805,9 @@ enum ui_press ui_press_action(struct device_target const *const targets, size_t 
   case DEVICE_STATE_FAULTED:
     return UI_PRESS_REPAIR; // the fault this tool cures answers at once
   case DEVICE_STATE_PROBLEM:
-  case DEVICE_STATE_UNKNOWN:
-    return UI_PRESS_NOT_REPAIRABLE; // not this tool's to cure, or nobody knows
+  case DEVICE_STATE_NO_INTERFACE:
+  case DEVICE_STATE_QUERY_FAILED:
+    return UI_PRESS_NOT_REPAIRABLE; // not this tool's to cure, or no endpoint is there
   case DEVICE_STATE_HEALTHY:
   case DEVICE_STATE_ABSENT:
     break;
@@ -832,7 +833,8 @@ char const *ui_auto_run_sentence(enum device_state const state) {
     return "No Audient device was found.";
   case DEVICE_STATE_PROBLEM:
     return "The device has a problem that this tool cannot solve.";
-  case DEVICE_STATE_UNKNOWN:
+  case DEVICE_STATE_NO_INTERFACE:
+  case DEVICE_STATE_QUERY_FAILED:
     return "The device state could not be determined.";
   case DEVICE_STATE_FAULTED:
     break;

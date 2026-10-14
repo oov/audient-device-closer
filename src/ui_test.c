@@ -837,7 +837,7 @@ static void test_auto_run_acts_on_the_state_it_is_for(void) {
   TEST_CHECK(ui_auto_run_action(true, DEVICE_STATE_HEALTHY) == UI_AUTO_RUN_LEAVE);
   TEST_CHECK(ui_auto_run_action(true, DEVICE_STATE_ABSENT) == UI_AUTO_RUN_LEAVE);
   TEST_CHECK(ui_auto_run_action(true, DEVICE_STATE_PROBLEM) == UI_AUTO_RUN_LEAVE);
-  TEST_CHECK(ui_auto_run_action(true, DEVICE_STATE_UNKNOWN) == UI_AUTO_RUN_LEAVE);
+  TEST_CHECK(ui_auto_run_action(true, DEVICE_STATE_NO_INTERFACE) == UI_AUTO_RUN_LEAVE);
 
   TEST_CASE_("a run a person started");
   TEST_CHECK(ui_auto_run_action(false, DEVICE_STATE_FAULTED) == UI_AUTO_RUN_WAIT);
@@ -856,7 +856,7 @@ static void test_auto_run_says_the_state_it_found(void) {
   TEST_CHECK(strcmp(ui_auto_run_sentence(DEVICE_STATE_HEALTHY), "The device is working.") == 0);
   TEST_CHECK(strcmp(ui_auto_run_sentence(DEVICE_STATE_ABSENT), "No Audient device was found.") == 0);
   TEST_CHECK(strcmp(ui_auto_run_sentence(DEVICE_STATE_PROBLEM), "The device has a problem that this tool cannot solve.") == 0);
-  TEST_CHECK(strcmp(ui_auto_run_sentence(DEVICE_STATE_UNKNOWN), "The device state could not be determined.") == 0);
+  TEST_CHECK(strcmp(ui_auto_run_sentence(DEVICE_STATE_NO_INTERFACE), "The device state could not be determined.") == 0);
   TEST_CHECK(ui_auto_run_sentence(DEVICE_STATE_FAULTED) == NULL);
 }
 
@@ -934,7 +934,7 @@ static void test_press_answers_the_devices_it_finds(void) {
     }
   }
   {
-    enum device_state const states[] = {DEVICE_STATE_UNKNOWN};
+    enum device_state const states[] = {DEVICE_STATE_NO_INTERFACE};
     struct device_target *targets = make_press_targets(states, 1);
     if (TEST_CHECK(targets != NULL)) {
       TEST_CHECK(ui_press_action(targets, OV_ARRAY_LENGTH(targets)) == UI_PRESS_NOT_REPAIRABLE);

@@ -33,9 +33,9 @@ static void test_evaluate_problem(void) {
 }
 
 /**
- * @brief Nothing registered at all is not the sleep-resume failure either
+ * @brief No endpoint registered at all is not the sleep-resume failure either
  */
-static void test_evaluate_unknown(void) { TEST_CHECK(device_evaluate(0, 0, 0, 0, 0) == DEVICE_STATE_UNKNOWN); }
+static void test_evaluate_no_interface(void) { TEST_CHECK(device_evaluate(0, 0, 0, 0, 0) == DEVICE_STATE_NO_INTERFACE); }
 
 /**
  * @brief Freeing a string that is not there must not crash
@@ -122,8 +122,9 @@ static void test_devnode_guards(void) {
   struct ov_error err = {0};
 
   TEST_FAILED_WITH(
-      device_probe_devnode(NULL, &err) != DEVICE_STATE_UNKNOWN, &err, ov_error_type_generic, ov_error_generic_invalid_argument);
-  TEST_FAILED_WITH(device_probe_devnode("", &err) != DEVICE_STATE_UNKNOWN, &err, ov_error_type_generic, ov_error_generic_invalid_argument);
+      device_probe_devnode(NULL, &err) != DEVICE_STATE_QUERY_FAILED, &err, ov_error_type_generic, ov_error_generic_invalid_argument);
+  TEST_FAILED_WITH(
+      device_probe_devnode("", &err) != DEVICE_STATE_QUERY_FAILED, &err, ov_error_type_generic, ov_error_generic_invalid_argument);
 
   TEST_FAILED_WITH(
       device_culprit_names_ancestor(NULL, ks_devnode, &named, &err), &err, ov_error_type_generic, ov_error_generic_invalid_argument);
@@ -297,7 +298,7 @@ TEST_LIST = {
     {"evaluate_healthy", test_evaluate_healthy},
     {"evaluate_faulted", test_evaluate_faulted},
     {"evaluate_problem", test_evaluate_problem},
-    {"evaluate_unknown", test_evaluate_unknown},
+    {"evaluate_no_interface", test_evaluate_no_interface},
     {"matches_devices", test_matches_devices},
     {"matches_refuses_other_devices", test_matches_refuses_other_devices},
     {"matches_is_case_insensitive", test_matches_is_case_insensitive},

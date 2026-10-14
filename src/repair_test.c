@@ -454,6 +454,7 @@ struct confirm_ctx {
   enum device_state states[8]; //!< the answer of each look, in the order they come
   size_t count;                //!< how many answers the list holds
   size_t calls;                //!< how many looks were taken
+  size_t fail_until;           //!< the looks up to and including this one fail, 0 for none
 };
 
 /**
@@ -463,10 +464,15 @@ static enum device_state fake_probe_devnode(char const *const devnode, struct ov
   struct confirm_ctx *const ctx = (struct confirm_ctx *)g_confirm_ctx;
 
   (void)devnode;
-  (void)err;
   ctx->calls++;
+  if ((ctx->fail_until != 0) && (ctx->calls <= ctx->fail_until)) {
+    // a look that could not be taken answers with its own value and leaves its reason,
+    // just like the real query does
+    OV_ERROR_SET_GENERIC(err, ov_error_generic_unexpected);
+    return DEVICE_STATE_QUERY_FAILED;
+  }
   if (ctx->calls > ctx->count) {
-    return DEVICE_STATE_UNKNOWN; // the list is over, nothing knew what to say
+    return DEVICE_STATE_NO_INTERFACE; // the list is over, the fake has nothing more to answer
   }
   return ctx->states[ctx->calls - 1];
 }
@@ -521,6 +527,41 @@ static void test_confirm_polls_until_the_device_comes_back(void) {
   TEST_CASE("the device never comes back within the window");
   ctx.count = 0;
   ctx.calls = 0;
+  TEST_CHECK(confirm_through_fake(&target, &r, &ctx) == REPAIR_OUTCOME_FAILED);
+  TEST_CHECK_(ctx.calls == 4, "want the four looks the wait asks for, got %zu", ctx.calls);
+}
+
+/**
+ * @brief A look that failed does not stop the next one on an assertion
+ *
+ * A look that could not be taken leaves its reason in the error it was given, and the
+ * polling takes several looks.  Each look has to get the struct back to itself, so the
+ * reason of the one before is spent before the next one writes its own.
+ */
+static void test_confirm_survives_a_failed_look(void) {
+  char devnode[] = "TUSBAUDIO_ENUM\\VID_2708&PID_0008&KS\\6&deadbee&0&2";
+  struct device_target target;
+  struct repair_result r;
+  struct confirm_ctx ctx;
+
+  memset(&target, 0, sizeof(target));
+  target.devnode = devnode;
+  target.state = DEVICE_STATE_FAULTED;
+  memset(&r, 0, sizeof(r));
+  memset(&ctx, 0, sizeof(ctx));
+  ctx.s.confirm_max_wait_ms = 4000; // four looks, one second apart
+
+  TEST_CASE("the first looks fail and the device is back at the fourth");
+  ctx.fail_until = 3;
+  ctx.states[3] = DEVICE_STATE_HEALTHY;
+  ctx.count = 4;
+  TEST_CHECK(confirm_through_fake(&target, &r, &ctx) == REPAIR_OUTCOME_CLOSED);
+  TEST_CHECK_(ctx.calls == 4, "want the polling to stop at the healthy look, got %zu", ctx.calls);
+
+  TEST_CASE("every look fails, the window runs out");
+  ctx.calls = 0;
+  ctx.fail_until = 8;
+  ctx.count = 0;
   TEST_CHECK(confirm_through_fake(&target, &r, &ctx) == REPAIR_OUTCOME_FAILED);
   TEST_CHECK_(ctx.calls == 4, "want the four looks the wait asks for, got %zu", ctx.calls);
 }
@@ -770,6 +811,7 @@ TEST_LIST = {
     {"confirm_polls_until_the_device_comes_back", test_confirm_polls_until_the_device_comes_back},
     {"confirm_stops_at_the_first_healthy_look", test_confirm_stops_at_the_first_healthy_look},
     {"confirm_poll_count_from_the_wait", test_confirm_poll_count_from_the_wait},
+    {"confirm_survives_a_failed_look", test_confirm_survives_a_failed_look},
     {"second_veto_is_answered", test_second_veto_is_answered},
     {NULL, NULL},
 };

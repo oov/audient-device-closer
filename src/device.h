@@ -8,11 +8,12 @@
  * @brief What the state of the device is, in the terms the dialog offers
  */
 enum device_state {
-  DEVICE_STATE_HEALTHY, //!< at least one endpoint of the service is present
-  DEVICE_STATE_FAULTED, //!< the devnode is fine and the interfaces are registered, yet none is present
-  DEVICE_STATE_PROBLEM, //!< the system reports a problem code, which is not this tool's failure to cure
-  DEVICE_STATE_ABSENT,  //!< there is no device of that service
-  DEVICE_STATE_UNKNOWN, //!< nothing was found that the states above could be decided from
+  DEVICE_STATE_HEALTHY,      //!< at least one endpoint of the service is present
+  DEVICE_STATE_FAULTED,      //!< the devnode is fine and the interfaces are registered, yet none is present
+  DEVICE_STATE_PROBLEM,      //!< the system reports a problem code, which is not this tool's failure to cure
+  DEVICE_STATE_ABSENT,       //!< there is no device of that service
+  DEVICE_STATE_NO_INTERFACE, //!< the devnode is fine, yet none of the endpoint categories is registered for it
+  DEVICE_STATE_QUERY_FAILED, //!< the queries themselves failed, err of the call says why
 };
 
 /**
@@ -140,11 +141,14 @@ void device_targets_keep_faulted(struct device_target **const targets);
  * @brief State one devnode the caller already knows by name
  *
  * Detection only.  Used to follow a device after its release, the way the confirm stage
- * does.
+ * does.  The state the devnode is in and the failure of the queries are told apart by the
+ * value: a devnode no endpoint is registered for is DEVICE_STATE_NO_INTERFACE, while a
+ * query that failed is DEVICE_STATE_QUERY_FAILED.
  *
  * @param devnode instance ID of the KS devnode, UTF-8
  * @param err receives the failure of the queries
- * @return the state the devnode is in, DEVICE_STATE_UNKNOWN when nothing was registered
+ * @return the state the devnode is in, DEVICE_STATE_NO_INTERFACE when no endpoint is
+ *         registered for it, DEVICE_STATE_QUERY_FAILED when the queries failed
  */
 enum device_state device_probe_devnode(char const *const devnode, struct ov_error *const err);
 
