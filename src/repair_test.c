@@ -12,9 +12,134 @@ static void *g_confirm_ctx = NULL;
 #include <string.h>
 
 #include <ovarray.h>
+#include <ovprintf_ex.h>
 
 #include "process.h"
 #include "settings.h"
+
+/**
+ * @brief What the retry of a vetoed removal is answered with
+ */
+static struct {
+  size_t removal_calls;  //!< how often the removal was asked for
+  bool removal_recovers; //!< the removal succeeds from this call on
+  size_t veto_records;   //!< how many records the veto read hands back
+  size_t mixer_closed;   //!< how many blockers were closed
+} g_retry;
+
+/**
+ * @brief Refuse every removal but the one the test lets through
+ */
+static bool fake_vetoed_removal(char const *const devnode, struct ov_error *const err) {
+  g_retry.removal_calls++;
+  if (g_retry.removal_recovers && (g_retry.removal_calls >= 2)) {
+    return true;
+  }
+  (void)devnode;
+  OV_ERROR_SETF(err,
+                ov_error_type_removal,
+                removal_error_veto,
+                "the removal was vetoed, blocked device: %1$hs",
+                "the removal was vetoed, blocked device: %1$hs",
+                "USB\\VID_2708&PID_0008\\6&deadbee&0&2");
+  return false;
+}
+
+/**
+ * @brief Hand back the records of a veto, made the way culprit_read makes them
+ */
+static struct culprit *
+fake_read_veto(char const *const log_name, char const *const provider_name, unsigned short const event_id, struct ov_error *const err) {
+  struct culprit *list = NULL;
+  struct culprit c = {0};
+
+  (void)log_name;
+  (void)provider_name;
+  (void)event_id;
+  (void)err;
+  for (size_t i = 0; i < g_retry.veto_records; i++) {
+    static char const instance[] = "USB\\VID_2708&PID_0008\\6&deadbee&0&2";
+    static char const image[] = "\\Device\\HarddiskVolume2\\Program Files\\Audient\\iD\\iD.exe";
+
+    if (!OV_REALLOC(&c.device_instance, sizeof(instance), sizeof(c.device_instance[0]))) {
+      goto cleanup;
+    }
+    memcpy(c.device_instance, instance, sizeof(instance));
+    if (!OV_REALLOC(&c.path, sizeof(image), sizeof(c.path[0]))) {
+      OV_FREE(&c.device_instance);
+      goto cleanup;
+    }
+    memcpy(c.path, image, sizeof(image));
+    c.pid = 100 + (uint32_t)i;
+    c.event_time_ms = process_now_ms() + 1000; // newer than the attempt, so the prune keeps it
+    if (!OV_ARRAY_PUSH(&list, c)) {
+      OV_FREE(&c.device_instance);
+      OV_FREE(&c.path);
+      goto cleanup;
+    }
+    memset(&c, 0, sizeof(c));
+  }
+cleanup:
+  return list;
+}
+
+/**
+ * @brief Every record belongs to the device the caller names
+ */
+static bool
+fake_names_ancestor(char const *const device_instance, char const *const devnode, bool *const out_named, struct ov_error *const err) {
+  (void)device_instance;
+  (void)devnode;
+  (void)err;
+  *out_named = true;
+  return true;
+}
+
+/**
+ * @brief The record names the instance that is running
+ */
+static bool fake_mixer_take(uint32_t const pid,
+                            char const *const exe_name,
+                            long long const event_time_ms,
+                            bool *const out_found,
+                            struct mixer_target *const out,
+                            struct ov_error *const err) {
+  (void)event_time_ms;
+  (void)err;
+  *out_found = true;
+  out->pid = pid;
+  if (!ov_sprintf_char(&out->path, NULL, NULL, "C:\\Program Files\\Audient\\iD\\%s", exe_name)) {
+    return false;
+  }
+  return true;
+}
+
+/**
+ * @brief The blocker goes when the run asks it to
+ */
+static bool fake_mixer_close(struct mixer_target *const target, struct ov_error *const err) {
+  (void)target;
+  (void)err;
+  g_retry.mixer_closed++;
+  return true;
+}
+
+static void fake_mixer_target_release(struct mixer_target *const target) {
+  if ((target == NULL) || (target->path == NULL)) {
+    return;
+  }
+  OV_ARRAY_DESTROY(&target->path);
+  target->pid = 0;
+}
+
+/**
+ * @brief The device that was released is an audio device again
+ */
+static enum device_state fake_probe_healthy(char const *const devnode, struct ov_error *const err) {
+  (void)devnode;
+  (void)err;
+  return DEVICE_STATE_HEALTHY;
+}
 
 /**
  * @brief The image name at the end of a path is the name of the process
@@ -351,15 +476,16 @@ static enum device_state fake_probe_devnode(char const *const devnode, struct ov
  */
 static enum repair_outcome
 confirm_through_fake(struct device_target *const target, struct repair_result *const r, struct confirm_ctx *const ctx) {
-  enum device_state (*const saved)(char const *, struct ov_error *) = probe_devnode_fn;
+  struct repair_deps deps = {0};
+  struct repair_ctx run = {0};
   struct ov_error err = {0};
-  size_t step = 0;
   enum repair_outcome outcome;
 
   g_confirm_ctx = ctx;
-  probe_devnode_fn = fake_probe_devnode;
-  outcome = confirm_recovered(&ctx->s, target, NULL, NULL, &step, 1, NULL, r, &err);
-  probe_devnode_fn = saved;
+  deps.probe_devnode = fake_probe_devnode;
+  run.settings = &ctx->s;
+  run.out = r;
+  outcome = confirm_recovered(&run, &deps, target, &err);
   g_confirm_ctx = NULL;
   return outcome;
 }
@@ -552,6 +678,85 @@ static void test_option_labels_are_named_once(void) {
   TEST_CHECK(strcmp(repair_option_audiodg_label(), "Close audiodg (audiodg.exe) automatically") == 0);
 }
 
+/**
+ * @brief A second veto after the blockers were closed is answered, not a crash
+ *
+ * The removal is asked for twice when the first one is vetoed: the blockers the record
+ * named are closed and the removal is asked again.  Both refusals are a veto, and the
+ * error of the first one is spent before the second one raises its own; a run that kept it
+ * would have no room for the second and would stop on the spot.
+ */
+static void test_second_veto_is_answered(void) {
+  char service_name[] = "adc-repair-test-no-such-service";
+  char devnode[] = "TUSBAUDIO_ENUM\\VID_2708&PID_0008&KS\\6&deadbee&0&2";
+  struct settings s;
+  struct repair_result r;
+  struct repair_ctx run = {0};
+  struct repair_deps deps = {0};
+  struct device_target target;
+  struct ov_error err = {0};
+  enum repair_outcome outcome;
+
+  memset(&s, 0, sizeof(s));
+  memset(&r, 0, sizeof(r));
+  memset(&target, 0, sizeof(target));
+  memset(&g_retry, 0, sizeof(g_retry));
+  s.ks_service = service_name;
+  s.confirm_max_wait_ms = 1000;
+  {
+    static char const mixer_name[] = "iD.exe";
+    char *name = NULL;
+
+    if (!OV_REALLOC(&name, sizeof(mixer_name), sizeof(name[0]))) {
+      goto cleanup;
+    }
+    memcpy(name, mixer_name, sizeof(mixer_name));
+    if (!TEST_CHECK(OV_ARRAY_PUSH(&s.mixer_process_names, name))) {
+      OV_FREE(&name);
+      goto cleanup;
+    }
+  }
+  target.devnode = devnode;
+  target.state = DEVICE_STATE_FAULTED;
+  run.settings = &s;
+  run.allow_mixer_close = true;
+  run.out = &r;
+  run.total = REPAIR_STEPS_PER_TARGET;
+  deps.removal_close = fake_vetoed_removal;
+  deps.read_veto = fake_read_veto;
+  deps.names_ancestor = fake_names_ancestor;
+  deps.mixer_take = fake_mixer_take;
+  deps.mixer_close = fake_mixer_close;
+  deps.mixer_target_release = fake_mixer_target_release;
+  deps.probe_devnode = fake_probe_healthy;
+  g_retry.veto_records = 1;
+
+  TEST_CASE("both removals are refused, the run answers instead of crashing");
+  outcome = repair_target(&run, &deps, &target, &err);
+  TEST_CHECK_(outcome == REPAIR_OUTCOME_VETOED, "want the vetoed outcome, got %d", (int)outcome);
+  TEST_CHECK_(g_retry.removal_calls == 2, "want two removal attempts, got %zu", g_retry.removal_calls);
+  TEST_CHECK_(g_retry.mixer_closed == 1, "want the blocker closed once, got %zu", g_retry.mixer_closed);
+
+  TEST_CASE("the removal succeeds on the second try");
+  memset(&g_retry, 0, sizeof(g_retry));
+  memset(&r, 0, sizeof(r));
+  g_retry.veto_records = 1;
+  g_retry.removal_recovers = true;
+  outcome = repair_target(&run, &deps, &target, &err);
+  TEST_CHECK_(outcome == REPAIR_OUTCOME_CLOSED, "want the closed outcome, got %d", (int)outcome);
+  TEST_CHECK_(g_retry.removal_calls == 2, "want two removal attempts, got %zu", g_retry.removal_calls);
+
+cleanup:
+  OV_ERROR_REPORT(&err, NULL);
+  repair_result_release(&r);
+  if (s.mixer_process_names != NULL) {
+    for (size_t i = 0; i < OV_ARRAY_LENGTH(s.mixer_process_names); i++) {
+      OV_FREE(&s.mixer_process_names[i]);
+    }
+    OV_ARRAY_DESTROY(&s.mixer_process_names);
+  }
+}
+
 TEST_LIST = {
     {"path_matches_name", test_path_matches_name},
     {"pick_blockers", test_pick_blockers},
@@ -565,5 +770,6 @@ TEST_LIST = {
     {"confirm_polls_until_the_device_comes_back", test_confirm_polls_until_the_device_comes_back},
     {"confirm_stops_at_the_first_healthy_look", test_confirm_stops_at_the_first_healthy_look},
     {"confirm_poll_count_from_the_wait", test_confirm_poll_count_from_the_wait},
+    {"second_veto_is_answered", test_second_veto_is_answered},
     {NULL, NULL},
 };

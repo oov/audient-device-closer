@@ -19,14 +19,54 @@
 #include "settings.h"
 
 /**
- * @brief The look the confirmation asks the device for
+ * @brief The work a run does, and where it stands
  *
- * A device query reads the system, and a test cannot make a device come back within
- * the window the confirmation waits for.  The look it goes through is therefore
- * replaceable, so the polling structure can be checked without a real device.  No
- * production path ever replaces it.
+ * Everything a repair needs apart from the device it works on: the settings, the two
+ * permissions, the report to the caller and the progress window.  The step is kept here
+ * because every stage counts it up, so no call has to carry the pair of it and the total
+ * around.
  */
-static enum device_state (*probe_devnode_fn)(char const *devnode, struct ov_error *err) = device_probe_devnode;
+struct repair_ctx {
+  struct settings const *settings; //!< the settings this run works for
+  bool allow_mixer_close;          //!< the user allowed closing the mixer
+  bool allow_audiodg_close;        //!< the user allowed closing the audio engine
+  repair_progress_fn progress;     //!< may be NULL; called from the thread that runs the repair
+  void *progress_userdata;         //!< handed back to progress
+  bool *cancel;                    //!< may be NULL; the run reads it between its steps
+  struct repair_result *out;       //!< receives what happened
+  size_t step;                     //!< the step the run is at, counted from zero
+  size_t total;                    //!< how many steps the longest way takes
+};
+
+/**
+ * @brief The system calls a run goes through
+ *
+ * They read the machine and cannot be answered by a test, so every one of them is a
+ * function the test replaces.  No production path ever replaces one.
+ */
+struct repair_deps {
+  enum device_state (*probe_devnode)(char const *devnode, struct ov_error *err);
+  bool (*removal_close)(char const *devnode, struct ov_error *err);
+  struct culprit *(*read_veto)(char const *log_name, char const *provider_name, unsigned short event_id, struct ov_error *err);
+  bool (*names_ancestor)(char const *device_instance, char const *devnode, bool *out_named, struct ov_error *err);
+  bool (*mixer_take)(
+      uint32_t pid, char const *exe_name, long long event_time_ms, bool *out_found, struct mixer_target *out, struct ov_error *err);
+  bool (*mixer_close)(struct mixer_target *target, struct ov_error *err);
+  void (*mixer_target_release)(struct mixer_target *target);
+};
+
+/**
+ * @brief The system calls a run goes through, the real ones
+ */
+static struct repair_deps const kDefaultDeps = {
+    .probe_devnode = device_probe_devnode,
+    .removal_close = removal_close,
+    .read_veto = culprit_read,
+    .names_ancestor = device_culprit_names_ancestor,
+    .mixer_take = mixer_take,
+    .mixer_close = mixer_close,
+    .mixer_target_release = mixer_target_release,
+};
 
 /**
  * @brief Put a sentence of its own into the result
@@ -192,16 +232,12 @@ static void drop_closed(struct culprit **const list, struct repair_blockers cons
 /**
  * @brief Tell the caller what the run is waiting for
  *
- * @param progress the callback of the caller, may be NULL
- * @param userdata handed back to progress
+ * @param ctx the run that reports
  * @param stage what the run is waiting for
- * @param step the step of the run
- * @param total how many steps the longest way through this run takes
  */
-static void report_stage(
-    repair_progress_fn const progress, void *const userdata, enum repair_stage const stage, size_t const step, size_t const total) {
-  if (progress != NULL) {
-    progress(stage, step, total, userdata);
+static void report_stage(struct repair_ctx const *const ctx, enum repair_stage const stage) {
+  if (ctx->progress != NULL) {
+    ctx->progress(stage, ctx->step, ctx->total, ctx->progress_userdata);
   }
 }
 
@@ -239,24 +275,14 @@ static void say_aborted(struct repair_result *const out) {
  * waits for the record of this attempt instead of racing it.  Events older than since_ms
  * belong to an earlier attempt and are dropped here.
  *
- * @param s the settings that name the log and the provider
+ * @param ctx the run that reads
+ * @param deps the system calls the run goes through
  * @param since_ms records older than this belong to an earlier attempt
- * @param progress the callback of the caller, may be NULL
- * @param progress_userdata handed back to progress
- * @param step the step of the run
- * @param total how many steps the longest way through this run takes
- * @param cancel the flag of the caller, may be NULL: a raised flag ends the wait
  * @param err receives the failure of the query
  * @return NULL when the query itself failed, an empty list when no veto record showed up
  */
-static struct culprit *read_veto_events(struct settings const *const s,
-                                        long long const since_ms,
-                                        repair_progress_fn const progress,
-                                        void *const progress_userdata,
-                                        size_t const step,
-                                        size_t const total,
-                                        bool const *const cancel,
-                                        struct ov_error *const err) {
+static struct culprit *
+read_veto_events(struct repair_ctx *const ctx, struct repair_deps const *const deps, long long const since_ms, struct ov_error *const err) {
   struct culprit *list = NULL;
   size_t attempt = 0;
 
@@ -264,12 +290,13 @@ static struct culprit *read_veto_events(struct settings const *const s,
     if (attempt > 0) {
       Sleep(1000);
     }
-    report_stage(progress, progress_userdata, REPAIR_STAGE_VETO_RECORD, step, total);
-    if (cancel_requested(cancel)) {
+    report_stage(ctx, REPAIR_STAGE_VETO_RECORD);
+    if (cancel_requested(ctx->cancel)) {
       culprit_destroy_list(&list);
       return NULL;
     }
-    list = culprit_read(s->veto_log_name, s->veto_provider_name, (unsigned short)s->veto_event_id, err);
+    list =
+        deps->read_veto(ctx->settings->veto_log_name, ctx->settings->veto_provider_name, (unsigned short)ctx->settings->veto_event_id, err);
     if (list == NULL) {
       return NULL;
     }
@@ -411,31 +438,24 @@ cleanup:
  * @param blocker the instance the record named
  * @param name the image name to check against
  * @param stage the stage to report
- * @param progress the callback of the caller, may be NULL
- * @param progress_userdata handed back to progress
- * @param step the step of the run
- * @param total how many steps the longest way through this run takes
- * @param out receives what happened
  * @param target receives the identity that was closed
  * @param err receives the hard failure
  * @return false only on a hard failure
  */
-static bool close_blocking_process(struct repair_blocker const *const blocker,
+static bool close_blocking_process(struct repair_ctx *const ctx,
+                                   struct repair_deps const *const deps,
+                                   struct repair_blocker const *const blocker,
                                    char const *const name,
                                    enum repair_stage const stage,
-                                   repair_progress_fn const progress,
-                                   void *const progress_userdata,
-                                   size_t *const step,
-                                   size_t const total,
-                                   struct repair_result *const out,
                                    struct mixer_target *const target,
                                    struct ov_error *const err) {
   bool found = false;
   bool success = false;
+  struct repair_result *const out = ctx->out;
 
-  report_stage(progress, progress_userdata, stage, ++(*step), total);
+  report_stage(ctx, stage);
   logger_notef("close", "%s pid=%lu event_time=%lld", name, (unsigned long)blocker->pid, blocker->event_time_ms);
-  if (!mixer_take(blocker->pid, name, blocker->event_time_ms, &found, target, err)) {
+  if (!deps->mixer_take(blocker->pid, name, blocker->event_time_ms, &found, target, err)) {
     OV_ERROR_ADD_TRACE(err);
     out->outcome = REPAIR_OUTCOME_FAILED;
     sayf(out, "%1$hs could not be inspected.", name);
@@ -447,7 +467,7 @@ static bool close_blocking_process(struct repair_blocker const *const blocker,
     success = true;
     goto cleanup;
   }
-  if (!mixer_close(target, err)) {
+  if (!deps->mixer_close(target, err)) {
     OV_ERROR_ADD_TRACE(err);
     out->outcome = REPAIR_OUTCOME_FAILED;
     sayf(out, "%1$hs could not be closed.", name);
@@ -468,12 +488,16 @@ cleanup:
  * other devices, so it goes: acting on it would close a process that blocks
  * another device.
  *
+ * @param deps the system calls the run goes through
  * @param list the list to shrink in place
  * @param devnode the KS devnode of the device being repaired
  * @param err receives the failure of the ancestor walk
  * @return false when the walk failed
  */
-static bool culprit_keep_device(struct culprit **const list, char const *const devnode, struct ov_error *const err) {
+static bool culprit_keep_device(struct repair_deps const *const deps,
+                                struct culprit **const list,
+                                char const *const devnode,
+                                struct ov_error *const err) {
   size_t kept = 0;
   size_t i = 0;
   size_t const n = culprit_count(*list);
@@ -488,7 +512,7 @@ static bool culprit_keep_device(struct culprit **const list, char const *const d
       OV_ARRAY_DESTROY(&record->device_instance);
       continue;
     }
-    if (!device_culprit_names_ancestor(record->device_instance, devnode, &named, err)) {
+    if (!deps->names_ancestor(record->device_instance, devnode, &named, err)) {
       OV_ERROR_ADD_TRACE(err);
       goto cleanup;
     }
@@ -588,41 +612,32 @@ static size_t confirm_poll_count(DWORD const max_wait_ms) {
  * until the wait the settings name runs out, so a device that comes back is found however
  * slow the bus is, and a look that finds the device healthy ends the polling at once.
  *
- * @param s the settings that name how long the confirmation waits
+ * @param ctx the run that confirms
+ * @param deps the system calls the run goes through
  * @param target the device that was released
- * @param progress the callback of the caller, may be NULL
- * @param progress_userdata handed back to progress
- * @param step the step of the run
- * @param total how many steps the longest way through this run takes
- * @param cancel the flag of the caller, may be NULL
- * @param out receives what happened
  * @param err receives the failure of the query
  * @return the outcome of the confirmation
  */
-static enum repair_outcome confirm_recovered(struct settings const *const s,
+static enum repair_outcome confirm_recovered(struct repair_ctx *const ctx,
+                                             struct repair_deps const *const deps,
                                              struct device_target const *const target,
-                                             repair_progress_fn const progress,
-                                             void *const progress_userdata,
-                                             size_t *const step,
-                                             size_t const total,
-                                             bool const *const cancel,
-                                             struct repair_result *const out,
                                              struct ov_error *const err) {
-  report_stage(progress, progress_userdata, REPAIR_STAGE_CONFIRM, ++(*step), total);
-  for (size_t poll = 0; poll < confirm_poll_count((DWORD)s->confirm_max_wait_ms); poll++) {
+  ctx->step++;
+  report_stage(ctx, REPAIR_STAGE_CONFIRM);
+  for (size_t poll = 0; poll < confirm_poll_count((DWORD)ctx->settings->confirm_max_wait_ms); poll++) {
     Sleep(REPAIR_CONFIRM_POLL_INTERVAL_MS);
-    if (cancel_requested(cancel)) {
-      say_aborted(out);
+    if (cancel_requested(ctx->cancel)) {
+      say_aborted(ctx->out);
       return REPAIR_OUTCOME_ABORTED;
     }
-    enum device_state const state = probe_devnode_fn(target->devnode, err);
+    enum device_state const state = deps->probe_devnode(target->devnode, err);
     if (state == DEVICE_STATE_HEALTHY) {
       return REPAIR_OUTCOME_CLOSED;
     }
   }
   OV_ERROR_REPORT(err, NULL);
-  out->outcome = REPAIR_OUTCOME_FAILED;
-  say(out, "The device did not come back as an audio device, and the reason is not known.");
+  ctx->out->outcome = REPAIR_OUTCOME_FAILED;
+  say(ctx->out, "The device did not come back as an audio device, and the reason is not known.");
   return REPAIR_OUTCOME_FAILED;
 }
 
@@ -635,30 +650,18 @@ static enum repair_outcome confirm_recovered(struct settings const *const s,
  * records the run leaves behind belong to the device, so the caller can name
  * the processes that still block it.
  *
- * @param s the settings this run works for
+ * @param ctx the run this device is repaired for
+ * @param deps the system calls the run goes through
  * @param target the device to repair
- * @param allow_mixer_close the user allowed closing the mixer
- * @param allow_audiodg_close the user allowed closing the audio engine
- * @param progress may be NULL; it is called from the thread that runs the repair
- * @param progress_userdata handed back to progress
- * @param step the step of the run, counted up by every stage
- * @param total how many steps the longest way through this run takes
- * @param cancel the flag of the caller, may be NULL
- * @param out receives what happened
  * @param err receives the failure that stopped the repair of the device
  * @return the outcome of the device
  */
-static enum repair_outcome repair_target(struct settings const *const s,
+static enum repair_outcome repair_target(struct repair_ctx *const ctx,
+                                         struct repair_deps const *const deps,
                                          struct device_target const *const target,
-                                         bool const allow_mixer_close,
-                                         bool const allow_audiodg_close,
-                                         repair_progress_fn const progress,
-                                         void *const progress_userdata,
-                                         size_t *const step,
-                                         size_t const total,
-                                         bool const *const cancel,
-                                         struct repair_result *const out,
                                          struct ov_error *const err) {
+  struct settings const *const s = ctx->settings;
+  struct repair_result *const out = ctx->out;
   enum repair_outcome outcome = REPAIR_OUTCOME_FAILED;
   long long since = 0;
   struct repair_blockers picked;
@@ -684,18 +687,19 @@ static enum repair_outcome repair_target(struct settings const *const s,
 
   since = process_now_ms();
   logger_notef("remove", "first attempt, device=%s since=%lld", target->devnode, since);
-  if (cancel_requested(cancel)) {
+  if (cancel_requested(ctx->cancel)) {
     say_aborted(out);
     outcome = REPAIR_OUTCOME_ABORTED;
     success = true;
     goto cleanup;
   }
-  report_stage(progress, progress_userdata, REPAIR_STAGE_REMOVE, ++(*step), total);
-  if (removal_close(target->devnode, &removal_err)) {
+  ctx->step++;
+  report_stage(ctx, REPAIR_STAGE_REMOVE);
+  if (deps->removal_close(target->devnode, &removal_err)) {
     outcome = REPAIR_OUTCOME_CLOSED;
     say(out, "The device was released.");
     logger_notef("remove", "The device was released on the first attempt.");
-    outcome = confirm_recovered(s, target, progress, progress_userdata, step, total, cancel, out, err);
+    outcome = confirm_recovered(ctx, deps, target, err);
     success = true;
     goto cleanup;
   }
@@ -706,15 +710,18 @@ static enum repair_outcome repair_target(struct settings const *const s,
     success = true;
     goto cleanup;
   }
-  if (cancel_requested(cancel)) {
+  // the veto is spent here: the error is reported for the log, and the second attempt needs
+  // the struct empty again to raise its own refusal into
+  OV_ERROR_REPORT(&removal_err, NULL);
+  if (cancel_requested(ctx->cancel)) {
     say_aborted(out);
     outcome = REPAIR_OUTCOME_ABORTED;
     success = true;
     goto cleanup;
   }
-  culprits = read_veto_events(s, since, progress, progress_userdata, ++(*step), total, cancel, &read_err);
+  culprits = read_veto_events(ctx, deps, since, &read_err);
   if (culprits == NULL) {
-    if (cancel_requested(cancel)) {
+    if (cancel_requested(ctx->cancel)) {
       say_aborted(out);
       outcome = REPAIR_OUTCOME_ABORTED;
       success = true;
@@ -726,14 +733,14 @@ static enum repair_outcome repair_target(struct settings const *const s,
     goto cleanup;
   }
   logger_notef("veto", "the removal of device=%s was vetoed by %u record(s)", target->devnode, (unsigned)culprit_count(culprits));
-  if (!culprit_keep_device(&culprits, target->devnode, err)) {
+  if (!culprit_keep_device(deps, &culprits, target->devnode, err)) {
     OV_ERROR_ADD_TRACE(err);
     outcome = REPAIR_OUTCOME_FAILED;
     goto cleanup;
   }
 
-  picked =
-      repair_pick_blockers(culprits, settings_mixer_names(s), settings_mixer_name_count(s), allow_mixer_close, allow_audiodg_close, err);
+  picked = repair_pick_blockers(
+      culprits, settings_mixer_names(s), settings_mixer_name_count(s), ctx->allow_mixer_close, ctx->allow_audiodg_close, err);
   if (picked.mixer_count == 0 && picked.audiodg_count == 0) {
     char option_buf[256] = {0};
     char const *option = NULL;
@@ -763,19 +770,18 @@ static enum repair_outcome repair_target(struct settings const *const s,
     goto cleanup;
   }
 
-  if (cancel_requested(cancel)) {
+  if (cancel_requested(ctx->cancel)) {
     say_aborted(out);
     outcome = REPAIR_OUTCOME_ABORTED;
     success = true;
     goto cleanup;
   }
   for (i = 0; i < picked.mixer_count; i++) {
-    if (!close_blocking_process(
-            &picked.mixer[i], picked.mixer[i].name, REPAIR_STAGE_MIXER, progress, progress_userdata, step, total, out, &taken_mixer, err)) {
+    if (!close_blocking_process(ctx, deps, &picked.mixer[i], picked.mixer[i].name, REPAIR_STAGE_MIXER, &taken_mixer, err)) {
       outcome = REPAIR_OUTCOME_FAILED;
       goto cleanup;
     }
-    if (cancel_requested(cancel)) {
+    if (cancel_requested(ctx->cancel)) {
       say_aborted(out);
       outcome = REPAIR_OUTCOME_ABORTED;
       success = true;
@@ -783,20 +789,11 @@ static enum repair_outcome repair_target(struct settings const *const s,
     }
   }
   for (i = 0; i < picked.audiodg_count; i++) {
-    if (!close_blocking_process(&picked.audiodg[i],
-                                REPAIR_AUDIODG_NAME,
-                                REPAIR_STAGE_AUDIODG,
-                                progress,
-                                progress_userdata,
-                                step,
-                                total,
-                                out,
-                                &taken_audiodg,
-                                err)) {
+    if (!close_blocking_process(ctx, deps, &picked.audiodg[i], REPAIR_AUDIODG_NAME, REPAIR_STAGE_AUDIODG, &taken_audiodg, err)) {
       outcome = REPAIR_OUTCOME_FAILED;
       goto cleanup;
     }
-    if (cancel_requested(cancel)) {
+    if (cancel_requested(ctx->cancel)) {
       say_aborted(out);
       outcome = REPAIR_OUTCOME_ABORTED;
       success = true;
@@ -804,7 +801,7 @@ static enum repair_outcome repair_target(struct settings const *const s,
     }
   }
 
-  if (cancel_requested(cancel)) {
+  if (cancel_requested(ctx->cancel)) {
     say_aborted(out);
     outcome = REPAIR_OUTCOME_ABORTED;
     success = true;
@@ -812,28 +809,29 @@ static enum repair_outcome repair_target(struct settings const *const s,
   }
   since = process_now_ms();
   logger_notef("remove", "second attempt, device=%s since=%lld", target->devnode, since);
-  report_stage(progress, progress_userdata, REPAIR_STAGE_REMOVE, ++(*step), total);
-  if (removal_close(target->devnode, &removal_err)) {
+  ctx->step++;
+  report_stage(ctx, REPAIR_STAGE_REMOVE);
+  if (deps->removal_close(target->devnode, &removal_err)) {
     outcome = REPAIR_OUTCOME_CLOSED;
     say(out, "The device was released.");
     logger_notef("remove", "The device was released on the second attempt.");
-    outcome = confirm_recovered(s, target, progress, progress_userdata, step, total, cancel, out, err);
+    outcome = confirm_recovered(ctx, deps, target, err);
     success = true;
     goto cleanup;
   }
-  if (cancel_requested(cancel)) {
+  if (cancel_requested(ctx->cancel)) {
     say_aborted(out);
     outcome = REPAIR_OUTCOME_ABORTED;
     success = true;
     goto cleanup;
   }
-  current = read_veto_events(s, since, progress, progress_userdata, ++(*step), total, cancel, &read_err);
+  current = read_veto_events(ctx, deps, since, &read_err);
   if (current != NULL) {
     drop_closed(&current, &picked);
     culprit_destroy_list(&culprits);
     culprits = current;
     current = NULL;
-    if (!culprit_keep_device(&culprits, target->devnode, err)) {
+    if (!culprit_keep_device(deps, &culprits, target->devnode, err)) {
       OV_ERROR_ADD_TRACE(err);
       outcome = REPAIR_OUTCOME_FAILED;
       goto cleanup;
@@ -861,8 +859,8 @@ cleanup:
   OV_ERROR_REPORT(&read_err, NULL);
   culprit_destroy_list(&culprits);
   culprit_destroy_list(&current);
-  mixer_target_release(&taken_mixer);
-  mixer_target_release(&taken_audiodg);
+  deps->mixer_target_release(&taken_mixer);
+  deps->mixer_target_release(&taken_audiodg);
   return outcome;
 }
 
@@ -888,21 +886,21 @@ cleanup:
  *         failure is folded into the outcome releases its error into the log before the
  *         next step starts, so err is only worth reading when the call returns false.
  */
-bool repair_run(struct settings const *const s,
-                struct device_target *const targets,
-                bool const allow_mixer_close,
-                bool const allow_audiodg_close,
-                repair_progress_fn const progress,
-                void *const progress_userdata,
-                bool *const cancel,
-                struct repair_result *const out,
-                struct ov_error *const err) {
+static bool repair_run_with(struct settings const *const s,
+                            struct device_target *const targets,
+                            bool const allow_mixer_close,
+                            bool const allow_audiodg_close,
+                            repair_progress_fn const progress,
+                            void *const progress_userdata,
+                            bool *const cancel,
+                            struct repair_result *const out,
+                            struct repair_deps const *const deps,
+                            struct ov_error *const err) {
   struct device_target *list = NULL;
   bool owned = false;
   bool probed = false;
   enum repair_outcome outcome = REPAIR_OUTCOME_CLOSED;
-  size_t total = 0;
-  size_t step = 0;
+  struct repair_ctx ctx;
   size_t i = 0;
   size_t n = 0;
   bool success = false;
@@ -912,6 +910,14 @@ bool repair_run(struct settings const *const s,
     return false;
   }
   memset(out, 0, sizeof(*out));
+  memset(&ctx, 0, sizeof(ctx));
+  ctx.settings = s;
+  ctx.allow_mixer_close = allow_mixer_close;
+  ctx.allow_audiodg_close = allow_audiodg_close;
+  ctx.progress = progress;
+  ctx.progress_userdata = progress_userdata;
+  ctx.cancel = cancel;
+  ctx.out = out;
 
   if (cancel_requested(cancel)) {
     say_aborted(out);
@@ -921,7 +927,8 @@ bool repair_run(struct settings const *const s,
   if (targets != NULL) {
     list = targets;
   } else {
-    report_stage(progress, progress_userdata, REPAIR_STAGE_PROBE, ++step, REPAIR_STEPS_PER_TARGET);
+    ctx.step++;
+    report_stage(&ctx, REPAIR_STAGE_PROBE);
     if (!device_probe_all(s->ks_service, s->devices, OV_ARRAY_LENGTH(s->devices), &list, err)) {
       OV_ERROR_ADD_TRACE(err);
       out->outcome = REPAIR_OUTCOME_FAILED;
@@ -944,10 +951,9 @@ bool repair_run(struct settings const *const s,
     success = true;
     goto cleanup;
   }
-  total = (probed ? 1 : 0) + (n * REPAIR_STEPS_PER_TARGET);
+  ctx.total = (probed ? 1 : 0) + (n * REPAIR_STEPS_PER_TARGET);
   for (i = 0; i < n; i++) {
-    enum repair_outcome const one =
-        repair_target(s, &list[i], allow_mixer_close, allow_audiodg_close, progress, progress_userdata, &step, total, cancel, out, err);
+    enum repair_outcome const one = repair_target(&ctx, deps, &list[i], err);
     if (one == REPAIR_OUTCOME_ABORTED) {
       outcome = one;
       break;
@@ -970,6 +976,18 @@ cleanup:
     device_targets_release(&list);
   }
   return success;
+}
+
+bool repair_run(struct settings const *const s,
+                struct device_target *const targets,
+                bool const allow_mixer_close,
+                bool const allow_audiodg_close,
+                repair_progress_fn const progress,
+                void *const progress_userdata,
+                bool *const cancel,
+                struct repair_result *const out,
+                struct ov_error *const err) {
+  return repair_run_with(s, targets, allow_mixer_close, allow_audiodg_close, progress, progress_userdata, cancel, out, &kDefaultDeps, err);
 }
 
 /**
