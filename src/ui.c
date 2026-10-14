@@ -1276,9 +1276,7 @@ static LRESULT CALLBACK wnd_proc(HWND const hwnd, UINT const msg, WPARAM const w
  * @brief Bring the window of the copy that is already running to the front
  *
  * The window is looked for by its class, in the whole desktop: the copy at the screen is
- * another process, and this is exactly the one a second start has to reach.  Failing to
- * make it the foreground window is written to the log only, because the answer the caller
- * needs is whether a copy runs at all.
+ * another process, and this is exactly the one a second start has to reach.
  *
  * @param err receives the failure of the search
  * @return false when no window of this program was found
@@ -1296,12 +1294,10 @@ bool ui_activate_running_window(struct ov_error *const err) {
     ShowWindowAsync(hwnd, SW_RESTORE);
   }
   BringWindowToTop(hwnd);
-  if (SetForegroundWindow(hwnd) == 0) {
-    struct ov_error foreground_err = {0};
-
-    OV_ERROR_SET_HRESULT(&foreground_err, HRESULT_FROM_WIN32(GetLastError()));
-    OV_ERROR_REPORT(&foreground_err, NULL);
-  }
+  // SetForegroundWindow is allowed to fail: Windows keeps a program from taking the
+  // foreground away from the one the person is working in.  The window is brought to the
+  // front as far as this program may, and failing the rest is not worth a report.
+  SetForegroundWindow(hwnd);
   success = true;
 
 cleanup:
