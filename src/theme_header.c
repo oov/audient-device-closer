@@ -222,7 +222,13 @@ NODISCARD bool theme_header_attach(HWND const header, struct ov_error *const err
  * @return false when the subclass could not be removed
  */
 NODISCARD bool theme_header_detach(HWND const header, struct ov_error *const err) {
+  DWORD_PTR ref = 0;
+
   if (header == NULL) {
+    return true;
+  }
+  // a header that was never themed has no subclass to give back, which is not a failure
+  if (!GetWindowSubclass(header, subclass, 1, &ref)) {
     return true;
   }
   if (!RemoveWindowSubclass(header, subclass, 1)) {

@@ -369,9 +369,84 @@ static void test_both_palettes_are_reached(void) {
   TEST_SUCCEEDED(theme_release(&err), &err);
 }
 
+/**
+ * @brief A list is attached in the light palette without a header to detach
+ *
+ * The light palette takes the theme of the system off the list and its header.  The
+ * header of a list that was never themed has no subclass to remove, which is not a
+ * failure: the list is still the one the system made.
+ */
+static void test_light_palette_attaches_a_list(void) {
+  struct ov_error err = {0};
+  WNDCLASSEXW wc;
+  ATOM atom = 0;
+  HWND owner = NULL;
+  HWND list = NULL;
+  HWND header = NULL;
+  LONG_PTR header_proc = 0;
+
+  g_prefers_dark = says_light;
+  TEST_SUCCEEDED(theme_init(true, &err), &err);
+  TEST_CHECK(theme_state_dark() == false);
+
+  memset(&wc, 0, sizeof(wc));
+  wc.cbSize = sizeof(wc);
+  wc.lpfnWndProc = DefWindowProcW;
+  wc.hInstance = GetModuleHandleW(NULL);
+  wc.hCursor = LoadCursorW(NULL, (LPCWSTR)IDC_ARROW);
+  wc.hbrBackground = theme_class_brush(&err);
+  if (!TEST_SUCCEEDED(wc.hbrBackground != NULL, &err)) {
+    goto cleanup;
+  }
+  wc.lpszClassName = L"adc_theme_light_list_test";
+  atom = RegisterClassExW(&wc);
+  if (!TEST_CHECK(atom != 0)) {
+    goto cleanup;
+  }
+  owner = CreateWindowExW(0, wc.lpszClassName, L"", WS_POPUP | WS_VISIBLE, 0, 0, 100, 60, NULL, NULL, wc.hInstance, NULL);
+  list = CreateWindowExW(0, WC_LISTVIEWW, L"", WS_CHILD | WS_VISIBLE | LVS_REPORT, 0, 0, 80, 60, owner, NULL, wc.hInstance, NULL);
+  if (!TEST_CHECK(owner != NULL && list != NULL)) {
+    goto cleanup;
+  }
+  {
+    LVCOLUMNW column;
+
+    memset(&column, 0, sizeof(column));
+    column.mask = LVCF_TEXT;
+    column.pszText = L"";
+    SendMessageW(list, LVM_INSERTCOLUMNW, 0, (LPARAM)&column);
+  }
+  {
+    LRESULT const hdr = SendMessageW(list, LVM_GETHEADER, 0, 0);
+
+    header = (HWND)(void *)hdr;
+  }
+  if (TEST_CHECK(header != NULL)) {
+    header_proc = GetWindowLongPtrW(header, GWLP_WNDPROC);
+  }
+  TEST_SUCCEEDED(theme_attach_list(list, &err), &err);
+  if (header != NULL) {
+    TEST_CHECK(GetWindowLongPtrW(header, GWLP_WNDPROC) == header_proc);
+    TEST_MSG("want the header painted by the system, not by a subclass of the theme");
+  }
+
+cleanup:
+  if (list != NULL) {
+    DestroyWindow(list);
+  }
+  if (owner != NULL) {
+    DestroyWindow(owner);
+  }
+  if (atom != 0) {
+    UnregisterClassW(wc.lpszClassName, wc.hInstance);
+  }
+  TEST_SUCCEEDED(theme_release(&err), &err);
+}
+
 TEST_LIST = {
     {"both_palettes_are_reached", test_both_palettes_are_reached},
     {"theme_change_reaches_every_window", test_theme_change_reaches_every_window},
     {"theme_switch_detaches_the_theme", test_theme_switch_detaches_the_theme},
+    {"light_palette_attaches_a_list", test_light_palette_attaches_a_list},
     {NULL, NULL},
 };
