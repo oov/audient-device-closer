@@ -1,9 +1,10 @@
 # Changelog
 
-## 1.0.0rc3 2026-10-14
+## 1.0.0rc3 2026-11-02
 
 - Support 16 Audient products
 - Support several Audient devices that are connected at the same time
+- General behaviour improvements
 
 ## 1.0.0rc2 2026-10-11
 
