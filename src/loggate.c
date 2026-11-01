@@ -1,5 +1,7 @@
 #include "loggate.h"
 
+#include <ovbase.h>
+
 #include <string.h>
 
 /**

@@ -190,7 +190,10 @@ if [ "${SKIP_BUILD}" -eq 0 ]; then
     exit 1
   fi
   if [ "${SKIP_TESTS}" -eq 0 ]; then
-    if ! run_with_progress "Testing" "${test_log}" ctest --test-dir "${destdir}" --output-on-failure --output-junit testlog.xml; then
+    # Verbose: a test that skips a case still counts as a passing test, so the summary alone
+    # cannot tell a case that ran from one that stepped aside.  The output of every test goes
+    # to the log, where a skipped case can be read.
+    if ! run_with_progress "Testing" "${test_log}" ctest --test-dir "${destdir}" --verbose --output-junit testlog.xml; then
       echo ""
       echo "Tests failed:"
       show_test_log "${test_log}"

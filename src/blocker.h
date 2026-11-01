@@ -2,38 +2,24 @@
 
 #include <ovbase.h>
 
-#include <stdbool.h>
-#include <stddef.h>
-#include <stdint.h>
+#include <wchar.h>
 
 struct veto_event;
 
-/**
- * @brief What kind of process holds a device
- */
-enum blocker_kind {
-  BLOCKER_KIND_MIXER,   //!< one of the mixer image names the settings carry
-  BLOCKER_KIND_AUDIODG, //!< the audio engine, audiodg.exe
-};
+/** @brief The list of processes a veto record names, built from the machine as it is now */
+struct blocker;
 
 /**
- * @brief One process that holds a device, as the machine states it now
+ * @brief Where a walk of the list stands
  *
- * A veto record names a process id and the moment the record was written, and nothing else
- * about it can be acted on: what the record says the process was called is what it was
- * called then.  The id is looked up in the machine as it is at this moment, and the process
- * enters this list only when it is one this tool may close at all.
- *
- * What the list is for is deciding whom to close.  The name of the running process is what
- * decides, and whether the process is really the one the record names is settled by the
- * creation time, read from the process itself at the moment it is opened.  The two are
- * separate: the name is read once for the whole list, the time only for the process that is
- * about to be closed.
+ * Zero it before the first call and hand the same one back until the walk is over.  The
+ * fields are the entry the walk just reached; the caller does not write them.
  */
-struct blocker {
-  uint32_t pid;
-  uint64_t event_time_ms; //!< the moment of the record that named it
-  enum blocker_kind kind; //!< what the running process is
+struct blocker_iter {
+  size_t idx;              //!< position in the list, the entry is at this one
+  uint32_t pid;            //!< the process the record named
+  uint64_t event_time_ms;  //!< the moment of the record that named it
+  size_t mixer_name_index; //!< which of the mixer names it is, SIZE_MAX when it is the audio engine
 };
 
 /**
@@ -54,52 +40,23 @@ struct blocker {
  * @return the processes to close, an empty list when no record names one of them;
  *         release with blocker_list_destroy
  */
-struct blocker *blocker_list_build(struct veto_event const *const events,
-                                   char const *const *const mixer_names,
-                                   size_t const mixer_name_count,
-                                   struct ov_error *const err);
+NODISCARD struct blocker *blocker_list_build(struct veto_event const *const events,
+                                             wchar_t const *const *const mixer_names,
+                                             size_t const mixer_name_count,
+                                             struct ov_error *const err);
 
 /**
- * @brief The number of processes in the list
+ * @brief Take the next process of the list
  *
- * @param list NULL is allowed
- * @return the number, 0 for NULL
+ * The entries come out in the order the list keeps them: that is the order the records were
+ * written in, with the ones that named no running process left out.  A mixer and the audio
+ * engine both come out; mixer_name_index says which one an entry is.
+ *
+ * @param list the list to walk, NULL walks nothing
+ * @param it where the walk stands, zeroed before the first call
+ * @return true when it now holds the next entry, false when the walk is over
  */
-size_t blocker_count(struct blocker const *const list);
-
-/**
- * @brief How many of the entries are the mixer
- *
- * @param list the list to count in, may be NULL
- * @return how many entries are the mixer
- */
-size_t blocker_mixer_count(struct blocker const *const list);
-
-/**
- * @brief How many of the entries are the audio engine
- *
- * @param list the list to count in, may be NULL
- * @return how many entries are the audio engine
- */
-size_t blocker_audiodg_count(struct blocker const *const list);
-
-/**
- * @brief Terminate one process and wait until it is gone
- *
- * The process is opened at this moment, and the open is refused unless it still is the one
- * the record names: a process that started after the record was written cannot be it, the
- * id was given to somebody else in between.  The handle stays open from the check to the
- * termination, so the instance that was checked is the instance that goes.
- *
- * The right to terminate, and the privilege the audio engine needs to be opened at all, are
- * asked for only when the caller allows them.
- *
- * @param b the process to close
- * @param allow_privilege allow SeDebugPrivilege when a plain open was refused
- * @param err receives the failure
- * @return false when the process could not be closed
- */
-bool blocker_close(struct blocker const *const b, bool const allow_privilege, struct ov_error *const err);
+bool blocker_next(struct blocker const *const list, struct blocker_iter *const it);
 
 /**
  * @brief Release the list

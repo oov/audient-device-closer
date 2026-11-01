@@ -2,42 +2,49 @@
 
 #include <cfgmgr32.h>
 
-#include "removal.c"
+#include "mock/removal.h"
+
+#include "removal_manager.h"
 
 #include <ovtest.h>
 
 #include <ovarray.h>
 
 /**
- * @brief The CONFIGRET of the removal call maps to the code the dialog explains
+ * @brief Ask the machine to release a device and take its answer
  *
- * The codes are the ones CM_Query_And_Remove_SubTreeW really answers with.
+ * The removal runs on a thread of its own, so the test waits for the answer it asked for to
+ * arrive before it reads it.
+ *
+ * @param devnode the device to release
+ * @param err receives the refusal
+ * @return true when the device was released
  */
-static void test_error_from_configret(void) {
-  TEST_CHECK(removal_error_from_configret(CR_ACCESS_DENIED) == removal_error_access_denied);
-  TEST_CHECK(removal_error_from_configret(CR_NO_SUCH_DEVNODE) == removal_error_device_gone);
-  TEST_CHECK(removal_error_from_configret(CR_INVALID_DEVNODE) == removal_error_device_gone);
-  TEST_CHECK(removal_error_from_configret(CR_NO_SUCH_VALUE) == removal_error_device_gone);
-  TEST_CHECK(removal_error_from_configret(0xFFFFFFFF) == removal_error_refused);
-  TEST_CHECK(removal_error_from_configret(CR_OUT_OF_MEMORY) == removal_error_refused);
+static bool remove_and_wait(wchar_t const *const devnode, struct ov_error *const err) {
+  struct removal_op *op = removal_manager()->remove_start(devnode, NULL, NULL, err);
+
+  if (op == NULL) {
+    return false;
+  }
+  return removal_manager()->op_release(&op);
 }
 
 /**
  * @brief A missing devnode is a failure the caller can explain, and it says why
  */
-static void test_close_null(void) {
+static void test_remove_null(void) {
   struct ov_error err = {0};
 
-  TEST_FAILED_WITH(removal_close(NULL, &err), &err, ov_error_type_removal, removal_error_refused);
+  TEST_FAILED_WITH(remove_and_wait(NULL, &err), &err, ov_error_type_removal, removal_error_refused);
 }
 
 /**
  * @brief A devnode the system does not know is a failure of the call that looked for it
  */
-static void test_close_missing_devnode(void) {
+static void test_remove_missing_devnode(void) {
   struct ov_error err = {0};
 
-  TEST_FAILED_WITH(removal_close("adc-no-such-device", &err), &err, ov_error_type_removal, removal_error_call_failed);
+  TEST_FAILED_WITH(remove_and_wait(L"adc-no-such-device", &err), &err, ov_error_type_removal, removal_error_call_failed);
 }
 
 /**
@@ -45,13 +52,61 @@ static void test_close_missing_devnode(void) {
  *
  * The copy of it into the buffer the CM calls take would cut it into another one.
  */
-static void test_close_refuses_a_long_devnode(void) {
+static void test_remove_refuses_a_long_devnode(void) {
   struct ov_error err = {0};
-  char devnode[MAX_DEVICE_ID_LEN + 8];
+  wchar_t devnode[MAX_DEVICE_ID_LEN + 8];
 
-  memset(devnode, 'x', sizeof(devnode) - 1);
-  devnode[sizeof(devnode) - 1] = '\0';
-  TEST_FAILED_WITH(removal_close(devnode, &err), &err, ov_error_type_removal, removal_error_call_failed);
+  for (size_t i = 0; i < (sizeof(devnode) / sizeof(devnode[0])) - 1; i++) {
+    devnode[i] = L'x';
+  }
+  devnode[(sizeof(devnode) / sizeof(devnode[0])) - 1] = L'\0';
+  TEST_FAILED_WITH(remove_and_wait(devnode, &err), &err, ov_error_type_removal, removal_error_call_failed);
+}
+
+/**
+ * @brief The release goes through the machine that is installed
+ *
+ * The whole point of the stand-in is that the program reads the machine through one place,
+ * so a script installed here has to be what the machine answers with.
+ */
+static void test_mock_answers_the_removal(void) {
+  struct removal_mock_script const vetoed = {
+      .refusals = 1,
+      .code = removal_error_veto,
+      .vetoed_device = L"USB\\VID_2708&PID_0008\\6&deadbee&0&2",
+  };
+  struct ov_error err = {0};
+
+  TEST_ASSERT(removal_mock_install(&vetoed));
+
+  TEST_CASE("the first removal is refused as a veto");
+  TEST_FAILED_WITH(
+      remove_and_wait(L"TUSBAUDIO_ENUM\\VID_2708&PID_0008&KS\\6&deadbee&0&2", &err), &err, ov_error_type_removal, removal_error_veto);
+  TEST_CHECK_(removal_mock_remove_count() == 1, "want one removal asked for, got %zu", removal_mock_remove_count());
+
+  TEST_CASE("the second one goes through");
+  TEST_SUCCEEDED(remove_and_wait(L"TUSBAUDIO_ENUM\\VID_2708&PID_0008&KS\\6&deadbee&0&2", &err), &err);
+  TEST_CHECK_(removal_mock_remove_count() == 2, "want two removals asked for, got %zu", removal_mock_remove_count());
+
+  removal_mock_reset();
+}
+
+/**
+ * @brief The stand-in can refuse for a reason other than a veto
+ */
+static void test_mock_refuses_for_another_reason(void) {
+  struct removal_mock_script const denied = {
+      .refusals = 1,
+      .code = removal_error_access_denied,
+  };
+  struct ov_error err = {0};
+
+  TEST_ASSERT(removal_mock_install(&denied));
+  TEST_FAILED_WITH(remove_and_wait(L"TUSBAUDIO_ENUM\\VID_2708&PID_0008&KS\\6&deadbee&0&2", &err),
+                   &err,
+                   ov_error_type_removal,
+                   removal_error_access_denied);
+  removal_mock_reset();
 }
 
 /**
@@ -80,10 +135,11 @@ static void test_error_is_veto(void) {
 }
 
 TEST_LIST = {
-    {"error_from_configret", test_error_from_configret},
-    {"close_null", test_close_null},
-    {"close_missing_devnode", test_close_missing_devnode},
-    {"close_refuses_a_long_devnode", test_close_refuses_a_long_devnode},
+    {"remove_null", test_remove_null},
+    {"remove_missing_devnode", test_remove_missing_devnode},
+    {"remove_refuses_a_long_devnode", test_remove_refuses_a_long_devnode},
+    {"mock_answers_the_removal", test_mock_answers_the_removal},
+    {"mock_refuses_for_another_reason", test_mock_refuses_for_another_reason},
     {"error_is_veto", test_error_is_veto},
     {NULL, NULL},
 };

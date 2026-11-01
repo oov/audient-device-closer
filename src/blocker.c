@@ -1,120 +1,107 @@
 #include "blocker.h"
 
-#include <windows.h>
-
-#include <tlhelp32.h>
-
 #include <string.h>
+#include <wchar.h>
 
 #include <ovarray.h>
-#include <ovprintf_ex.h>
 
 #include "logger.h"
-#include "process.h"
+#include "paths.h"
+#include "process_manager.h"
 #include "veto_event.h"
+
+/**
+ * @brief One process that holds a device, as the machine states it now
+ *
+ * A veto record names a process id and the moment the record was written, and nothing else
+ * about it can be acted on: what the record says the process was called is what it was
+ * called then.  The id is looked up in the machine as it is at this moment, and the process
+ * enters this list only when it is one this tool may close at all.
+ *
+ * The walk is what the list is read through, so neither the entry nor the order it sits in
+ * leaves this file.
+ */
+struct blocker {
+  uint32_t pid;
+  uint64_t event_time_ms;  //!< the moment of the record that named it
+  size_t mixer_name_index; //!< which of the mixer names it is, SIZE_MAX when it is the audio engine
+};
 
 /**
  * @brief Does this image name belong to the mixer the settings name
  *
- * @param image the image name a snapshot of the running processes reports, UTF-8
+ * @param image the image name a snapshot of the running processes reports
  * @param names the image names the settings carry, may be NULL
  * @param name_count how many names that is
- * @return true when one of the names is this image name
+ * @return which of the names it is, SIZE_MAX when it is none of them
  */
-static bool is_mixer_image(char const *const image, char const *const *const names, size_t const name_count) {
-  size_t i = 0;
-
+static size_t mixer_index_of(wchar_t const *const image, wchar_t const *const *const names, size_t const name_count) {
   if ((names == NULL) || (image == NULL)) {
-    return false;
+    return SIZE_MAX;
   }
-  for (i = 0; i < name_count; i++) {
-    if (process_path_matches_name(image, names[i])) {
-      return true;
+  for (size_t i = 0; i < name_count; i++) {
+    if (paths_file_name_matches(image, names[i])) {
+      return i;
     }
   }
-  return false;
+  return SIZE_MAX;
 }
 
-/**
- * @brief The image name of one process, as a snapshot of the running processes states it
- *
- * The snapshot reads the machine without opening a process and without any privilege, so
- * asking what a process is costs nothing and reaches processes this tool could not open.
- *
- * @param snapshot the snapshot to walk, made by the caller
- * @param pid the process to look for
- * @param out receives the image name, UTF-8, always terminated
- * @param out_size room of out
- * @return true when the snapshot names the process
- */
-static bool image_of(HANDLE const snapshot, uint32_t const pid, char *const out, size_t const out_size) {
-  PROCESSENTRY32W entry;
-  bool found = false;
-
-  memset(&entry, 0, sizeof(entry));
-  entry.dwSize = sizeof(entry);
-  if (!Process32FirstW(snapshot, &entry)) {
-    return false;
-  }
-  do {
-    if (entry.th32ProcessID == pid) {
-      found = true;
-      break;
-    }
-  } while (Process32NextW(snapshot, &entry));
-  if (!found) {
-    return false;
-  }
-  if (WideCharToMultiByte(CP_UTF8, 0, entry.szExeFile, -1, out, (int)out_size, NULL, NULL) == 0) {
-    out[0] = '\0';
-    return false;
-  }
-  return true;
-}
-
-struct blocker *blocker_list_build(struct veto_event const *const events,
-                                   char const *const *const mixer_names,
-                                   size_t const mixer_name_count,
-                                   struct ov_error *const err) {
+NODISCARD struct blocker *blocker_list_build(struct veto_event const *const events,
+                                             wchar_t const *const *const mixer_names,
+                                             size_t const mixer_name_count,
+                                             struct ov_error *const err) {
   struct blocker *list = NULL;
-  HANDLE snapshot = INVALID_HANDLE_VALUE;
-  size_t const n = veto_event_count(events);
-  size_t i = 0;
+  struct process_name *names = NULL;
+  struct veto_event_iter *records = NULL;
+  struct veto_event_iter it = {0};
   bool success = false;
 
-  snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
-  if (snapshot == INVALID_HANDLE_VALUE) {
-    OV_ERROR_SET_HRESULT(err, HRESULT_FROM_WIN32(GetLastError()));
+  // the look is taken for the ids the records name, not for every process of the machine: a
+  // walk is about a handful of records, and what it holds must follow that
+  while (veto_event_next(events, &it)) {
+    struct process_name const name = {.pid = it.pid};
+
+    if (!OV_ARRAY_PUSH(&names, name) || !OV_ARRAY_PUSH(&records, it)) {
+      OV_ERROR_SET_GENERIC(err, ov_error_generic_out_of_memory);
+      goto cleanup;
+    }
+  }
+  // the whole walk sees one moment of the machine, so two records of the same process cannot
+  // be told apart by a process that ended between them
+  if (process_manager()->take_snapshot(names, OV_ARRAY_LENGTH(names), err) == SIZE_MAX) {
+    OV_ERROR_ADD_TRACE(err);
     goto cleanup;
   }
-  for (i = 0; i < n; i++) {
-    struct blocker b;
-    char image[MAX_PATH];
 
-    if (events[i].pid == 0) {
-      continue;
-    }
-    if (!image_of(snapshot, events[i].pid, image, sizeof(image))) {
+  for (size_t i = 0; i < OV_ARRAY_LENGTH(names); i++) {
+    struct blocker b;
+    wchar_t const *const image = names[i].image;
+    size_t const mixer_index = mixer_index_of(image, mixer_names, mixer_name_count);
+    bool mixer = (mixer_index != SIZE_MAX);
+    bool audiodg = false;
+
+    if (image[0] == L'\0') {
       // the process the record named is gone: an answer, and the record is history
-      logger_notef("probe", "skip pid=%lu reason=no running process holds the id", (unsigned long)events[i].pid);
+      logger_notef("probe", "skip pid=%lu reason=no running process holds the id", (unsigned long)names[i].pid);
       continue;
     }
-    bool const mixer = is_mixer_image(image, mixer_names, mixer_name_count);
-    bool const audiodg = process_path_matches_name(image, "audiodg.exe");
+    // The audio engine is a blocker as often as the mixer is, and its image name is the same
+    // everywhere, so it is not part of the settings.
+    audiodg = paths_file_name_matches(image, L"audiodg.exe");
     if (!mixer && !audiodg) {
-      logger_notef("probe", "skip pid=%lu image=%s reason=this tool never closes that", (unsigned long)events[i].pid, image);
+      logger_notef("probe", "skip pid=%lu image=%ls reason=this tool never closes that", (unsigned long)names[i].pid, image);
       continue;
     }
     memset(&b, 0, sizeof(b));
-    b.pid = events[i].pid;
-    b.event_time_ms = events[i].event_time_ms;
-    b.kind = mixer ? BLOCKER_KIND_MIXER : BLOCKER_KIND_AUDIODG;
+    b.pid = names[i].pid;
+    b.event_time_ms = records[i].event_time_ms;
+    b.mixer_name_index = mixer_index;
     if (!OV_ARRAY_PUSH(&list, b)) {
       OV_ERROR_SET_GENERIC(err, ov_error_generic_out_of_memory);
       goto cleanup;
     }
-    logger_notef(
-        "probe", "keep pid=%lu image=%s kind=%s", (unsigned long)b.pid, image, (b.kind == BLOCKER_KIND_MIXER) ? "mixer" : "audiodg");
+    logger_notef("probe", "keep pid=%lu image=%ls kind=%s", (unsigned long)b.pid, image, mixer ? "mixer" : "audiodg");
   }
   if ((list == NULL) && !OV_ARRAY_GROW(&list, 1)) {
     OV_ERROR_SET_GENERIC(err, ov_error_generic_out_of_memory);
@@ -123,8 +110,11 @@ struct blocker *blocker_list_build(struct veto_event const *const events,
   success = true;
 
 cleanup:
-  if (snapshot != INVALID_HANDLE_VALUE) {
-    CloseHandle(snapshot);
+  if (names != NULL) {
+    OV_ARRAY_DESTROY(&names);
+  }
+  if (records != NULL) {
+    OV_ARRAY_DESTROY(&records);
   }
   if (!success) {
     blocker_list_destroy(&list);
@@ -132,117 +122,18 @@ cleanup:
   return success ? list : NULL;
 }
 
-size_t blocker_count(struct blocker const *const list) {
-  if (list == NULL) {
-    return 0;
+bool blocker_next(struct blocker const *const list, struct blocker_iter *const it) {
+  if ((list == NULL) || (it == NULL)) {
+    return false;
   }
-  return OV_ARRAY_LENGTH(list);
-}
-
-size_t blocker_mixer_count(struct blocker const *const list) {
-  size_t const n = blocker_count(list);
-  size_t count = 0;
-  size_t i = 0;
-
-  for (i = 0; i < n; i++) {
-    if (list[i].kind == BLOCKER_KIND_MIXER) {
-      count++;
-    }
+  if (it->idx >= OV_ARRAY_LENGTH(list)) {
+    return false;
   }
-  return count;
-}
-
-size_t blocker_audiodg_count(struct blocker const *const list) {
-  size_t const n = blocker_count(list);
-  size_t count = 0;
-  size_t i = 0;
-
-  for (i = 0; i < n; i++) {
-    if (list[i].kind == BLOCKER_KIND_AUDIODG) {
-      count++;
-    }
-  }
-  return count;
-}
-
-/**
- * @brief Terminate one process and wait until it is gone
- *
- * The process is opened at this moment, and the open is refused unless it still is the one
- * the record names: a process that started after the record was written cannot be it, the
- * id was given to somebody else in between.  The handle stays open from the check to the
- * termination, so the instance that was checked is the instance that goes.
- *
- * The right to terminate, and the privilege the audio engine needs to be opened at all, are
- * asked for only when the caller allows them.
- *
- * @param b the process to close
- * @param allow_privilege allow SeDebugPrivilege when a plain open was refused
- * @param err receives the failure
- * @return false when the process could not be closed
- */
-bool blocker_close(struct blocker const *const b, bool const allow_privilege, struct ov_error *const err) {
-  struct process_ref ref;
-  ov_tribool mine = ov_indeterminate;
-  bool success = false;
-
-  memset(&ref, 0, sizeof(ref));
-  ref.handle = INVALID_HANDLE_VALUE;
-  if ((b == NULL) || (b->pid == 0)) {
-    OV_ERROR_SET_GENERIC(err, ov_error_generic_invalid_argument);
-    goto cleanup;
-  }
-  // the process is opened now, and the handle is what keeps the id on the instance that is
-  // checked: from here to the termination no other process can take the id over
-  if (!process_ref_open(&ref, b->pid, true, allow_privilege, err)) {
-    logger_notef("close", "reject pid=%lu reason=the process could not be opened", (unsigned long)b->pid);
-    OV_ERROR_ADD_TRACE(err);
-    goto cleanup;
-  }
-  mine = process_ref_started_before_event(&ref, b->event_time_ms, err);
-  if (mine == ov_indeterminate) {
-    OV_ERROR_ADD_TRACE(err);
-    goto cleanup;
-  }
-  if (mine == ov_false) {
-    logger_notef("close",
-                 "reject pid=%lu event_time=%llu reason=the process started after the record, so the id was given to another one",
-                 (unsigned long)b->pid,
-                 (unsigned long long)b->event_time_ms);
-    OV_ERROR_SETF(err,
-                  ov_error_type_generic,
-                  ov_error_generic_not_found,
-                  "the process behind pid %1$lu is no longer the one the record names",
-                  "the process behind pid %1$lu is no longer the one the record names",
-                  (unsigned long)b->pid);
-    goto cleanup;
-  }
-  if (!process_ref_terminate(&ref, err)) {
-    logger_notef("close", "reject pid=%lu reason=the termination was refused", (unsigned long)b->pid);
-    OV_ERROR_ADD_TRACE(err);
-    goto cleanup;
-  }
-  switch (process_ref_wait(&ref, 5000, err)) {
-  case ov_true:
-    break;
-  case ov_false:
-    OV_ERROR_SETF(err,
-                  ov_error_type_generic,
-                  ov_error_generic_fail,
-                  "the process behind pid %1$lu did not exit within 5 seconds",
-                  "the process behind pid %1$lu did not exit within 5 seconds",
-                  (unsigned long)b->pid);
-    goto cleanup;
-  case ov_indeterminate:
-    OV_ERROR_ADD_TRACE(err);
-    goto cleanup;
-  }
-  logger_notef("close", "closed pid=%lu", (unsigned long)b->pid);
-  success = true;
-
-cleanup:
-  process_ref_close(&ref);
-  return success;
+  it->pid = list[it->idx].pid;
+  it->event_time_ms = list[it->idx].event_time_ms;
+  it->mixer_name_index = list[it->idx].mixer_name_index;
+  it->idx++;
+  return true;
 }
 
 void blocker_list_destroy(struct blocker **const list) {

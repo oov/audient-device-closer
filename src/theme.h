@@ -34,41 +34,18 @@
  * @param err reserved for a future failure
  * @return always true, the signature exists so that a future failure can be reported
  */
-bool theme_init(bool const enabled, struct ov_error *const err);
+NODISCARD bool theme_init(bool const enabled, struct ov_error *const err);
 
 /**
  * @brief Delete the resources that theme_init() and theme_attach() created
+ *
+ * The theme is dropped whether or not the objects could be deleted.  A delete that fails
+ * is reported, so the caller knows the objects were left behind.
+ *
+ * @param err receives the failure of a delete, NULL is allowed
+ * @return false when an object could not be deleted
  */
-void theme_release(void);
-
-/**
- * @brief Is the application running with the dark palette
- *
- * @return TRUE when the palette is the dark one
- */
-bool theme_dark(void);
-
-/**
- * @brief Re-read the palette from the system
- *
- * Call it when the user changed the colour setting (WM_SETTINGCHANGE with
- * "ImmersiveColorSet").  The theme stays in AllowDark, so the system decides and this only
- * asks again what that means right now.
- *
- * @param err reserved for a future failure
- * @return TRUE when the palette changed and the windows have to be re-attached
- */
-bool theme_refresh(struct ov_error *const err);
-
-/**
- * @brief Hand a window and all of its children back to the theme
- *
- * Call it after theme_refresh() reported a change: theme classes are swapped, painting
- * subclasses are attached or removed, the whole tree is redrawn.
- *
- * @param top the window to start from
- */
-void theme_reapply(HWND const top);
+NODISCARD bool theme_release(struct ov_error *const err);
 
 /**
  * @brief Attach the theme to one window
@@ -79,8 +56,10 @@ void theme_reapply(HWND const top);
  * for that.
  *
  * @param hwnd the window to attach to
+ * @param err receives the failure of the attach
+ * @return false when the theme could not be put on the window
  */
-void theme_attach(HWND const hwnd);
+NODISCARD bool theme_attach(HWND const hwnd, struct ov_error *const err);
 
 /**
  * @brief Attach the theme to a list view and to its header
@@ -88,8 +67,10 @@ void theme_attach(HWND const hwnd);
  * Call it after the columns were inserted, otherwise the header window does not exist yet.
  *
  * @param list the list view to attach to
+ * @param err receives the failure of the attach
+ * @return false when the theme could not be put on the list or its header
  */
-void theme_attach_list(HWND const list);
+NODISCARD bool theme_attach_list(HWND const list, struct ov_error *const err);
 
 /**
  * @brief Give the window procedure of the application a chance to answer theme messages
@@ -103,27 +84,26 @@ void theme_attach_list(HWND const list);
  * @param wparam the first message parameter
  * @param lparam the second message parameter
  * @param result receives the value to return from the window procedure
- * @param handled receives TRUE when the message was consumed, then the caller has to
- *                return result.  Untouched when the message was not consumed.
- * @param err reserved for a future failure
- * @return always true, the signature exists so that a future failure can be reported
+ * @param err receives the failure of a message that the theme has to answer
+ * @return ov_true when the message was consumed and result holds what the window procedure
+ *         has to answer, ov_false when it was not consumed, ov_indeterminate when the
+ *         message could not be answered, with err set
  */
-bool theme_message(HWND const hwnd,
-                   UINT const msg,
-                   WPARAM const wparam,
-                   LPARAM const lparam,
-                   LRESULT *const result,
-                   bool *const handled,
-                   struct ov_error *const err);
+NODISCARD ov_tribool
+theme_message(HWND const hwnd, UINT const msg, WPARAM const wparam, LPARAM const lparam, LRESULT *const result, struct ov_error *const err);
 
 /**
- * @brief The brush to give to WNDCLASSEXW::hbrBackground
+ * @brief Make the brush to give to WNDCLASSEXW::hbrBackground
  *
- * The brush stays owned by the theme, the caller must not delete it.
+ * The system deletes the background brush of a class when the class is unregistered, so
+ * every class needs a brush of its own: the one the palette paints with is the theme's to
+ * keep.  The brush has the colour the palette paints the surface with, so a class and the
+ * messages of the theme agree.
  *
- * @return the brush of the palette
+ * @param err receives the failure of the brush
+ * @return the brush, NULL when it could not be made
  */
-HBRUSH theme_class_brush(void);
+HBRUSH theme_class_brush(struct ov_error *err);
 
 /**
  * @brief Draw the frame of a group of controls
@@ -138,7 +118,9 @@ HBRUSH theme_class_brush(void);
  *                the frame is broken around it, the way a group box does.  NULL draws a
  *                closed frame.
  * @param dpi the dpi of the window, it scales the line and the break
+ * @param err receives the failure of the drawing
+ * @return false when the frame could not be drawn
  */
-void theme_frame(HDC const dc, RECT const *const rect, RECT const *const caption, int const dpi);
+NODISCARD bool theme_frame(HDC const dc, RECT const *const rect, RECT const *const caption, int const dpi, struct ov_error *const err);
 
 #endif /* ADC_THEME_H */

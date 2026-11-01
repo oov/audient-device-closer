@@ -2,24 +2,8 @@
 
 #include <ovbase.h>
 
-#include <stdbool.h>
-
-#include <windows.h>
-
-#include "device.h"
-#include "repair.h"
-#include "veto_event.h"
-
 struct options;
 struct settings;
-
-/**
- * @brief The class this program's window registers under
- *
- * The window of the copy that is already running is looked for by this class, and the tests
- * look for the same window, so the name is said once here.
- */
-#define UI_MAIN_WINDOW_CLASS L"audient_device_closer_main"
 
 /**
  * @brief Open the window and run until it closes
@@ -29,7 +13,7 @@ struct settings;
  * @param err receives the failure of the start-up
  * @return false when the window could not be made
  */
-bool ui_run(struct options const *const options, struct settings const *const settings, struct ov_error *const err);
+NODISCARD bool ui_run(struct options const *const options, struct settings const *const settings, struct ov_error *const err);
 
 /**
  * @brief Bring the window of the copy that is already running to the front
@@ -43,111 +27,4 @@ bool ui_run(struct options const *const options, struct settings const *const se
  * @param err receives the failure of the search
  * @return false when no window of this program was found
  */
-bool ui_activate_running_window(struct ov_error *const err);
-
-/**
- * @brief Does the window close itself when the run is done
- *
- * Only a run nobody is watching may do that -- a scheduled run has nobody to read the
- * result, while a run a person started has to keep it in front of them.  A run that did
- * not release the device keeps its window in both cases: the sentence of the failure is
- * the reason the reader is there at all.
- *
- * @param auto_run the scheduler started this run
- * @param outcome what came of the run
- * @return true when there is nothing left for a person to do here
- */
-bool ui_closes_itself_when_done(bool auto_run, enum repair_outcome outcome);
-
-/**
- * @brief Does the finished run put its result in front of the reader in a dialog
- *
- * The run nobody watches has what it wanted once the device was released: it says nothing
- * and takes the result with it, and a dialog nobody reads would hold the window open after
- * the run is done.  Everything else has somebody waiting for the sentence -- a run a
- * person started and every failure, whatever the run was.  This is the other side of
- * ui_closes_itself_when_done: what closes its own window says nothing.
- *
- * @param auto_run the scheduler started this run
- * @param outcome what came of the run
- * @return true when the window stays open and the outcome is worth a dialog
- */
-bool ui_shows_result_dialog(bool auto_run, enum repair_outcome outcome);
-
-/**
- * @brief What the window does by itself after the first look at the device
- *
- * The task starts this program at every resume from sleep and nobody stands in front of
- * the window then: the state this tool is for is acted on at once, and every other state
- * is a run with nothing to do, so the window goes away by itself instead of waiting for a
- * person who is not there.  A run a person started waits for that person, whatever the
- * state is.
- */
-enum ui_auto_run {
-  UI_AUTO_RUN_WAIT,   //!< nothing happens by itself
-  UI_AUTO_RUN_REPAIR, //!< the faulty state: close the device at once
-  UI_AUTO_RUN_LEAVE,  //!< nothing to fix here: the window closes itself
-};
-
-/**
- * @brief What the run of the scheduler does with the state it finds
- *
- * @param auto_run the scheduler started this run
- * @param state the state of the device
- * @return what the run should do next
- */
-enum ui_auto_run ui_auto_run_action(bool auto_run, enum device_state state);
-
-/**
- * @brief What a press of the button does with the devices it finds
- *
- * The answer comes from the state the devices are in at the moment of the press, not from
- * the state an earlier one saw: a run that repaired a device leaves it working, and the
- * next press has to find that out for itself.
- */
-enum ui_press {
-  UI_PRESS_NOT_REPAIRABLE, //!< no device is connected, or none this tool can handle
-  UI_PRESS_REPAIR,         //!< at least one device is faulted: repair those right away
-  UI_PRESS_ASK,            //!< every device works: ask which one to release
-};
-
-/**
- * @brief What a press of the button does with the devices it finds
- *
- * @param targets the devices that are connected, the state each one is in
- * @param target_count how many devices the list holds
- * @return what the press should do
- */
-enum ui_press ui_press_action(struct device_target const *const targets, size_t const target_count);
-
-/**
- * @brief What the run of the scheduler says about the state it found
- *
- * A run that found nothing to do leaves one sentence in the log, and the sentence is the
- * state it looked at.  The faulty state has none here: the run answers it by working, and
- * the work says what came of it.
- *
- * @param state the state of the device
- * @return the sentence, UTF-8, NULL when the run has work to do
- */
-char const *ui_auto_run_sentence(enum device_state state);
-
-/**
- * @brief Both lines of the result dialog at once
- *
- * headline and body are UTF-8 buffers the caller owns.  This is what the dialog is handed,
- * so a test can read the whole dialog without a window.
- *
- * The dialog is made of translated sentences only: the verdict as the headline, the reason
- * the program worked out as the body.  What a run leaves in repair_result.message is the
- * sentence for the log and has no way into the dialog.
- *
- * @param outcome what came of the run
- * @param removal_error why the removal was refused, removal_error_none when it was for another reason
- * @param headline receives the verdict, UTF-8
- * @param headline_size room of headline
- * @param body receives what happened, UTF-8
- * @param body_size room of body
- */
-void ui_result_dialog_text(
-    enum repair_outcome outcome, enum removal_error_code removal_error, char *headline, size_t headline_size, char *body, size_t body_size);
+NODISCARD bool ui_activate_running_window(struct ov_error *const err);

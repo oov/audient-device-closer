@@ -3,6 +3,7 @@
 #include <ovarray.h>
 #include <ovbase.h>
 #include <ovmo.h>
+#include <ovprintf.h>
 #include <ovprintf_ex.h>
 
 #include "instance.h"
@@ -10,9 +11,8 @@
 #include "options.h"
 #include "paths.h"
 #include "settings.h"
+#include "simulate.h"
 #include "ui.h"
-
-static char const ph[] = "%1$hs";
 
 /**
  * @brief Tell the person at the machine that the settings file could not be read
@@ -25,32 +25,34 @@ static char const ph[] = "%1$hs";
  * language of the user.  A failure to load a translation is reported to the log only and
  * stays untranslated on purpose.
  *
- * @param path_utf8 the file that could not be read, UTF-8, may be NULL
+ * @param path the file that could not be read, may be NULL
  */
-static void show_startup_error(char const *const path_utf8) {
+static void show_startup_error(wchar_t const *const path) {
   wchar_t *text = NULL;
-  wchar_t *title = NULL;
-  char const *const fmt = gettext("Could not read the settings file.\n"
-                                  "It has to sit next to the program as %1$hs.");
-  char const *const unknown = gettext("(unknown)");
-  char const *const name = paths_file_name(path_utf8);
 
-  if (!ov_sprintf_char2wchar(&text, NULL, ph, fmt, (name != NULL) ? name : unknown)) {
+  wchar_t unknown[64];
+  if (OV_SNPRINTF(unknown, sizeof(unknown) / sizeof(unknown[0]), NULL, L"%s", gettext("(unknown)")) < 0) {
     goto cleanup;
   }
-  if (!ov_sprintf_wchar(&title, NULL, L"%1$s", L"%1$s", gettext("Audient Device Closer"))) {
+
+  if (!ov_sprintf_char2wchar(&text,
+                             NULL,
+                             "%1$ls",
+                             gettext("Could not read the settings file.\n"
+                                     "It has to sit next to the program as %1$ls."),
+                             path ? paths_file_name(path) : unknown)) {
+    goto cleanup;
+  }
+
+  wchar_t title[256];
+  if (OV_SNPRINTF(title, sizeof(title) / sizeof(title[0]), NULL, L"%s", gettext("Audient Device Closer")) < 0) {
     goto cleanup;
   }
   MessageBoxW(NULL, text, title, MB_OK | MB_ICONERROR);
 
 cleanup:
-  if (title != NULL) {
-    OV_ARRAY_DESTROY(&title);
-    title = NULL;
-  }
   if (text != NULL) {
     OV_ARRAY_DESTROY(&text);
-    text = NULL;
   }
 }
 
@@ -69,9 +71,8 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
   struct options options;
   struct settings settings;
   struct mo *mo = NULL;
-  char *path = NULL;
-  HANDLE instance = NULL;
-  bool other_running = false;
+  wchar_t *path = NULL;
+  struct instance instance = {0};
   int result = 1;
 
   // trans: This dagger helps UTF-8 detection. You don't need to translate this.
@@ -99,19 +100,22 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
 
   // the copy that finds the mutex taken is a second start: it shows the window that is
   // already there and leaves, with the answer a start that did what it was asked to do
-  instance = instance_take(INSTANCE_MUTEX_NAME, &other_running, &err);
-  if (instance == NULL) {
+  instance = instance_take(&err);
+  if (instance.handle == NULL) {
+    if (ov_error_is(&err, ov_error_type_hresult, HRESULT_FROM_WIN32(ERROR_ALREADY_EXISTS))) {
+      OV_ERROR_DESTROY(&err);
+      // the copy at the screen is the one to reach, and the reason the mutex was not taken
+      // is handled here, so nothing is left to report
+      if (!ui_activate_running_window(&err)) {
+        OV_ERROR_ADD_TRACE(&err);
+        goto cleanup;
+      }
+      result = 0;
+      goto cleanup;
+    }
     // without the mutex no other copy can be ruled out, so this copy goes on with its
     // window and the log carries why the check is missing
     OV_ERROR_REPORT(&err, NULL);
-  } else if (other_running) {
-    struct ov_error activate_err = {0};
-
-    if (!ui_activate_running_window(&activate_err)) {
-      OV_ERROR_REPORT(&activate_err, NULL);
-    }
-    result = 0;
-    goto cleanup;
   }
 
   {
@@ -126,6 +130,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
 
   options_default(&options);
   if (!options_parse(pCmdLine, &options, &err)) {
+    OV_ERROR_ADD_TRACE(&err);
     goto cleanup;
   }
   path = settings_default_path(&err);
@@ -137,6 +142,22 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
     show_startup_error(path);
     goto cleanup;
   }
+#ifdef ADC_MOCK
+  if ((settings.simulate != NULL) && (settings.simulate[0] != L'\0')) {
+    // the settings named a made-up machine, so every part of the run is pointed at it here,
+    // before the window opens and any of it is read
+    if (!simulate_install(settings.simulate)) {
+      OV_ERROR_SETF(&err,
+                    ov_error_type_generic,
+                    ov_error_generic_invalid_argument,
+                    "the settings name a made-up machine this build does not know: %1$ls",
+                    "the settings name a made-up machine this build does not know: %1$ls",
+                    settings.simulate);
+      show_startup_error(path);
+      goto cleanup;
+    }
+  }
+#endif
 
   if (ui_run(&options, &settings, &err)) {
     result = 0;
@@ -144,9 +165,15 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
 
 cleanup:
   OV_ERROR_REPORT(&err, NULL);
-  instance_release(&instance);
-  logger_close();
-  settings_string_free(&path);
+  if (!instance_release(&instance, &err)) {
+    OV_ERROR_REPORT(&err, NULL);
+  }
+  if (!logger_close(&err)) {
+    OV_ERROR_REPORT(&err, NULL); // the log may be closed already, and then nothing is written
+  }
+  if (path != NULL) {
+    OV_ARRAY_DESTROY(&path);
+  }
   settings_release(&settings);
   if (mo != NULL) {
     mo_set_default(NULL);

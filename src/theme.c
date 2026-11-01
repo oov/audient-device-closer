@@ -30,6 +30,9 @@
 
 #define PREFERRED_APP_MODE_ALLOW_DARK 1
 
+/** @brief The slack between the caption and the frame line, in logical units */
+enum { theme_frame_break = 4 };
+
 typedef int(WINAPI *set_preferred_app_mode_fn)(int);
 typedef BOOL(WINAPI *allow_dark_mode_for_app_fn)(BOOL);
 typedef BOOL(WINAPI *should_apps_use_dark_mode_fn)(void);
@@ -44,6 +47,7 @@ struct theme {
   bool resolved;
   bool enabled;
   bool dark;
+  bool can_go_dark; //!< the entry points that bring the dark palette were all found
   HBRUSH surface;
   HBRUSH control;
   should_apps_use_dark_mode_fn should_apps_use_dark_mode;
@@ -53,6 +57,15 @@ struct theme {
 };
 
 static struct theme g_theme;
+
+/**
+ * @brief Who says which palette the system asked for
+ *
+ * NULL asks the system.  A test puts its own answer here, so that both palettes are walked
+ * without the machine having to be set to them, and so that a palette change is a change of
+ * this answer rather than a change of the machine.
+ */
+static bool (*g_prefers_dark)(void);
 
 /**
  * @brief The colour of the surface a control sits on
@@ -186,8 +199,18 @@ HFONT theme_window_font(HWND const hwnd) {
  * one that is safe to ask for.
  *
  * @param hwnd the window to swap the class of
+ * @param err receives the failure of the swap
+ * @return false when the class could not be swapped
  */
-static void swap_theme_class(HWND const hwnd) { SetWindowTheme(hwnd, g_theme.dark ? L"DarkMode_Explorer" : NULL, NULL); }
+static NODISCARD bool swap_theme_class(HWND const hwnd, struct ov_error *const err) {
+  HRESULT const hr = SetWindowTheme(hwnd, g_theme.dark ? L"DarkMode_Explorer" : NULL, NULL);
+
+  if (FAILED(hr)) {
+    OV_ERROR_SET_HRESULT(err, hr);
+    return false;
+  }
+  return true;
+}
 
 /**
  * @brief Take a progress bar away from the theme and colour it with the palette
@@ -200,21 +223,32 @@ static void swap_theme_class(HWND const hwnd) { SetWindowTheme(hwnd, g_theme.dar
  * control draws its stock look with.
  *
  * @param hwnd the progress bar to switch
+ * @param err receives the failure of the swap
+ * @return false when the theme could not be taken off the bar
  */
-static void attach_progress(HWND const hwnd) {
+static NODISCARD bool attach_progress(HWND const hwnd, struct ov_error *const err) {
+  HRESULT hr = S_OK;
+
+  hr = SetWindowTheme(hwnd, g_theme.dark ? L"" : NULL, g_theme.dark ? L"" : NULL);
+  if (FAILED(hr)) {
+    OV_ERROR_SET_HRESULT(err, hr);
+    return false;
+  }
   if (g_theme.dark) {
-    SetWindowTheme(hwnd, L"", L"");
     SendMessageW(hwnd, PBM_SETBARCOLOR, 0, (LPARAM)theme_palette_text());
     SendMessageW(hwnd, PBM_SETBKCOLOR, 0, (LPARAM)theme_palette_surface());
-    return;
+    return true;
   }
-  SetWindowTheme(hwnd, NULL, NULL);
   SendMessageW(hwnd, PBM_SETBARCOLOR, 0, (LPARAM)CLR_DEFAULT);
   SendMessageW(hwnd, PBM_SETBKCOLOR, 0, (LPARAM)CLR_DEFAULT);
+  return true;
 }
 
 /**
  * @brief Let one window draw itself in the dark palette
+ *
+ * DwmSetWindowAttribute answers an error on a system that does not know the attribute,
+ * which is not a failure of the window: the window is a themed window either way.
  *
  * @param hwnd the window to switch
  */
@@ -233,25 +267,34 @@ static void allow_window(HWND const hwnd) {
  * GetVersionExW reports 6.2 unless the manifest declares the release, so it cannot be
  * used to pick the calling convention of an undocumented ordinal.
  *
- * @return the build number, 0 when it could not be read
+ * @param out receives the build number
+ * @param err receives the failure of the lookup
+ * @return false when the build number could not be read
  */
-static DWORD build_number(void) {
+static NODISCARD bool build_number(DWORD *const out, struct ov_error *const err) {
   HMODULE ntdll = NULL;
   void(WINAPI * rtl_get_nt_version_numbers)(DWORD *, DWORD *, DWORD *);
   DWORD major = 0;
   DWORD minor = 0;
   DWORD build = 0;
+  bool success = false;
 
   ntdll = GetModuleHandleW(L"ntdll.dll");
   if (ntdll == NULL) {
-    return 0;
+    OV_ERROR_SET_HRESULT(err, HRESULT_FROM_WIN32(GetLastError()));
+    goto cleanup;
   }
   rtl_get_nt_version_numbers = (void(WINAPI *)(DWORD *, DWORD *, DWORD *))(void *)GetProcAddress(ntdll, "RtlGetNtVersionNumbers");
   if (rtl_get_nt_version_numbers == NULL) {
-    return 0;
+    OV_ERROR_SET_GENERIC(err, ov_error_generic_not_found);
+    goto cleanup;
   }
   rtl_get_nt_version_numbers(&major, &minor, &build);
-  return build & ~0xF0000000UL;
+  *out = build & ~0xF0000000UL;
+  success = true;
+
+cleanup:
+  return success;
 }
 
 /**
@@ -259,17 +302,24 @@ static DWORD build_number(void) {
  *
  * High contrast is a palette of its own and must not be painted over.
  *
- * @return TRUE when the user asked for high contrast
+ * @param out receives the answer
+ * @param err receives the failure of the question
+ * @return false when the system could not be asked
  */
-static bool high_contrast_on(void) {
-  HIGHCONTRASTW hc;
+static NODISCARD bool high_contrast_on(bool *const out, struct ov_error *const err) {
+  HIGHCONTRASTW hc = {0};
+  bool success = false;
 
-  memset(&hc, 0, sizeof(hc));
   hc.cbSize = sizeof(hc);
   if (!SystemParametersInfoW(SPI_GETHIGHCONTRAST, sizeof(hc), &hc, FALSE)) {
-    return false;
+    OV_ERROR_SET_HRESULT(err, HRESULT_FROM_WIN32(GetLastError()));
+    goto cleanup;
   }
-  return (hc.dwFlags & HCF_HIGHCONTRASTON) != 0;
+  *out = (hc.dwFlags & HCF_HIGHCONTRASTON) != 0;
+  success = true;
+
+cleanup:
+  return success;
 }
 
 /**
@@ -277,13 +327,38 @@ static bool high_contrast_on(void) {
  *
  * Re-asked whenever the user changes the setting.
  *
- * @return TRUE when the palette is the dark one
+ * ShouldAppsUseDarkMode answers the app mode of this process, not the setting of the
+ * desktop: in a process that has not asked for the dark palette yet it answers FALSE even
+ * when the desktop is dark.  Asking it before resolve_uxtheme() has allowed the palette
+ * and refreshed the policy therefore reads the wrong answer.
+ *
+ * @param out receives the answer
+ * @param err receives the failure of the question
+ * @return false when the system could not be asked
  */
-static bool theme_query_dark(void) {
-  if (g_theme.should_apps_use_dark_mode == NULL) {
-    return false;
+static NODISCARD bool query_dark(bool *const out, struct ov_error *const err) {
+  bool high = false;
+  bool success = false;
+
+  if (g_prefers_dark != NULL) {
+    *out = g_prefers_dark();
+    success = true;
+    goto cleanup;
   }
-  return g_theme.should_apps_use_dark_mode() && !high_contrast_on();
+  if (!g_theme.can_go_dark) {
+    *out = false;
+    success = true;
+    goto cleanup;
+  }
+  if (!high_contrast_on(&high, err)) {
+    OV_ERROR_ADD_TRACE(err);
+    goto cleanup;
+  }
+  *out = g_theme.should_apps_use_dark_mode() && !high;
+  success = true;
+
+cleanup:
+  return success;
 }
 
 /**
@@ -293,15 +368,19 @@ static bool theme_query_dark(void) {
  * The module is only borrowed for the lookup.
  *
  * @param build the build number of Windows, it picks the calling convention
+ * @param err receives the failure of the lookup
+ * @return false when the module or one of the entry points it needs is not there
  */
-static void resolve_uxtheme(DWORD const build) {
+static NODISCARD bool resolve_uxtheme(DWORD const build, struct ov_error *const err) {
   HMODULE uxtheme = NULL;
   FARPROC mode135 = NULL;
   refresh_immersive_color_policy_fn refresh = NULL;
   flush_menu_themes_fn flush = NULL;
+  bool success = false;
 
   uxtheme = LoadLibraryExW(L"uxtheme.dll", NULL, LOAD_LIBRARY_SEARCH_SYSTEM32);
   if (uxtheme == NULL) {
+    OV_ERROR_SET_HRESULT(err, HRESULT_FROM_WIN32(GetLastError()));
     goto cleanup;
   }
   g_theme.should_apps_use_dark_mode = (should_apps_use_dark_mode_fn)(void *)GetProcAddress(uxtheme, ORD_SHOULD_APPS_USE_DARK_MODE);
@@ -312,71 +391,117 @@ static void resolve_uxtheme(DWORD const build) {
   g_theme.flush_menus = flush;
   mode135 = GetProcAddress(uxtheme, ORD_PREFERRED_APP_MODE);
 
-  if (g_theme.should_apps_use_dark_mode != NULL && g_theme.allow_dark_mode_for_window != NULL && mode135 != NULL) {
-    if (build >= 18362) {
-      ((set_preferred_app_mode_fn)(void *)mode135)(PREFERRED_APP_MODE_ALLOW_DARK);
-    } else {
-      ((allow_dark_mode_for_app_fn)(void *)mode135)(TRUE);
-    }
-    if (refresh != NULL) {
-      refresh();
-    }
-    if (flush != NULL) {
-      flush();
-    }
-    g_theme.dark = theme_query_dark();
+  if ((g_theme.should_apps_use_dark_mode == NULL) || (g_theme.allow_dark_mode_for_window == NULL) || (mode135 == NULL)) {
+    OV_ERROR_SET_GENERIC(err, ov_error_generic_not_found);
+    goto cleanup;
   }
+  // The order is the answer: the palette has to be allowed and the policy refreshed
+  // before anything is asked, or ShouldAppsUseDarkMode still reports the light app mode
+  // of a process that never asked, and a dark desktop is painted light.
+  if (build >= 18362) {
+    ((set_preferred_app_mode_fn)(void *)mode135)(PREFERRED_APP_MODE_ALLOW_DARK);
+  } else {
+    ((allow_dark_mode_for_app_fn)(void *)mode135)(TRUE);
+  }
+  if (refresh != NULL) {
+    refresh();
+  }
+  if (flush != NULL) {
+    flush();
+  }
+  g_theme.can_go_dark = true;
+  success = true;
 
 cleanup:
   if (uxtheme != NULL) {
-    FreeLibrary(uxtheme);
+    if (!FreeLibrary(uxtheme)) {
+      OV_ERROR_SET_HRESULT(err, HRESULT_FROM_WIN32(GetLastError()));
+      success = false;
+    }
     uxtheme = NULL;
   }
+  return success;
 }
 
 /**
  * @brief Resolve the theme entry points and switch to the palette of the system
  *
- * Must be called before the first window of the process is created.  A system without the
- * entry points is not an error, the application then stays light.
+ * Must be called before the first window of the process is created.
  *
- * @param err reserved for a future failure
- * @return always true, the signature exists so that a future failure can be reported
+ * @param enabled whether the palette of the system is wanted at all
+ * @param err receives the failure of the lookup or of the brushes
+ * @return false when the theme could not be taken up; the caller decides what that means
  */
-bool theme_init(bool const enabled, struct ov_error *const err) {
-  (void)err;
+NODISCARD bool theme_init(bool const enabled, struct ov_error *const err) {
+  bool success = false;
+  bool dark = false;
+  DWORD build = 0;
+
   if (g_theme.resolved) {
-    return true;
+    success = true; // there is nothing left to do after the first call
+    goto cleanup;
   }
   g_theme.resolved = true;
   g_theme.enabled = enabled;
   if (enabled) {
-    resolve_uxtheme(build_number());
+    if (!build_number(&build, err)) {
+      OV_ERROR_ADD_TRACE(err);
+      goto cleanup;
+    }
+    if (!resolve_uxtheme(build, err)) {
+      OV_ERROR_ADD_TRACE(err);
+      goto cleanup;
+    }
+    if (!query_dark(&dark, err)) {
+      OV_ERROR_ADD_TRACE(err);
+      goto cleanup;
+    }
   }
+  g_theme.dark = dark;
   g_theme.surface = CreateSolidBrush(theme_palette_surface());
+  if (g_theme.surface == NULL) {
+    OV_ERROR_SET_GENERIC(err, ov_error_generic_fail); // GDI does not say why it refused the brush
+    goto cleanup;
+  }
   g_theme.control = CreateSolidBrush(theme_palette_control());
-  return true;
+  if (g_theme.control == NULL) {
+    OV_ERROR_SET_GENERIC(err, ov_error_generic_fail);
+    goto cleanup;
+  }
+  success = true;
+
+cleanup:
+  return success;
 }
 
 /**
  * @brief Delete the resources that theme_init() and theme_attach() created
+ *
+ * The theme is dropped whether or not the objects could be deleted.  A delete that fails
+ * is reported, so the caller knows the objects were left behind.
+ *
+ * @param err receives the failure of a delete, NULL is allowed
+ * @return false when an object could not be deleted
  */
-void theme_release(void) {
-  if (g_theme.surface != NULL) {
-    DeleteObject(g_theme.surface);
+NODISCARD bool theme_release(struct ov_error *const err) {
+  bool success = true;
+
+  if ((g_theme.surface != NULL) && !DeleteObject(g_theme.surface)) {
+    OV_ERROR_SET_GENERIC(err, ov_error_generic_fail); // GDI does not say why it refused
+    success = false;
   }
-  if (g_theme.control != NULL) {
-    DeleteObject(g_theme.control);
+  if ((g_theme.control != NULL) && !DeleteObject(g_theme.control)) {
+    if (success) {
+      OV_ERROR_SET_GENERIC(err, ov_error_generic_fail);
+    } else {
+      OV_ERROR_PUSH(err, ov_error_type_generic, ov_error_generic_fail, NULL);
+    }
+    success = false;
   }
   memset(&g_theme, 0, sizeof(g_theme));
+  g_prefers_dark = NULL;
+  return success;
 }
-
-/**
- * @brief Is the application running with the dark palette
- *
- * @return TRUE when the palette is the dark one
- */
-bool theme_dark(void) { return g_theme.dark; }
 
 /**
  * @brief Attach the theme to one window
@@ -387,23 +512,30 @@ bool theme_dark(void) { return g_theme.dark; }
  * for that.
  *
  * @param hwnd the window to attach to
+ * @param err receives the failure of the attach
+ * @return false when the theme could not be put on the window
  */
-void theme_attach(HWND const hwnd) {
+NODISCARD bool theme_attach(HWND const hwnd, struct ov_error *const err) {
   wchar_t cls[32];
-  LONG_PTR const type = GetWindowLongPtrW(hwnd, GWL_STYLE) & 0xF;
+  LONG_PTR type = 0;
+  bool success = false;
 
   if (!g_theme.enabled || (hwnd == NULL)) {
-    return;
+    return true;
   }
+  type = GetWindowLongPtrW(hwnd, GWL_STYLE) & 0xF;
   allow_window(hwnd);
   memset(cls, 0, sizeof(cls));
-  GetClassNameW(hwnd, cls, (int)(sizeof(cls) / sizeof(cls[0])));
+  if (GetClassNameW(hwnd, cls, (int)(sizeof(cls) / sizeof(cls[0]))) == 0) {
+    OV_ERROR_SET_HRESULT(err, HRESULT_FROM_WIN32(GetLastError()));
+    goto cleanup;
+  }
 
   if (lstrcmpiW(cls, L"BUTTON") == 0) {
     switch (type) {
     case BS_PUSHBUTTON:
     case BS_DEFPUSHBUTTON:
-      theme_button_attach(hwnd);
+      success = theme_button_attach(hwnd, err);
       break;
     case BS_CHECKBOX:
     case BS_AUTOCHECKBOX:
@@ -411,54 +543,78 @@ void theme_attach(HWND const hwnd) {
     case BS_AUTO3STATE:
     case BS_RADIOBUTTON:
     case BS_AUTORADIOBUTTON:
-      swap_theme_class(hwnd);
+      success = swap_theme_class(hwnd, err);
       break;
     default:
+      success = true;
       break;
     }
-    return;
+    goto cleanup;
   }
   if (lstrcmpiW(cls, WC_LISTVIEWW) == 0) {
-    swap_theme_class(hwnd);
-    return;
+    success = swap_theme_class(hwnd, err);
+    goto cleanup;
   }
   if (lstrcmpiW(cls, WC_COMBOBOXW) == 0) {
-    theme_combo_attach(hwnd);
-    return;
+    success = theme_combo_attach(hwnd, err);
+    goto cleanup;
   }
   if (lstrcmpiW(cls, PROGRESS_CLASSW) == 0) {
-    attach_progress(hwnd);
-    return;
+    success = attach_progress(hwnd, err);
+    goto cleanup;
   }
+  success = true;
+
+cleanup:
+  if (!success) {
+    OV_ERROR_ADD_TRACE(err);
+  }
+  return success;
 }
 
 /**
  * @brief Give a list view the colours of the palette
  *
  * @param list the list view to colour
+ * @param err receives the failure of the theme data
+ * @return false when the colours could not be read
  */
-static void theme_list_colors(HWND const list) {
+static NODISCARD bool list_colors(HWND const list, struct ov_error *const err) {
   HTHEME items = NULL;
   COLORREF fg = theme_palette_text();
   COLORREF bg = theme_palette_surface();
+  HRESULT hr = S_OK;
+  bool success = false;
 
   items = OpenThemeData(NULL, L"ItemsView");
   if (items == NULL) {
+    OV_ERROR_SET_GENERIC(err, ov_error_generic_not_found);
     goto cleanup;
   }
-  if (SUCCEEDED(GetThemeColor(items, 0, 0, TMT_TEXTCOLOR, &fg))) {
-    ListView_SetTextColor(list, fg);
+  hr = GetThemeColor(items, 0, 0, TMT_TEXTCOLOR, &fg);
+  if (FAILED(hr)) {
+    OV_ERROR_SET_HRESULT(err, hr);
+    goto cleanup;
   }
-  if (SUCCEEDED(GetThemeColor(items, 0, 0, TMT_FILLCOLOR, &bg))) {
-    ListView_SetBkColor(list, bg);
-    ListView_SetTextBkColor(list, bg);
+  ListView_SetTextColor(list, fg);
+  hr = GetThemeColor(items, 0, 0, TMT_FILLCOLOR, &bg);
+  if (FAILED(hr)) {
+    OV_ERROR_SET_HRESULT(err, hr);
+    goto cleanup;
   }
+  ListView_SetBkColor(list, bg);
+  ListView_SetTextBkColor(list, bg);
+  success = true;
 
 cleanup:
   if (items != NULL) {
-    CloseThemeData(items);
+    if (FAILED(CloseThemeData(items))) {
+      OV_ERROR_SET_GENERIC(err, ov_error_generic_fail);
+      success = false;
+    }
     items = NULL;
   }
+  return success;
 }
 
 /**
@@ -468,34 +624,247 @@ cleanup:
  * yet.
  *
  * @param list the list view to attach to
+ * @param err receives the failure of the attach
+ * @return false when the theme could not be put on the list or its header
  */
-void theme_attach_list(HWND const list) {
+NODISCARD bool theme_attach_list(HWND const list, struct ov_error *const err) {
   HWND header = NULL;
+  HRESULT hr = S_OK;
+  bool success = false;
 
   if (!g_theme.enabled || (list == NULL)) {
-    return;
+    return true;
   }
   if (!g_theme.dark) {
-    {
-      LRESULT const old = SendMessageW(list, LVM_GETHEADER, 0, 0);
-      theme_header_detach((HWND)(void *)old);
+    LRESULT const old = SendMessageW(list, LVM_GETHEADER, 0, 0);
+
+    if (!theme_header_detach((HWND)(void *)old, err)) {
+      OV_ERROR_ADD_TRACE(err);
+      goto cleanup;
     }
-    SetWindowTheme(list, NULL, NULL);
+    hr = SetWindowTheme(list, NULL, NULL);
+    if (FAILED(hr)) {
+      OV_ERROR_SET_HRESULT(err, hr);
+      goto cleanup;
+    }
     ListView_SetTextColor(list, theme_palette_text());
     ListView_SetBkColor(list, theme_palette_surface());
     ListView_SetTextBkColor(list, theme_palette_surface());
-    return;
+    success = true;
+    goto cleanup;
   }
-  SetWindowTheme(list, L"DarkMode_Explorer", NULL);
-  theme_list_colors(list);
+  hr = SetWindowTheme(list, L"DarkMode_Explorer", NULL);
+  if (FAILED(hr)) {
+    OV_ERROR_SET_HRESULT(err, hr);
+    goto cleanup;
+  }
+  if (!list_colors(list, err)) {
+    OV_ERROR_ADD_TRACE(err);
+    goto cleanup;
+  }
   {
     LRESULT const hdr = SendMessageW(list, LVM_GETHEADER, 0, 0);
+
     header = (HWND)(void *)hdr;
   }
   if (header != NULL) {
     allow_window(header);
-    theme_header_attach(header);
+    if (!theme_header_attach(header, err)) {
+      OV_ERROR_ADD_TRACE(err);
+      goto cleanup;
+    }
   }
+  success = true;
+
+cleanup:
+  return success;
+}
+
+/**
+ * @brief The state the walk of the children of a window carries
+ */
+struct child_walk {
+  struct ov_error *err; //!< the failure of the walk, NULL while none was met
+  bool failed;          //!< whether a child could not be attached
+};
+
+/**
+ * @brief Hand one child of a window back to the theme
+ *
+ * The walk cannot be stopped with an error, so the first failure is kept in the state and
+ * the walk goes on: the children that could not be attached are already left unthemed, and
+ * stopping the walk would leave the ones after them the same way.
+ *
+ * @param child the child the walk found
+ * @param param the state the walk carries
+ * @return TRUE to walk on
+ */
+static BOOL CALLBACK each_child(HWND const child, LPARAM const param) {
+  struct child_walk *const walk = (struct child_walk *)(void *)param;
+  wchar_t cls[32];
+
+  memset(cls, 0, sizeof(cls));
+  if (GetClassNameW(child, cls, (int)(sizeof(cls) / sizeof(cls[0]))) == 0) {
+    if (!walk->failed) {
+      OV_ERROR_SET_HRESULT(walk->err, HRESULT_FROM_WIN32(GetLastError()));
+      walk->failed = true;
+    }
+    return TRUE;
+  }
+  if (lstrcmpiW(cls, WC_LISTVIEWW) == 0) {
+    if (!theme_attach_list(child, walk->err)) {
+      walk->failed = true;
+      return TRUE;
+    }
+  }
+  if (!theme_attach(child, walk->err)) {
+    walk->failed = true;
+    return TRUE;
+  }
+  SendMessageW(child, WM_THEMECHANGED, 0, 0);
+  return TRUE;
+}
+
+/**
+ * @brief Make the brushes the painting works with
+ *
+ * @param err receives the failure of the brushes
+ * @return false when either brush could not be made; the old ones stay in place
+ */
+static NODISCARD bool rebuild_brushes(struct ov_error *const err) {
+  HBRUSH surface = NULL;
+  HBRUSH control = NULL;
+  HBRUSH stale_surface = NULL;
+  HBRUSH stale_control = NULL;
+  bool success = false;
+
+  surface = CreateSolidBrush(theme_palette_surface());
+  if (surface == NULL) {
+    OV_ERROR_SET_GENERIC(err, ov_error_generic_fail); // GDI does not say why it refused the brush
+    goto cleanup;
+  }
+  control = CreateSolidBrush(theme_palette_control());
+  if (control == NULL) {
+    OV_ERROR_SET_GENERIC(err, ov_error_generic_fail);
+    goto cleanup;
+  }
+  stale_surface = g_theme.surface;
+  stale_control = g_theme.control;
+  g_theme.surface = surface;
+  g_theme.control = control;
+  surface = NULL;
+  control = NULL;
+  success = true;
+
+cleanup:
+  if (surface != NULL) {
+    if (!DeleteObject(surface)) {
+      OV_ERROR_SET_GENERIC(err, ov_error_generic_fail);
+      success = false;
+    }
+    surface = NULL;
+  }
+  if (control != NULL) {
+    if (!DeleteObject(control)) {
+      OV_ERROR_SET_GENERIC(err, ov_error_generic_fail);
+      success = false;
+    }
+    control = NULL;
+  }
+  if (stale_surface != NULL) {
+    if (!DeleteObject(stale_surface)) {
+      OV_ERROR_SET_GENERIC(err, ov_error_generic_fail);
+      success = false;
+    }
+    stale_surface = NULL;
+  }
+  if (stale_control != NULL) {
+    if (!DeleteObject(stale_control)) {
+      OV_ERROR_SET_GENERIC(err, ov_error_generic_fail);
+      success = false;
+    }
+    stale_control = NULL;
+  }
+  return success;
+}
+
+/**
+ * @brief Re-read the palette from the system
+ *
+ * Call it when the user changed the colour setting (WM_SETTINGCHANGE with
+ * "ImmersiveColorSet").  The theme stays in AllowDark, so the system decides and this
+ * only asks again what that means right now.
+ *
+ * @param err receives the failure of the brushes
+ * @return ov_true when the palette changed and the windows have to be re-attached,
+ *         ov_false when it did not change, ov_indeterminate when it could not be re-read,
+ *         with err set
+ */
+static NODISCARD ov_tribool theme_refresh(struct ov_error *const err) {
+  ov_tribool ret = ov_false;
+  bool dark = false;
+
+  if (!g_theme.enabled) {
+    goto cleanup;
+  }
+  if (g_theme.refresh_policy != NULL) {
+    g_theme.refresh_policy();
+  }
+  if (!query_dark(&dark, err)) {
+    OV_ERROR_ADD_TRACE(err);
+    ret = ov_indeterminate;
+    goto cleanup;
+  }
+  if (dark == g_theme.dark) {
+    goto cleanup;
+  }
+  g_theme.dark = dark;
+  if (!rebuild_brushes(err)) {
+    OV_ERROR_ADD_TRACE(err);
+    ret = ov_indeterminate;
+    goto cleanup;
+  }
+  if (g_theme.flush_menus != NULL) {
+    g_theme.flush_menus();
+  }
+  ret = ov_true;
+
+cleanup:
+  return ret;
+}
+
+/**
+ * @brief Hand a window and all of its children back to the theme
+ *
+ * Call it after theme_refresh() reported a change: theme classes are swapped, painting
+ * subclasses are attached or removed, the whole tree is redrawn.
+ *
+ * @param top the window to start from
+ * @param err receives the failure of the attach
+ * @return false when a window or one of its children could not be attached
+ */
+static NODISCARD bool theme_reapply(HWND const top, struct ov_error *const err) {
+  struct child_walk walk = {.err = err};
+  bool success = false;
+
+  if (!g_theme.enabled || (top == NULL)) {
+    return true;
+  }
+  if (!theme_attach(top, err)) {
+    OV_ERROR_ADD_TRACE(err);
+    goto cleanup;
+  }
+  EnumChildWindows(top, each_child, (LPARAM)(void *)&walk);
+  if (walk.failed) {
+    OV_ERROR_ADD_TRACE(err);
+    goto cleanup;
+  }
+  SendMessageW(top, WM_THEMECHANGED, 0, 0);
+  RedrawWindow(top, NULL, NULL, RDW_ALLCHILDREN | RDW_ERASE | RDW_FRAME | RDW_INVALIDATE | RDW_UPDATENOW);
+  success = true;
+
+cleanup:
+  return success;
 }
 
 /**
@@ -510,225 +879,135 @@ void theme_attach_list(HWND const list) {
  * @param wparam the first message parameter
  * @param lparam the second message parameter
  * @param result receives the value to return from the window procedure
- * @param handled receives TRUE when the message was consumed, then the caller has to
- *                return result.  Untouched when the message was not consumed.
- * @param err reserved for a future failure
- * @return always true, the signature exists so that a future failure can be reported
+ * @param err receives the failure of a message the theme has to answer
+ * @return ov_true when the message was consumed and result holds what the window procedure
+ *         has to answer, ov_false when it was not consumed, ov_indeterminate when the
+ *         message could not be answered, with err set
  */
-bool theme_message(HWND const hwnd,
-                   UINT const msg,
-                   WPARAM const wparam,
-                   LPARAM const lparam,
-                   LRESULT *const result,
-                   bool *const handled,
-                   struct ov_error *const err) {
-  (void)err;
+NODISCARD ov_tribool theme_message(
+    HWND const hwnd, UINT const msg, WPARAM const wparam, LPARAM const lparam, LRESULT *const result, struct ov_error *const err) {
+  ov_tribool ret = ov_false;
 
-  *handled = false;
   *result = 0;
   if (!g_theme.enabled) {
-    return true; // every message stays with the system
+    goto cleanup; // every message stays with the system
   }
 
   switch (msg) {
   case WM_CTLCOLORSTATIC:
-  case WM_CTLCOLOREDIT: {
-    HDC const dc = (HDC)wparam;
-    HWND const wnd = (HWND)lparam;
-
-    SetBkMode(dc, OPAQUE);
-    SetTextColor(dc, IsWindowEnabled(wnd) ? theme_palette_text() : theme_palette_text_disabled());
-    SetBkColor(dc, theme_palette_surface());
-    *result = (LRESULT)g_theme.surface;
-    *handled = true;
-    return true;
-  }
-  case WM_CTLCOLORBTN: {
-    HDC const dc = (HDC)wparam;
-
-    SetBkMode(dc, OPAQUE);
-    SetTextColor(dc, theme_palette_text());
-    SetBkColor(dc, theme_palette_surface());
-    *result = (LRESULT)g_theme.surface;
-    *handled = true;
-    return true;
-  }
+  case WM_CTLCOLOREDIT:
+  case WM_CTLCOLORBTN:
   case WM_CTLCOLORLISTBOX: {
-    // the list of a combo box asks its parent for the colours of its rows whenever it paints
-    // them, so the palette answers here for every paint of the list
     HDC const dc = (HDC)wparam;
+    bool const list = (msg == WM_CTLCOLORLISTBOX);
+    bool const disabled = (msg == WM_CTLCOLORSTATIC) && !IsWindowEnabled((HWND)lparam);
 
-    SetBkMode(dc, OPAQUE);
-    SetTextColor(dc, theme_palette_text());
-    SetBkColor(dc, theme_palette_control());
-    *result = (LRESULT)g_theme.control;
-    *handled = true;
-    return true;
+    if (!SetBkMode(dc, OPAQUE)) {
+      OV_ERROR_SET_GENERIC(err, ov_error_generic_fail);
+      ret = ov_indeterminate;
+      goto cleanup;
+    }
+    if (SetTextColor(dc, disabled ? theme_palette_text_disabled() : theme_palette_text()) == CLR_INVALID) {
+      OV_ERROR_SET_GENERIC(err, ov_error_generic_fail);
+      ret = ov_indeterminate;
+      goto cleanup;
+    }
+    if (SetBkColor(dc, list ? theme_palette_control() : theme_palette_surface()) == CLR_INVALID) {
+      OV_ERROR_SET_GENERIC(err, ov_error_generic_fail);
+      ret = ov_indeterminate;
+      goto cleanup;
+    }
+    *result = (LRESULT)(list ? g_theme.control : g_theme.surface);
+    ret = ov_true;
+    break;
   }
   case WM_ERASEBKGND:
-    if (g_theme.dark) {
-      RECT rc;
-      GetClientRect(hwnd, &rc);
-      FillRect((HDC)wparam, &rc, g_theme.surface);
+    if (!g_theme.dark) {
+      break;
+    }
+    {
+      RECT rc = {0};
+
+      if (!GetClientRect(hwnd, &rc)) {
+        OV_ERROR_SET_HRESULT(err, HRESULT_FROM_WIN32(GetLastError()));
+        ret = ov_indeterminate;
+        goto cleanup;
+      }
+      if (!FillRect((HDC)wparam, &rc, g_theme.surface)) {
+        OV_ERROR_SET_GENERIC(err, ov_error_generic_fail);
+        ret = ov_indeterminate;
+        goto cleanup;
+      }
       *result = 1;
-      *handled = true;
+      ret = ov_true;
     }
-    return true;
+    break;
   case WM_SETTINGCHANGE:
-    if ((lparam != 0) && (CSTR_EQUAL == CompareStringOrdinal((LPCWCH)lparam, -1, L"ImmersiveColorSet", -1, TRUE))) {
-      theme_refresh(NULL);
-      theme_reapply(hwnd);
-      *result = 0;
-      *handled = true;
+    if ((lparam == 0) || (CSTR_EQUAL != CompareStringOrdinal((LPCWCH)lparam, -1, L"ImmersiveColorSet", -1, TRUE))) {
+      break;
     }
-    return true;
+    if (theme_refresh(err) == ov_indeterminate) {
+      OV_ERROR_ADD_TRACE(err);
+      ret = ov_indeterminate;
+      goto cleanup;
+    }
+    // the windows are re-attached either way: the palette of the system is asked for on
+    // every change of the setting, whether it moved to another one or not
+    if (!theme_reapply(hwnd, err)) {
+      OV_ERROR_ADD_TRACE(err);
+      ret = ov_indeterminate;
+      goto cleanup;
+    }
+    *result = 0;
+    ret = ov_true;
+    break;
   case WM_NOTIFY: {
     LPNMHDR const nm = (LPNMHDR)lparam;
+    LPNMCUSTOMDRAW cd = NULL;
 
-    if (nm->code == NM_CUSTOMDRAW && g_theme.dark) {
-      LPNMCUSTOMDRAW const cd = (LPNMCUSTOMDRAW)lparam;
-
-      switch (cd->dwDrawStage) {
-      case CDDS_PREPAINT:
-      case CDDS_ITEMPREPAINT:
-        SetTextColor(cd->hdc, IsWindowEnabled(cd->hdr.hwndFrom) ? theme_palette_text() : theme_palette_text_disabled());
-        *result = CDRF_NEWFONT;
-        *handled = true;
-        return true;
-      default:
-        break;
-      }
+    if ((nm->code != NM_CUSTOMDRAW) || !g_theme.dark) {
+      break;
     }
-    return true;
+    cd = (LPNMCUSTOMDRAW)lparam;
+    if ((cd->dwDrawStage != CDDS_PREPAINT) && (cd->dwDrawStage != CDDS_ITEMPREPAINT)) {
+      break;
+    }
+    if (SetTextColor(cd->hdc, IsWindowEnabled(cd->hdr.hwndFrom) ? theme_palette_text() : theme_palette_text_disabled()) == CLR_INVALID) {
+      OV_ERROR_SET_GENERIC(err, ov_error_generic_fail);
+      ret = ov_indeterminate;
+      goto cleanup;
+    }
+    *result = CDRF_NEWFONT;
+    ret = ov_true;
+    break;
   }
   default:
     break;
   }
-  return true;
-}
-
-/**
- * @brief Make the brushes the painting works with
- */
-static void theme_rebuild_brushes(void) {
-  HBRUSH surface = NULL;
-  HBRUSH control = NULL;
-  HBRUSH stale_surface = NULL;
-  HBRUSH stale_control = NULL;
-
-  surface = CreateSolidBrush(theme_palette_surface());
-  if (surface == NULL) {
-    goto cleanup;
-  }
-  control = CreateSolidBrush(theme_palette_control());
-  if (control == NULL) {
-    goto cleanup;
-  }
-  stale_surface = g_theme.surface;
-  stale_control = g_theme.control;
-  g_theme.surface = surface;
-  g_theme.control = control;
-  surface = NULL;
-  control = NULL;
 
 cleanup:
-  if (surface != NULL) {
-    DeleteObject(surface);
-    surface = NULL;
-  }
-  if (control != NULL) {
-    DeleteObject(control);
-    control = NULL;
-  }
-  if (stale_surface != NULL) {
-    DeleteObject(stale_surface);
-    stale_surface = NULL;
-  }
-  if (stale_control != NULL) {
-    DeleteObject(stale_control);
-    stale_control = NULL;
-  }
+  return ret;
 }
 
 /**
- * @brief Hand one child of a window back to the theme
+ * @brief Make the brush to give to WNDCLASSEXW::hbrBackground
  *
- * @param child the child the walk found
- * @param param the window the walk started from
- * @return TRUE to walk on
+ * The system deletes the background brush of a class when the class is unregistered, so
+ * every class needs a brush of its own: the one the palette paints with is the theme's to
+ * keep.  The brush has the colour the palette paints the surface with, so a class and the
+ * messages of the theme agree.
+ *
+ * @param err receives the failure of the brush
+ * @return the brush, NULL when it could not be made
  */
-static BOOL CALLBACK each_child(HWND const child, LPARAM const param) {
-  wchar_t cls[32];
+HBRUSH theme_class_brush(struct ov_error *const err) {
+  HBRUSH const brush = CreateSolidBrush(theme_palette_surface());
 
-  (void)param;
-  memset(cls, 0, sizeof(cls));
-  GetClassNameW(child, cls, (int)(sizeof(cls) / sizeof(cls[0])));
-  if (lstrcmpiW(cls, WC_LISTVIEWW) == 0) {
-    theme_attach_list(child);
+  if (brush == NULL) {
+    OV_ERROR_SET_GENERIC(err, ov_error_generic_fail); // GDI does not say why it refused
   }
-  theme_attach(child);
-  SendMessageW(child, WM_THEMECHANGED, 0, 0);
-  return TRUE;
+  return brush;
 }
-
-/**
- * @brief Re-read the palette from the system
- *
- * Call it when the user changed the colour setting (WM_SETTINGCHANGE with
- * "ImmersiveColorSet").  The theme stays in AllowDark, so the system decides and this
- * only asks again what that means right now.
- *
- * @param err reserved for a future failure
- * @return TRUE when the palette changed and the windows have to be re-attached
- */
-bool theme_refresh(struct ov_error *const err) {
-  bool dark = false;
-
-  (void)err;
-  if (!g_theme.enabled) {
-    return false;
-  }
-  if (g_theme.refresh_policy != NULL) {
-    g_theme.refresh_policy();
-  }
-  dark = theme_query_dark();
-  if (dark == g_theme.dark) {
-    return false;
-  }
-  g_theme.dark = dark;
-  theme_rebuild_brushes();
-  if (g_theme.flush_menus != NULL) {
-    g_theme.flush_menus();
-  }
-  return true;
-}
-
-/**
- * @brief Hand a window and all of its children back to the theme
- *
- * Call it after theme_refresh() reported a change: theme classes are swapped, painting
- * subclasses are attached or removed, the whole tree is redrawn.
- *
- * @param top the window to start from
- */
-void theme_reapply(HWND const top) {
-  if (!g_theme.enabled || (top == NULL)) {
-    return;
-  }
-  theme_attach(top);
-  EnumChildWindows(top, each_child, 0);
-  SendMessageW(top, WM_THEMECHANGED, 0, 0);
-  RedrawWindow(top, NULL, NULL, RDW_ALLCHILDREN | RDW_ERASE | RDW_FRAME | RDW_INVALIDATE | RDW_UPDATENOW);
-}
-
-/**
- * @brief The brush to give to WNDCLASSEXW::hbrBackground
- *
- * The brush stays owned by the theme, the caller must not delete it.
- *
- * @return the brush of the palette
- */
-HBRUSH theme_class_brush(void) { return g_theme.surface; }
 
 /**
  * @brief Draw the frame of a group of controls
@@ -743,22 +1022,31 @@ HBRUSH theme_class_brush(void) { return g_theme.surface; }
  *                the frame is broken around it, the way a group box does.  NULL draws a
  *                frame without a break.
  * @param dpi the dpi of the window, it scales the line and the break
+ * @param err receives the failure of the drawing
+ * @return false when the frame could not be drawn
  */
-void theme_frame(HDC const dc, RECT const *const rect, RECT const *const caption, int const dpi) {
+NODISCARD bool theme_frame(HDC const dc, RECT const *const rect, RECT const *const caption, int const dpi, struct ov_error *const err) {
   UINT const d = (UINT)dpi;
-  int const g = layout_scale(ADC_LAYOUT_FRAME_LINE, d);
-  int const pad = layout_scale(ADC_LAYOUT_FRAME_BREAK, d);
+  int const g = layout_scale(ADC_THEME_FRAME_LINE, d);
+  int const pad = layout_scale(theme_frame_break, d);
   HPEN pen = NULL;
   HPEN old_pen = NULL;
   int const top = rect->top + g;
   int break_left = rect->left;
   int break_right = rect->right;
+  bool success = false;
 
   pen = CreatePen(PS_SOLID, g, theme_palette_border());
   if (pen == NULL) {
+    OV_ERROR_SET_GENERIC(err, ov_error_generic_fail); // GDI does not say why
     goto cleanup;
   }
   old_pen = (HPEN)SelectObject(dc, pen);
+  if ((old_pen == NULL) || (old_pen == HGDI_ERROR)) {
+    OV_ERROR_SET_GENERIC(err, ov_error_generic_fail);
+    old_pen = NULL;
+    goto cleanup;
+  }
   if (caption != NULL) {
     break_left = caption->left - pad;
     break_right = caption->right + pad;
@@ -770,25 +1058,38 @@ void theme_frame(HDC const dc, RECT const *const rect, RECT const *const caption
     }
   }
   if (break_left > rect->left) {
-    MoveToEx(dc, rect->left, top, NULL);
-    LineTo(dc, break_left, top);
+    if (!MoveToEx(dc, rect->left, top, NULL) || !LineTo(dc, break_left, top)) {
+      OV_ERROR_SET_GENERIC(err, ov_error_generic_fail);
+      goto cleanup;
+    }
   }
   if (break_right < rect->right) {
-    MoveToEx(dc, break_right, top, NULL);
-    LineTo(dc, rect->right - g, top);
+    if (!MoveToEx(dc, break_right, top, NULL) || !LineTo(dc, rect->right - g, top)) {
+      OV_ERROR_SET_GENERIC(err, ov_error_generic_fail);
+      goto cleanup;
+    }
   }
-  MoveToEx(dc, rect->right - g, top, NULL);
-  LineTo(dc, rect->right - g, rect->bottom - g);
-  LineTo(dc, rect->left + g, rect->bottom - g);
-  LineTo(dc, rect->left + g, top);
+  if (!MoveToEx(dc, rect->right - g, top, NULL) || !LineTo(dc, rect->right - g, rect->bottom - g) ||
+      !LineTo(dc, rect->left + g, rect->bottom - g) || !LineTo(dc, rect->left + g, top)) {
+    OV_ERROR_SET_GENERIC(err, ov_error_generic_fail);
+    goto cleanup;
+  }
+  success = true;
 
 cleanup:
   if (old_pen != NULL) {
-    SelectObject(dc, old_pen);
+    if (SelectObject(dc, old_pen) == NULL) {
+      OV_ERROR_SET_GENERIC(err, ov_error_generic_fail);
+      success = false;
+    }
     old_pen = NULL;
   }
   if (pen != NULL) {
-    DeleteObject(pen);
+    if (!DeleteObject(pen)) {
+      OV_ERROR_SET_GENERIC(err, ov_error_generic_fail);
+      success = false;
+    }
     pen = NULL;
   }
+  return success;
 }

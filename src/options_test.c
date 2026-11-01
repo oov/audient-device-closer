@@ -19,7 +19,7 @@ static void test_defaults(void) {
 static void test_parse_empty(void) {
   struct options o;
   struct ov_error err = {0};
-  TEST_CHECK(options_parse(L"", &o, &err) == true);
+  TEST_SUCCEEDED(options_parse(L"", &o, &err), &err);
   TEST_CHECK(o.auto_run == false);
   TEST_CHECK(o.close_mixer == true);
   TEST_CHECK(o.close_audiodg == false);
@@ -31,7 +31,7 @@ static void test_parse_empty(void) {
 static void test_parse_all_on(void) {
   struct options o;
   struct ov_error err = {0};
-  TEST_CHECK(options_parse(L"-auto-run -close-mixer -close-audiodg", &o, &err) == true);
+  TEST_SUCCEEDED(options_parse(L"-auto-run -close-mixer -close-audiodg", &o, &err), &err);
   TEST_CHECK(o.auto_run == true);
   TEST_CHECK(o.close_mixer == true);
   TEST_CHECK(o.close_audiodg == true);
@@ -43,7 +43,7 @@ static void test_parse_all_on(void) {
 static void test_parse_negations(void) {
   struct options o;
   struct ov_error err = {0};
-  TEST_CHECK(options_parse(L"-auto-run -no-close-mixer -no-close-audiodg", &o, &err) == true);
+  TEST_SUCCEEDED(options_parse(L"-auto-run -no-close-mixer -no-close-audiodg", &o, &err), &err);
   TEST_CHECK(o.auto_run == true);
   TEST_CHECK(o.close_mixer == false);
   TEST_CHECK(o.close_audiodg == false);
@@ -55,7 +55,7 @@ static void test_parse_negations(void) {
 static void test_parse_quoted_and_extra_spaces(void) {
   struct options o;
   struct ov_error err = {0};
-  TEST_CHECK(options_parse(L"   \"-auto-run\"    -no-close-audiodg  ", &o, &err) == true);
+  TEST_SUCCEEDED(options_parse(L"   \"-auto-run\"    -no-close-audiodg  ", &o, &err), &err);
   TEST_CHECK(o.auto_run == true);
   TEST_CHECK(o.close_audiodg == false);
 }
@@ -66,7 +66,7 @@ static void test_parse_quoted_and_extra_spaces(void) {
 static void test_parse_unknown_ignored(void) {
   struct options o;
   struct ov_error err = {0};
-  TEST_CHECK(options_parse(L"-auto-run -what-is-this", &o, &err) == true);
+  TEST_SUCCEEDED(options_parse(L"-auto-run -what-is-this", &o, &err), &err);
   TEST_CHECK(o.auto_run == true);
 }
 
@@ -76,9 +76,9 @@ static void test_parse_unknown_ignored(void) {
 static void test_parse_last_wins(void) {
   struct options o;
   struct ov_error err = {0};
-  TEST_CHECK(options_parse(L"-no-close-mixer -close-mixer", &o, &err) == true);
+  TEST_SUCCEEDED(options_parse(L"-no-close-mixer -close-mixer", &o, &err), &err);
   TEST_CHECK(o.close_mixer == true);
-  TEST_CHECK(options_parse(L"-close-audiodg -no-close-audiodg", &o, &err) == true);
+  TEST_SUCCEEDED(options_parse(L"-close-audiodg -no-close-audiodg", &o, &err), &err);
   TEST_CHECK(o.close_audiodg == false);
 }
 
@@ -95,13 +95,13 @@ static void test_auto_close_follows_the_mode_of_the_run(void) {
   struct options o;
   struct ov_error err = {0};
 
-  TEST_CHECK(options_parse(L"-auto-run", &o, &err) == true);
+  TEST_SUCCEEDED(options_parse(L"-auto-run", &o, &err), &err);
   TEST_CHECK(o.auto_run == true);
 
-  TEST_CHECK(options_parse(L"-auto-run -auto-close", &o, &err) == true);
+  TEST_SUCCEEDED(options_parse(L"-auto-run -auto-close", &o, &err), &err);
   TEST_CHECK(o.auto_run == true);
 
-  TEST_CHECK(options_parse(L"-auto-run -auto-close -no-auto-close", &o, &err) == true);
+  TEST_SUCCEEDED(options_parse(L"-auto-run -auto-close -no-auto-close", &o, &err), &err);
   TEST_CHECK(o.auto_run == true);
 }
 

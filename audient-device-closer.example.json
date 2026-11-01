@@ -27,9 +27,12 @@
     "Sono.exe",
     "ORIA Control.exe"
   ],
-  "task_name": "\\AudientDeviceCloser\\Device recovery after resume from sleep",
+  "task_dir": "AudientDeviceCloser",
+  "task_name": "Device recovery after resume from sleep",
   "auto_run_delay_ms": 5000,
   "confirm_max_wait_ms": 5000,
+  "veto_max_wait_ms": 5000,
   "use_theme": true,
-  "allow_audio_service_pause": false
+  "allow_audio_service_pause": false,
+  "simulate": ""
 }

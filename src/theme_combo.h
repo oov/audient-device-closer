@@ -3,6 +3,8 @@
 
 #include <windows.h>
 
+#include <ovbase.h>
+
 /**
  * Painting of a drop down list combo box.  Internal to the theme implementation, see
  * theme_internal.h.
@@ -25,7 +27,9 @@
  * of another style than CBS_DROPDOWNLIST, are left alone.
  *
  * @param combo the window to attach to, NULL is allowed
+ * @param err receives the failure of the subclass
+ * @return false when the painting could not be taken over
  */
-void theme_combo_attach(HWND const combo);
+NODISCARD bool theme_combo_attach(HWND const combo, struct ov_error *const err);
 
 #endif /* ADC_THEME_COMBO_H */

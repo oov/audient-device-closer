@@ -37,8 +37,8 @@ struct ov_error;
  * @param err receives the failure of the start-up
  * @return false when the window could not be made
  */
-bool ui_device_picker_show(HWND const owner,
-                           struct settings const *const s,
-                           struct device_target const *const targets,
-                           struct device_target **const out_target,
-                           struct ov_error *const err);
+NODISCARD bool ui_device_picker_show(HWND const owner,
+                                     struct settings const *const s,
+                                     struct device_target const *const targets,
+                                     struct device_target **const out_target,
+                                     struct ov_error *const err);

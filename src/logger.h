@@ -2,10 +2,6 @@
 
 #include <ovbase.h>
 
-#include <stdarg.h>
-#include <stdbool.h>
-#include <stddef.h>
-
 /**
  * The log lives next to the executable, under the same name with the extension replaced:
  * audient-device-closer.exe -> audient-device-closer.log.  It is the one file this program
@@ -22,19 +18,6 @@
  */
 
 /**
- * @brief The sizes the log works with
- *
- * The upper bound for the file: when a write would push it past this, the oldest records
- * are dropped until nothing but the newest LOGGER_KEEP_BYTES are left; when a single
- * record is bigger than the whole file, the file starts over with that record.
- */
-enum {
-  LOGGER_MAX_BYTES = 100 * 1024,
-  LOGGER_KEEP_BYTES = 50 * 1024,
-  LOGGER_LINE_BYTES = 4 * 1024,
-};
-
-/**
  * @brief Open the log next to the executable and trim it when it is already too big
  *
  * Without this call every write is a no-op, so a caller that does not want a log simply
@@ -43,7 +26,7 @@ enum {
  * @param err receives the failure of the open
  * @return false when the log could not be opened
  */
-bool logger_open(struct ov_error *const err);
+NODISCARD bool logger_open(struct ov_error *const err);
 
 /**
  * @brief Make the mutex that serialises the writes
@@ -53,21 +36,14 @@ bool logger_open(struct ov_error *const err);
 void logger_init(void);
 
 /**
- * @brief Write one record at the info level
- *
- * @param tag the module the record belongs to, UTF-8, must not be NULL
- * @param message the record itself, UTF-8, must not be NULL
- * @param err receives the failure of the write
- * @return false when the record did not reach the file
- */
-bool logger_write(char const *const tag, char const *const message, struct ov_error *const err);
-
-/**
  * @brief Flush and release the log
  *
- * Safe to call without an open log.
+ * Safe to call without an open log.  The log is released whether or not the flush worked.
+ *
+ * @param err receives the failure of the flush or of the close, NULL is allowed
+ * @return false when what was written could not be flushed to the disk or the log could not be closed
  */
-void logger_close(void);
+NODISCARD bool logger_close(struct ov_error *const err);
 
 /**
  * @brief The output hook for ov_init()

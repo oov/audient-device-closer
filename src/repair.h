@@ -2,14 +2,12 @@
 
 #include <ovbase.h>
 
-#include <stdbool.h>
-#include <stddef.h>
-#include <stdint.h>
+#include <windows.h>
 
-#include "device.h"
-#include "removal.h"
+#include "removal_manager.h"
 
 struct settings;
+struct device_target;
 struct veto_event;
 struct blocker;
 
@@ -31,20 +29,43 @@ enum repair_outcome {
 };
 
 /**
+ * @brief Why a run could not go on
+ *
+ * The outcome says what came of the devices; this says which step of the repair could not be
+ * taken, for a caller that has to tell the user what to do about it.  Every one of these is
+ * a step the repair cannot do without, so the run stops there.
+ */
+enum repair_failure {
+  repair_failure_none,                //!< the outcome carries what happened
+  repair_failure_device_state,        //!< the state of the devices could not be determined
+  repair_failure_record,              //!< the record that says what holds the device could not be read
+  repair_failure_blockers,            //!< the processes the records name could not be looked at
+  repair_failure_process_close,       //!< a process that holds the device could not be closed
+  repair_failure_audio_service_pause, //!< the audio service could not be stopped
+  repair_failure_audio_service_start, //!< the audio service could not be started again
+  repair_failure_not_recovered,       //!< the device was released but did not come back as an audio device
+  repair_failure_not_confirmed,       //!< the device was released but whether it came back could not be checked
+};
+
+/**
  * @brief What the caller should tell the user
  *
  * The outcome of the run and, when the system refused the removal, why.  The sentences
  * themselves are chosen by the UI, next to the dialog that shows them; the numbers stay in
- * the log.  The reason of a refusal is carried as the code of the removal error, 0 when
- * the outcome is not a refusal of the removal.
+ * the log.  The reason of a refusal is carried as the code of the removal error, 0 when the
+ * outcome is not a refusal of the removal, and which step of the repair could not be taken
+ * is carried next to it, so a dialog has something to say about a run that stopped.
  *
  * The events are the records of the veto, shown as they were written; the processes this
  * run closed are not among them.
  */
 struct repair_result {
   enum repair_outcome outcome;
+  enum repair_failure failure;           // repair_failure_none unless a step of the repair failed
+  size_t failed_mixer;                   // which of the mixer names of the settings could not be closed
   enum removal_error_code removal_error; // 0 unless the removal was refused
   struct veto_event *events;             // ovarray or NULL.  released by repair_result_release
+  uint32_t *closed;                      // ovarray of the process ids this run closed.  released by repair_result_release
   char message[512];                     // UTF-8, meant for the UI log
 };
 
@@ -92,23 +113,6 @@ char const *repair_option_audiodg_label(void);
 bool repair_can_pause_audio_service(struct settings const *const s);
 
 /**
- * @brief How long the confirmation waits between two looks at a released device
- *
- * The release puts the device back on the bus, and the bus takes a moment to bring it up
- * again.  The confirmation looks once a second, for as long as the settings let it wait:
- * a device that is healthy within that window is found by it, and one that never comes
- * back is reported as a failure the reason of which is not known.
- */
-#define REPAIR_CONFIRM_POLL_INTERVAL_MS 1000
-
-/**
- * @brief The audio engine, a blocker as often as the mixer is
- *
- * Its image name is the same everywhere, so it is not part of the settings.
- */
-#define REPAIR_AUDIODG_NAME "audiodg.exe"
-
-/**
  * @brief What the run is waiting for at the moment
  *
  * The caller can show it while it happens.
@@ -118,9 +122,10 @@ enum repair_stage {
   REPAIR_STAGE_PROBE,       // the state of the devices is being determined
   REPAIR_STAGE_REMOVE,      // the removal is with the system, waiting for its answer
   REPAIR_STAGE_MIXER,       // the mixer is being closed and waited for
-  REPAIR_STAGE_AUDIODG,     // audiodg is being closed and waited for
+  REPAIR_STAGE_PAUSE,       // the audio service is being stopped and waited for
   REPAIR_STAGE_VETO_RECORD, // the veto record is being waited for and read
-  REPAIR_STAGE_CONFIRM      // the released device is being asked whether it is an audio device again
+  REPAIR_STAGE_CONFIRM,     // the released device is being asked whether it is an audio device again
+  REPAIR_STAGE_START        // the audio service is being started and waited for
 };
 
 /**
@@ -146,6 +151,78 @@ enum { REPAIR_STEPS_PER_TARGET = 7 };
 typedef void (*repair_progress_fn)(enum repair_stage const stage, size_t const step, size_t const total, void *const userdata);
 
 /**
+ * @brief Tells the caller that a wait of the run is over
+ *
+ * Called from the thread that finished the wait, so it does no more than put the caller's
+ * own ask up: it posts a message, sets an event, and returns.
+ *
+ * @param userdata what the caller handed to repair_run_begin
+ */
+typedef void (*repair_wake_fn)(void *userdata);
+
+/**
+ * @brief A run in flight
+ *
+ * A run is taken forward one piece at a time, so a caller that has a window can keep it
+ * alive while a lookup takes its seconds.  repair_run takes the same run through on one
+ * thread for a caller that has nothing else to do.
+ */
+struct repair_run;
+
+/** @brief What one step of a run ended in */
+enum repair_step_result {
+  REPAIR_STEP_WAITING, //!< a lookup is in flight; take the run up again when wake was called
+  REPAIR_STEP_DONE,    //!< the run is over and out holds what came of it
+};
+
+/**
+ * @brief Take up a run
+ *
+ * @param s the settings this run works for, may not be NULL
+ * @param targets the devices to repair, NULL says the run looks for the faulted devices itself
+ * @param allow_mixer_close the user allowed closing the mixer
+ * @param allow_audiodg_close the user allowed closing the audio engine
+ * @param progress may be NULL
+ * @param progress_userdata handed back to progress
+ * @param cancel may be NULL; a manual-reset event the caller owns
+ * @param wake called when a lookup is over, may be NULL
+ * @param wake_userdata handed to wake
+ * @param out receives what happened; release with repair_result_release
+ * @param err receives the failure that stopped the run
+ * @return the run, release with repair_run_finish; NULL when it could not be taken up
+ */
+NODISCARD struct repair_run *repair_run_begin(struct settings const *s,
+                                              struct device_target *targets,
+                                              bool allow_mixer_close,
+                                              bool allow_audiodg_close,
+                                              repair_progress_fn progress,
+                                              void *progress_userdata,
+                                              HANDLE cancel,
+                                              repair_wake_fn wake,
+                                              void *wake_userdata,
+                                              struct repair_result *out,
+                                              struct ov_error *err);
+
+/**
+ * @brief Take a run forward as far as it goes without waiting
+ *
+ * @param run the run
+ * @param err receives the failure that stopped the run
+ * @return REPAIR_STEP_WAITING while a lookup is in flight, REPAIR_STEP_DONE when the run is over
+ */
+NODISCARD enum repair_step_result repair_step(struct repair_run *run, struct ov_error *err);
+
+/**
+ * @brief Settle a run and release it
+ *
+ * @param run the run, set to NULL afterwards
+ * @param err the failure that stopped the run, left in err for the caller when the run
+ *            failed hard
+ * @return false only on a hard failure, with err holding why
+ */
+NODISCARD bool repair_run_finish(struct repair_run **run, struct ov_error *err);
+
+/**
  * @brief Run the repair
  *
  * The documented sequence: remove, look up the events when vetoed, optionally close the
@@ -159,24 +236,25 @@ typedef void (*repair_progress_fn)(enum repair_stage const stage, size_t const s
  * @param allow_audiodg_close the user allowed closing the audio engine
  * @param progress may be NULL; it is called from the thread that runs the repair
  * @param progress_userdata handed back to progress
- * @param cancel may be NULL; a flag the caller owns.  The run reads it between its steps
- *        and ends with REPAIR_OUTCOME_ABORTED instead of walking into the next one, it
- *        never interrupts a step that is already going.
+ * @param cancel may be NULL; a manual-reset event the caller owns.  The run waits on it
+ *        while it waits for the veto record, and reads it between its steps: a signaled
+ *        event ends the run with REPAIR_OUTCOME_ABORTED instead of walking into the next
+ *        step, it never interrupts a step that is already going.
  * @param out receives what happened; release with repair_result_release
  * @param err receives the failure that stopped the run
- * @return false only on a hard failure.  The outcome carries the news: a step whose failure
- *         is folded into the outcome releases its error into the log before the next step
- *         starts, so err is only worth reading when the call returns false.
+ * @return false only on a hard failure.  The outcome carries what came of the devices: a
+ *         failure the run cannot go on with stops it, and the reason is what err holds when
+ *         the call returns false.
  */
-bool repair_run(struct settings const *const s,
-                struct device_target *const targets,
-                bool const allow_mixer_close,
-                bool const allow_audiodg_close,
-                repair_progress_fn const progress,
-                void *const progress_userdata,
-                bool *const cancel,
-                struct repair_result *const out,
-                struct ov_error *const err);
+NODISCARD bool repair_run(struct settings const *const s,
+                          struct device_target *const targets,
+                          bool const allow_mixer_close,
+                          bool const allow_audiodg_close,
+                          repair_progress_fn const progress,
+                          void *const progress_userdata,
+                          HANDLE const cancel,
+                          struct repair_result *const out,
+                          struct ov_error *const err);
 
 /**
  * @brief Release what a run collected

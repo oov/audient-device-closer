@@ -52,7 +52,7 @@ struct combo_paint {
  *
  * @param paint the state to release, NULL is allowed
  */
-static void combo_paint_destroy(struct combo_paint *paint) {
+static void paint_destroy(struct combo_paint *paint) {
   if (paint == NULL) {
     return;
   }
@@ -66,7 +66,7 @@ static void combo_paint_destroy(struct combo_paint *paint) {
  * @param hot the hover state the subclass kept
  * @return the state of the face: hot, pressed or at rest
  */
-static int combo_state(HWND const combo, BOOL const hot) {
+static int visual_state(HWND const combo, BOOL const hot) {
   if (!IsWindowEnabled(combo)) {
     return PBS_DISABLED;
   }
@@ -89,19 +89,25 @@ static int combo_state(HWND const combo, BOOL const hot) {
  * @param dc the context to draw in
  * @param hwnd the combo box that has the cue
  * @param line_box the rectangle of the chosen line
+ * @param err receives the failure of the drawing
+ * @return false when the cue could not be drawn
  */
-static void draw_focus_cue(HDC const dc, HWND const hwnd, RECT const *const line_box) {
+static NODISCARD bool draw_focus_cue(HDC const dc, HWND const hwnd, RECT const *const line_box, struct ov_error *const err) {
   RECT cue;
 
   if (GetFocus() != hwnd) {
-    return;
+    return true;
   }
   if ((SendMessageW(hwnd, WM_QUERYUISTATE, 0, 0) & UISF_HIDEFOCUS) != 0) {
-    return;
+    return true;
   }
   cue = *line_box;
   InflateRect(&cue, 1, 1);
-  DrawFocusRect(dc, &cue);
+  if (!DrawFocusRect(dc, &cue)) {
+    OV_ERROR_SET_GENERIC(err, ov_error_generic_fail); // GDI does not say why
+    return false;
+  }
+  return true;
 }
 
 /**
@@ -119,8 +125,10 @@ static void draw_focus_cue(HDC const dc, HWND const hwnd, RECT const *const line
  * @param dc the context to draw in
  * @param hwnd the combo box to paint
  * @param hot the hover state the subclass kept
+ * @param err receives the failure of the painting
+ * @return false when the combo box could not be painted
  */
-static void combo_paint_face(HDC const dc, HWND const hwnd, BOOL const hot) {
+static NODISCARD bool paint_face(HDC const dc, HWND const hwnd, BOOL const hot, struct ov_error *const err) {
   COMBOBOXINFO info;
   RECT rc;
   RECT box;
@@ -132,24 +140,50 @@ static void combo_paint_face(HDC const dc, HWND const hwnd, BOOL const hot) {
   HBRUSH old_brush = NULL;
   HPEN old_pen = NULL;
   BOOL const enabled = IsWindowEnabled(hwnd);
-  int const state = combo_state(hwnd, hot);
+  int const state = visual_state(hwnd, hot);
   COLORREF const caption = enabled ? theme_palette_text() : theme_palette_text_disabled();
   LRESULT const cur = SendMessageW(hwnd, CB_GETCURSEL, 0, 0);
+  bool success = false;
 
   memset(&info, 0, sizeof(info));
   info.cbSize = sizeof(info);
-  GetComboBoxInfo(hwnd, &info);
-  GetClientRect(hwnd, &rc);
+  if (!GetComboBoxInfo(hwnd, &info)) {
+    OV_ERROR_SET_HRESULT(err, HRESULT_FROM_WIN32(GetLastError()));
+    goto cleanup;
+  }
+  if (!GetClientRect(hwnd, &rc)) {
+    OV_ERROR_SET_HRESULT(err, HRESULT_FROM_WIN32(GetLastError()));
+    goto cleanup;
+  }
 
   old_font = (HFONT)SelectObject(dc, theme_window_font(hwnd));
+  if ((old_font == NULL) || (old_font == HGDI_ERROR)) {
+    OV_ERROR_SET_GENERIC(err, ov_error_generic_fail); // GDI does not say why
+    old_font = NULL;
+    goto cleanup;
+  }
   fill = CreateSolidBrush(theme_palette_button(state, enabled));
   frame = CreatePen(PS_SOLID, 1, theme_palette_border());
   if ((fill == NULL) || (frame == NULL)) {
+    OV_ERROR_SET_GENERIC(err, ov_error_generic_fail);
     goto cleanup;
   }
   old_brush = (HBRUSH)SelectObject(dc, fill);
+  if ((old_brush == NULL) || (old_brush == HGDI_ERROR)) {
+    OV_ERROR_SET_GENERIC(err, ov_error_generic_fail);
+    old_brush = NULL;
+    goto cleanup;
+  }
   old_pen = (HPEN)SelectObject(dc, frame);
-  Rectangle(dc, rc.left, rc.top, rc.right, rc.bottom); // the frame and the face at once
+  if ((old_pen == NULL) || (old_pen == HGDI_ERROR)) {
+    OV_ERROR_SET_GENERIC(err, ov_error_generic_fail);
+    old_pen = NULL;
+    goto cleanup;
+  }
+  if (!Rectangle(dc, rc.left, rc.top, rc.right, rc.bottom)) { // the frame and the face at once
+    OV_ERROR_SET_GENERIC(err, ov_error_generic_fail);
+    goto cleanup;
+  }
 
   if (cur != CB_ERR) {
     wchar_t line[combo_line_max];
@@ -160,10 +194,23 @@ static void combo_paint_face(HDC const dc, HWND const hwnd, BOOL const hot) {
       SendMessageW(hwnd, CB_GETLBTEXT, (WPARAM)cur, (LPARAM)line);
       box = info.rcItem;
       InflateRect(&box, -layout_scale(combo_text_inset, (UINT)theme_window_dpi(hwnd)), 0);
-      SetBkMode(dc, TRANSPARENT);
-      SetTextColor(dc, caption);
-      DrawTextW(dc, line, -1, &box, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
-      draw_focus_cue(dc, hwnd, &box);
+      if (!SetBkMode(dc, TRANSPARENT)) {
+        OV_ERROR_SET_GENERIC(err, ov_error_generic_fail);
+        goto cleanup;
+      }
+      if (SetTextColor(dc, caption) == CLR_INVALID) {
+        OV_ERROR_SET_GENERIC(err, ov_error_generic_fail);
+        goto cleanup;
+      }
+      if ((DrawTextW(dc, line, -1, &box, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX) == 0) &&
+          (line[0] != L'\0')) {
+        OV_ERROR_SET_GENERIC(err, ov_error_generic_fail);
+        goto cleanup;
+      }
+      if (!draw_focus_cue(dc, hwnd, &box, err)) {
+        OV_ERROR_ADD_TRACE(err);
+        goto cleanup;
+      }
     }
   }
 
@@ -182,45 +229,85 @@ static void combo_paint_face(HDC const dc, HWND const hwnd, BOOL const hot) {
 
     arrow = CreateSolidBrush(caption);
     glyph = CreatePen(PS_SOLID, 1, caption);
-    if ((arrow != NULL) && (glyph != NULL)) {
+    if ((arrow == NULL) || (glyph == NULL)) {
+      OV_ERROR_SET_GENERIC(err, ov_error_generic_fail);
+      goto cleanup;
+    }
+    {
       HBRUSH const saved_brush = (HBRUSH)SelectObject(dc, arrow);
       HPEN const saved_pen = (HPEN)SelectObject(dc, glyph);
 
-      Polygon(dc, triangle, 3);
-      SelectObject(dc, saved_brush);
-      SelectObject(dc, saved_pen);
+      if ((saved_brush == NULL) || (saved_brush == HGDI_ERROR) || (saved_pen == NULL) || (saved_pen == HGDI_ERROR)) {
+        OV_ERROR_SET_GENERIC(err, ov_error_generic_fail);
+        goto cleanup;
+      }
+      if (!Polygon(dc, triangle, 3)) {
+        OV_ERROR_SET_GENERIC(err, ov_error_generic_fail);
+        goto cleanup;
+      }
+      if (SelectObject(dc, saved_brush) == NULL) {
+        OV_ERROR_SET_GENERIC(err, ov_error_generic_fail);
+        goto cleanup;
+      }
+      if (SelectObject(dc, saved_pen) == NULL) {
+        OV_ERROR_SET_GENERIC(err, ov_error_generic_fail);
+        goto cleanup;
+      }
     }
   }
+  success = true;
 
 cleanup:
   if (old_pen != NULL) {
-    SelectObject(dc, old_pen);
+    if (SelectObject(dc, old_pen) == NULL) {
+      OV_ERROR_SET_GENERIC(err, ov_error_generic_fail);
+      success = false;
+    }
     old_pen = NULL;
   }
   if (old_brush != NULL) {
-    SelectObject(dc, old_brush);
+    if (SelectObject(dc, old_brush) == NULL) {
+      OV_ERROR_SET_GENERIC(err, ov_error_generic_fail);
+      success = false;
+    }
     old_brush = NULL;
   }
   if (glyph != NULL) {
-    DeleteObject(glyph);
+    if (!DeleteObject(glyph)) {
+      OV_ERROR_SET_GENERIC(err, ov_error_generic_fail);
+      success = false;
+    }
     glyph = NULL;
   }
   if (frame != NULL) {
-    DeleteObject(frame);
+    if (!DeleteObject(frame)) {
+      OV_ERROR_SET_GENERIC(err, ov_error_generic_fail);
+      success = false;
+    }
     frame = NULL;
   }
   if (arrow != NULL) {
-    DeleteObject(arrow);
+    if (!DeleteObject(arrow)) {
+      OV_ERROR_SET_GENERIC(err, ov_error_generic_fail);
+      success = false;
+    }
     arrow = NULL;
   }
   if (fill != NULL) {
-    DeleteObject(fill);
+    if (!DeleteObject(fill)) {
+      OV_ERROR_SET_GENERIC(err, ov_error_generic_fail);
+      success = false;
+    }
     fill = NULL;
   }
   if (old_font != NULL) {
-    SelectObject(dc, old_font);
+    if (SelectObject(dc, old_font) == NULL) {
+      OV_ERROR_SET_GENERIC(err, ov_error_generic_fail);
+      success = false;
+    }
     old_font = NULL;
   }
+  return success;
 }
 
 /**
@@ -228,15 +315,28 @@ cleanup:
  *
  * @param hwnd the combo box to paint
  * @param hot the hover state the subclass kept
+ * @param err receives the failure of the painting
+ * @return false when the combo box could not be painted
  */
-static void combo_paint(HWND const hwnd, BOOL const hot) {
+static NODISCARD bool paint_window(HWND const hwnd, BOOL const hot, struct ov_error *const err) {
   PAINTSTRUCT ps;
   HDC dc = BeginPaint(hwnd, &ps);
+  bool success = false;
 
-  if (dc != NULL) {
-    combo_paint_face(dc, hwnd, hot);
-    EndPaint(hwnd, &ps);
+  if (dc == NULL) {
+    OV_ERROR_SET_HRESULT(err, HRESULT_FROM_WIN32(GetLastError()));
+    goto cleanup;
   }
+  success = paint_face(dc, hwnd, hot, err);
+
+cleanup:
+  if (dc != NULL) {
+    if (!EndPaint(hwnd, &ps)) {
+      OV_ERROR_SET_GENERIC(err, ov_error_generic_fail); // GDI does not say why
+      success = false;
+    }
+  }
+  return success;
 }
 
 /**
@@ -262,24 +362,45 @@ list_subclass(HWND const hwnd, UINT const msg, WPARAM const wparam, LPARAM const
  * list, which the theme of the system leaves light, is handed to the subclass here.
  *
  * @param combo the combo box whose list is given the class
+ * @param err receives the failure of the theme class
+ * @return false when the list could not be given the class
  */
-static void theme_combo_list(HWND const combo) {
+static NODISCARD bool list(HWND const combo, struct ov_error *const err) {
   COMBOBOXINFO info;
+  bool success = false;
 
   memset(&info, 0, sizeof(info));
   info.cbSize = sizeof(info);
-  if (!GetComboBoxInfo(combo, &info) || (info.hwndList == NULL)) {
-    return;
+  if (!GetComboBoxInfo(combo, &info)) {
+    OV_ERROR_SET_HRESULT(err, HRESULT_FROM_WIN32(GetLastError()));
+    return false;
   }
-  SetWindowTheme(info.hwndList, L"DarkMode_Explorer", NULL);
+  if (info.hwndList == NULL) {
+    return true; // the list is made when it is first shown
+  }
+  {
+    HRESULT const hr = SetWindowTheme(info.hwndList, L"DarkMode_Explorer", NULL);
+
+    if (FAILED(hr)) {
+      OV_ERROR_SET_HRESULT(err, hr);
+      goto cleanup;
+    }
+  }
   {
     DWORD_PTR existing = 0;
 
     if (!(GetWindowSubclass(info.hwndList, list_subclass, 1, &existing) && existing != 0)) {
       // the paint state of the list is the combo box it belongs to
-      SetWindowSubclass(info.hwndList, list_subclass, 1, (DWORD_PTR)combo);
+      if (!SetWindowSubclass(info.hwndList, list_subclass, 1, (DWORD_PTR)combo)) {
+        OV_ERROR_SET_HRESULT(err, HRESULT_FROM_WIN32(GetLastError()));
+        goto cleanup;
+      }
     }
   }
+  success = true;
+
+cleanup:
+  return success;
 }
 
 /**
@@ -293,25 +414,65 @@ static void theme_combo_list(HWND const combo) {
  * @param dc the context to draw in
  * @param width the width of the whole window, the frame included
  * @param height the height of the whole window, the frame included
+ * @param err receives the failure of the drawing
+ * @return false when the frame could not be drawn
  */
-static void list_paint_frame(HDC const dc, LONG const width, LONG const height) {
+static NODISCARD bool list_paint_frame(HDC const dc, LONG const width, LONG const height, struct ov_error *const err) {
   HPEN pen = NULL;
   HPEN old_pen = NULL;
   HBRUSH old_brush = NULL;
+  bool success = false;
 
   if ((dc == NULL) || (width <= 0) || (height <= 0)) {
-    return;
+    OV_ERROR_SET_GENERIC(err, ov_error_generic_invalid_argument);
+    goto cleanup;
   }
   pen = CreatePen(PS_SOLID, 1, theme_palette_border());
   if (pen == NULL) {
-    return;
+    OV_ERROR_SET_GENERIC(err, ov_error_generic_fail); // GDI does not say why
+    goto cleanup;
   }
   old_pen = (HPEN)SelectObject(dc, pen);
+  if ((old_pen == NULL) || (old_pen == HGDI_ERROR)) {
+    OV_ERROR_SET_GENERIC(err, ov_error_generic_fail);
+    old_pen = NULL;
+    goto cleanup;
+  }
   old_brush = (HBRUSH)SelectObject(dc, GetStockObject(NULL_BRUSH));
-  Rectangle(dc, 0, 0, width, height);
-  SelectObject(dc, old_brush);
-  SelectObject(dc, old_pen);
-  DeleteObject(pen);
+  if ((old_brush == NULL) || (old_brush == HGDI_ERROR)) {
+    OV_ERROR_SET_GENERIC(err, ov_error_generic_fail);
+    old_brush = NULL;
+    goto cleanup;
+  }
+  if (!Rectangle(dc, 0, 0, width, height)) {
+    OV_ERROR_SET_GENERIC(err, ov_error_generic_fail);
+    goto cleanup;
+  }
+  success = true;
+
+cleanup:
+  if (old_brush != NULL) {
+    if (SelectObject(dc, old_brush) == NULL) {
+      OV_ERROR_SET_GENERIC(err, ov_error_generic_fail);
+      success = false;
+    }
+    old_brush = NULL;
+  }
+  if (old_pen != NULL) {
+    if (SelectObject(dc, old_pen) == NULL) {
+      OV_ERROR_SET_GENERIC(err, ov_error_generic_fail);
+      success = false;
+    }
+    old_pen = NULL;
+  }
+  if (pen != NULL) {
+    if (!DeleteObject(pen)) {
+      OV_ERROR_SET_GENERIC(err, ov_error_generic_fail);
+      success = false;
+    }
+    pen = NULL;
+  }
+  return success;
 }
 
 /**
@@ -327,8 +488,10 @@ static void list_paint_frame(HDC const dc, LONG const width, LONG const height) 
  * @param list the list window to paint
  * @param combo the combo box the list belongs to, the font and the row height are its
  * @param dc the context to draw in
+ * @param err receives the failure of the painting
+ * @return false when the rows could not be painted
  */
-static void list_paint_rows(HWND const list, HWND const combo, HDC const dc) {
+static NODISCARD bool list_paint_rows(HWND const list, HWND const combo, HDC const dc, struct ov_error *const err) {
   RECT rc = {0, 0, 0, 0};
   int const count = (int)SendMessageW(list, LB_GETCOUNT, 0, 0);
   int const cur = (int)SendMessageW(list, LB_GETCURSEL, 0, 0);
@@ -340,11 +503,20 @@ static void list_paint_rows(HWND const list, HWND const combo, HDC const dc) {
   HBRUSH face = NULL;
   HBRUSH chosen = NULL;
   HFONT old_font = NULL;
+  bool success = false;
 
-  if ((dc == NULL) || (count <= 0) || (height <= 0) || (rows <= 0) || (first < 0)) {
-    return;
+  if (dc == NULL) {
+    OV_ERROR_SET_GENERIC(err, ov_error_generic_invalid_argument);
+    goto cleanup;
   }
-  GetClientRect(list, &rc);
+  if ((count <= 0) || (height <= 0) || (rows <= 0) || (first < 0)) {
+    success = true; // there is no row to paint
+    goto cleanup;
+  }
+  if (!GetClientRect(list, &rc)) {
+    OV_ERROR_SET_HRESULT(err, HRESULT_FROM_WIN32(GetLastError()));
+    goto cleanup;
+  }
   shown = rows;
   if (shown > ((rc.bottom - rc.top) / height)) {
     shown = (rc.bottom - rc.top) / height;
@@ -352,9 +524,15 @@ static void list_paint_rows(HWND const list, HWND const combo, HDC const dc) {
   face = CreateSolidBrush(theme_palette_control());
   chosen = CreateSolidBrush(GetSysColor(COLOR_HIGHLIGHT));
   if ((face == NULL) || (chosen == NULL)) {
+    OV_ERROR_SET_GENERIC(err, ov_error_generic_fail);
     goto cleanup;
   }
   old_font = (HFONT)SelectObject(dc, theme_window_font(combo));
+  if ((old_font == NULL) || (old_font == HGDI_ERROR)) {
+    OV_ERROR_SET_GENERIC(err, ov_error_generic_fail);
+    old_font = NULL;
+    goto cleanup;
+  }
   for (i = 0; i < shown; i++) {
     RECT row = {0, 0, 0, 0};
     wchar_t text[combo_line_max];
@@ -370,26 +548,49 @@ static void list_paint_rows(HWND const list, HWND const combo, HDC const dc) {
     }
     memset(text, 0, sizeof(text));
     SendMessageW(list, LB_GETTEXT, (WPARAM)item, (LPARAM)text);
-    FillRect(dc, &row, is_chosen ? chosen : face);
+    if (!FillRect(dc, &row, is_chosen ? chosen : face)) {
+      OV_ERROR_SET_GENERIC(err, ov_error_generic_fail);
+      goto cleanup;
+    }
     InflateRect(&row, -layout_scale(combo_text_inset, (UINT)theme_window_dpi(list)), 0);
-    SetBkMode(dc, TRANSPARENT);
-    SetTextColor(dc, is_chosen ? GetSysColor(COLOR_HIGHLIGHTTEXT) : theme_palette_text());
-    DrawTextW(dc, text, -1, &row, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
+    if (!SetBkMode(dc, TRANSPARENT)) {
+      OV_ERROR_SET_GENERIC(err, ov_error_generic_fail);
+      goto cleanup;
+    }
+    if (SetTextColor(dc, is_chosen ? GetSysColor(COLOR_HIGHLIGHTTEXT) : theme_palette_text()) == CLR_INVALID) {
+      OV_ERROR_SET_GENERIC(err, ov_error_generic_fail);
+      goto cleanup;
+    }
+    if ((DrawTextW(dc, text, -1, &row, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX) == 0) && (text[0] != L'\0')) {
+      OV_ERROR_SET_GENERIC(err, ov_error_generic_fail);
+      goto cleanup;
+    }
   }
+  success = true;
 
 cleanup:
   if (old_font != NULL) {
-    SelectObject(dc, old_font);
+    if (SelectObject(dc, old_font) == NULL) {
+      OV_ERROR_SET_GENERIC(err, ov_error_generic_fail);
+      success = false;
+    }
     old_font = NULL;
   }
   if (chosen != NULL) {
-    DeleteObject(chosen);
+    if (!DeleteObject(chosen)) {
+      OV_ERROR_SET_GENERIC(err, ov_error_generic_fail);
+      success = false;
+    }
     chosen = NULL;
   }
   if (face != NULL) {
-    DeleteObject(face);
+    if (!DeleteObject(face)) {
+      OV_ERROR_SET_GENERIC(err, ov_error_generic_fail);
+      success = false;
+    }
     face = NULL;
   }
+  return success;
 }
 
 /**
@@ -412,7 +613,12 @@ static LRESULT CALLBACK
 list_subclass(HWND const hwnd, UINT const msg, WPARAM const wparam, LPARAM const lparam, UINT_PTR const id, DWORD_PTR const ref) {
   switch (msg) {
   case WM_NCDESTROY:
-    RemoveWindowSubclass(hwnd, list_subclass, id);
+    if (!RemoveWindowSubclass(hwnd, list_subclass, id)) {
+      struct ov_error err = {0};
+
+      OV_ERROR_SET_HRESULT(&err, HRESULT_FROM_WIN32(GetLastError()));
+      OV_ERROR_REPORT(&err, NULL);
+    }
     break;
   case WM_ERASEBKGND: {
     // the area the list erases is painted in the colour of the list, so the part an animation
@@ -420,10 +626,27 @@ list_subclass(HWND const hwnd, UINT const msg, WPARAM const wparam, LPARAM const
     RECT rc = {0, 0, 0, 0};
     HBRUSH const brush = CreateSolidBrush(theme_palette_control());
 
-    if (brush != NULL) {
-      GetClientRect(hwnd, &rc);
-      FillRect((HDC)wparam, &rc, brush);
-      DeleteObject(brush);
+    if (brush == NULL) {
+      struct ov_error err = {0};
+
+      OV_ERROR_SET_GENERIC(&err, ov_error_generic_fail); // GDI does not say why
+      OV_ERROR_REPORT(&err, NULL);
+      return 1;
+    }
+    {
+      struct ov_error err = {0};
+
+      if (!GetClientRect(hwnd, &rc)) {
+        OV_ERROR_SET_HRESULT(&err, HRESULT_FROM_WIN32(GetLastError()));
+        OV_ERROR_REPORT(&err, NULL);
+      } else if (!FillRect((HDC)wparam, &rc, brush)) {
+        OV_ERROR_SET_GENERIC(&err, ov_error_generic_fail);
+        OV_ERROR_REPORT(&err, NULL);
+      }
+      if (!DeleteObject(brush)) {
+        OV_ERROR_SET_GENERIC(&err, ov_error_generic_fail);
+        OV_ERROR_REPORT(&err, NULL);
+      }
     }
     return 1;
   }
@@ -432,12 +655,29 @@ list_subclass(HWND const hwnd, UINT const msg, WPARAM const wparam, LPARAM const
     LRESULT const result = DefSubclassProc(hwnd, msg, wparam, lparam);
     HDC dc = GetWindowDC(hwnd);
 
-    if (dc != NULL) {
-      RECT rc;
+    if (dc == NULL) {
+      struct ov_error err = {0};
 
-      GetWindowRect(hwnd, &rc);
-      list_paint_frame(dc, rc.right - rc.left, rc.bottom - rc.top);
-      ReleaseDC(hwnd, dc);
+      OV_ERROR_SET_HRESULT(&err, HRESULT_FROM_WIN32(GetLastError()));
+      OV_ERROR_REPORT(&err, NULL);
+      return result;
+    }
+    {
+      RECT rc;
+      struct ov_error err = {0};
+
+      if (GetWindowRect(hwnd, &rc)) {
+        if (!list_paint_frame(dc, rc.right - rc.left, rc.bottom - rc.top, &err)) {
+          OV_ERROR_REPORT(&err, NULL);
+        }
+      } else {
+        OV_ERROR_SET_HRESULT(&err, HRESULT_FROM_WIN32(GetLastError()));
+        OV_ERROR_REPORT(&err, NULL);
+      }
+      if (!ReleaseDC(hwnd, dc)) {
+        OV_ERROR_SET_GENERIC(&err, ov_error_generic_fail);
+        OV_ERROR_REPORT(&err, NULL);
+      }
     }
     return result;
   }
@@ -445,10 +685,20 @@ list_subclass(HWND const hwnd, UINT const msg, WPARAM const wparam, LPARAM const
     // the rows are painted into the context of the control, the way the list paints them
     PAINTSTRUCT ps;
     HDC dc = BeginPaint(hwnd, &ps);
+    struct ov_error err = {0};
+    bool painted = false;
 
-    if (dc != NULL) {
-      list_paint_rows(hwnd, (HWND)(void *)ref, dc);
-      EndPaint(hwnd, &ps);
+    if (dc == NULL) {
+      OV_ERROR_SET_HRESULT(&err, HRESULT_FROM_WIN32(GetLastError()));
+    } else {
+      painted = list_paint_rows(hwnd, (HWND)(void *)ref, dc, &err);
+      if (!EndPaint(hwnd, &ps)) {
+        OV_ERROR_SET_GENERIC(&err, ov_error_generic_fail);
+        painted = false;
+      }
+    }
+    if (!painted) {
+      OV_ERROR_REPORT(&err, NULL);
     }
     return 0;
   }
@@ -456,7 +706,11 @@ list_subclass(HWND const hwnd, UINT const msg, WPARAM const wparam, LPARAM const
     // the rows are read back through WM_PRINTCLIENT, which paints into a context the
     // caller holds, so the reader never depends on the list being on the screen
     if ((lparam & PRF_CLIENT) != 0) {
-      list_paint_rows(hwnd, (HWND)(void *)ref, (HDC)wparam);
+      struct ov_error err = {0};
+
+      if (!list_paint_rows(hwnd, (HWND)(void *)ref, (HDC)wparam, &err)) {
+        OV_ERROR_REPORT(&err, NULL);
+      }
     }
     return 0;
   }
@@ -464,15 +718,28 @@ list_subclass(HWND const hwnd, UINT const msg, WPARAM const wparam, LPARAM const
     // the frame and the rows are painted into the context the caller holds.  The context
     // is the first parameter and the flags are the second one, the way the message is made
     LRESULT const result = DefSubclassProc(hwnd, msg, wparam, lparam);
+    struct ov_error err = {0};
+    bool painted = true;
 
     if ((lparam & PRF_NONCLIENT) != 0) {
       RECT rc;
 
-      GetWindowRect(hwnd, &rc);
-      list_paint_frame((HDC)wparam, rc.right - rc.left, rc.bottom - rc.top);
+      if (GetWindowRect(hwnd, &rc)) {
+        if (!list_paint_frame((HDC)wparam, rc.right - rc.left, rc.bottom - rc.top, &err)) {
+          painted = false;
+        }
+      } else {
+        OV_ERROR_SET_HRESULT(&err, HRESULT_FROM_WIN32(GetLastError()));
+        painted = false;
+      }
     }
     if ((lparam & PRF_CLIENT) != 0) {
-      list_paint_rows(hwnd, (HWND)(void *)ref, (HDC)wparam);
+      if (!list_paint_rows(hwnd, (HWND)(void *)ref, (HDC)wparam, &err)) {
+        painted = false;
+      }
+    }
+    if (!painted) {
+      OV_ERROR_REPORT(&err, NULL);
     }
     return result;
   }
@@ -494,33 +761,54 @@ list_subclass(HWND const hwnd, UINT const msg, WPARAM const wparam, LPARAM const
  * @return the answer of the default procedure when the message was not consumed
  */
 static LRESULT CALLBACK
-combo_subclass(HWND const hwnd, UINT const msg, WPARAM const wparam, LPARAM const lparam, UINT_PTR const id, DWORD_PTR const ref) {
+subclass(HWND const hwnd, UINT const msg, WPARAM const wparam, LPARAM const lparam, UINT_PTR const id, DWORD_PTR const ref) {
   struct combo_paint *paint = (struct combo_paint *)(void *)ref;
 
   switch (msg) {
   case WM_NCDESTROY:
-    RemoveWindowSubclass(hwnd, combo_subclass, id);
-    combo_paint_destroy(paint);
+    if (!RemoveWindowSubclass(hwnd, subclass, id)) {
+      struct ov_error err = {0};
+
+      OV_ERROR_SET_HRESULT(&err, HRESULT_FROM_WIN32(GetLastError()));
+      OV_ERROR_REPORT(&err, NULL);
+    }
+    paint_destroy(paint);
     return DefSubclassProc(hwnd, msg, wparam, lparam);
   case WM_ERASEBKGND:
     return 1;
   case WM_MOUSEMOVE:
     if ((paint != NULL) && !paint->hot) {
       TRACKMOUSEEVENT tme;
+      struct ov_error err = {0};
+      bool ok = true;
 
       paint->hot = TRUE;
       memset(&tme, 0, sizeof(tme));
       tme.cbSize = sizeof(tme);
       tme.dwFlags = TME_LEAVE;
       tme.hwndTrack = hwnd;
-      TrackMouseEvent(&tme);
-      InvalidateRect(hwnd, NULL, FALSE);
+      if (!TrackMouseEvent(&tme)) {
+        OV_ERROR_SET_HRESULT(&err, HRESULT_FROM_WIN32(GetLastError()));
+        ok = false;
+      }
+      if (!InvalidateRect(hwnd, NULL, FALSE)) {
+        OV_ERROR_SET_HRESULT(&err, HRESULT_FROM_WIN32(GetLastError()));
+        ok = false;
+      }
+      if (!ok) {
+        OV_ERROR_REPORT(&err, NULL);
+      }
     }
     break;
   case WM_MOUSELEAVE:
     if (paint != NULL) {
       paint->hot = FALSE;
-      InvalidateRect(hwnd, NULL, FALSE);
+      if (!InvalidateRect(hwnd, NULL, FALSE)) {
+        struct ov_error err = {0};
+
+        OV_ERROR_SET_HRESULT(&err, HRESULT_FROM_WIN32(GetLastError()));
+        OV_ERROR_REPORT(&err, NULL);
+      }
     }
     break;
   case WM_ENABLE: {
@@ -529,23 +817,49 @@ combo_subclass(HWND const hwnd, UINT const msg, WPARAM const wparam, LPARAM cons
     if (paint != NULL) {
       paint->hot = FALSE;
     }
-    InvalidateRect(hwnd, NULL, FALSE);
+    if (!InvalidateRect(hwnd, NULL, FALSE)) {
+      struct ov_error err = {0};
+
+      OV_ERROR_SET_HRESULT(&err, HRESULT_FROM_WIN32(GetLastError()));
+      OV_ERROR_REPORT(&err, NULL);
+    }
     return result;
   }
   case WM_SETFOCUS:
   case WM_KILLFOCUS:
   case WM_CAPTURECHANGED:
-    InvalidateRect(hwnd, NULL, FALSE);
+    if (!InvalidateRect(hwnd, NULL, FALSE)) {
+      struct ov_error err = {0};
+
+      OV_ERROR_SET_HRESULT(&err, HRESULT_FROM_WIN32(GetLastError()));
+      OV_ERROR_REPORT(&err, NULL);
+    }
     break;
   case WM_THEMECHANGED:
     // the list can be made anew with the theme, and the new one comes without the class
-    theme_combo_list(hwnd);
+    {
+      struct ov_error err = {0};
+
+      if (!list(hwnd, &err)) {
+        OV_ERROR_REPORT(&err, NULL);
+      }
+    }
     break;
-  case WM_PAINT:
-    combo_paint(hwnd, (paint != NULL) ? paint->hot : FALSE);
+  case WM_PAINT: {
+    struct ov_error err = {0};
+
+    if (!paint_window(hwnd, (paint != NULL) ? paint->hot : FALSE, &err)) {
+      OV_ERROR_REPORT(&err, NULL);
+    }
+  }
     return 0;
-  case WM_PRINTCLIENT:
-    combo_paint_face((HDC)wparam, hwnd, (paint != NULL) ? paint->hot : FALSE);
+  case WM_PRINTCLIENT: {
+    struct ov_error err = {0};
+
+    if (!paint_face((HDC)wparam, hwnd, (paint != NULL) ? paint->hot : FALSE, &err)) {
+      OV_ERROR_REPORT(&err, NULL);
+    }
+  }
     return 0;
   default:
     break;
@@ -560,64 +874,89 @@ combo_subclass(HWND const hwnd, UINT const msg, WPARAM const wparam, LPARAM cons
  * @param err receives the failure of the allocation or of the subclass
  * @return the paint state of the combo box, NULL when it could not be subclassed
  */
-static struct combo_paint *ensure_subclass(HWND const combo, struct ov_error *const err) {
+static NODISCARD struct combo_paint *ensure_subclass(HWND const combo, struct ov_error *const err) {
   struct combo_paint *paint = NULL;
+  struct combo_paint *result = NULL;
   DWORD_PTR existing = 0;
   bool success = false;
 
-  if (GetWindowSubclass(combo, combo_subclass, 1, &existing) && existing != 0) {
-    return (struct combo_paint *)(void *)existing;
+  if (GetWindowSubclass(combo, subclass, 1, &existing) && existing != 0) {
+    result = (struct combo_paint *)(void *)existing;
+    goto cleanup;
   }
   if (!OV_REALLOC(&paint, 1, sizeof(*paint))) {
     OV_ERROR_SET_GENERIC(err, ov_error_generic_out_of_memory);
     goto cleanup;
   }
   paint->hot = FALSE;
-  if (!SetWindowSubclass(combo, combo_subclass, 1, (DWORD_PTR)(void *)paint)) {
+  if (!SetWindowSubclass(combo, subclass, 1, (DWORD_PTR)(void *)paint)) {
     OV_ERROR_SET_HRESULT(err, HRESULT_FROM_WIN32(GetLastError()));
     goto cleanup;
   }
   success = true;
 
 cleanup:
-  if (!success) {
+  if (success) {
+    result = paint;
+  } else {
     OV_FREE(&paint);
-    paint = NULL;
   }
-  return paint;
+  return result;
 }
 
 /**
  * @brief Give a combo box back to the theme of the system
  *
  * @param combo the combo box to detach from, NULL is allowed
+ * @param err receives the failure of the detach
+ * @return false when the theme could not be given back
  */
-static void theme_combo_detach(HWND const combo) {
+static NODISCARD bool detach(HWND const combo, struct ov_error *const err) {
   DWORD_PTR existing = 0;
+  bool success = false;
 
   if (combo == NULL) {
-    return;
+    return true;
   }
-  if (GetWindowSubclass(combo, combo_subclass, 1, &existing) && existing != 0) {
+  if (GetWindowSubclass(combo, subclass, 1, &existing) && existing != 0) {
     struct combo_paint *paint = (struct combo_paint *)(void *)existing;
 
-    RemoveWindowSubclass(combo, combo_subclass, 1);
-    combo_paint_destroy(paint);
+    if (!RemoveWindowSubclass(combo, subclass, 1)) {
+      OV_ERROR_SET_HRESULT(err, HRESULT_FROM_WIN32(GetLastError()));
+      goto cleanup;
+    }
+    paint_destroy(paint);
   }
   {
     COMBOBOXINFO info;
 
     memset(&info, 0, sizeof(info));
     info.cbSize = sizeof(info);
-    if (GetComboBoxInfo(combo, &info) && (info.hwndList != NULL)) {
+    if (!GetComboBoxInfo(combo, &info)) {
+      OV_ERROR_SET_HRESULT(err, HRESULT_FROM_WIN32(GetLastError()));
+      goto cleanup;
+    }
+    if (info.hwndList != NULL) {
       DWORD_PTR listed = 0;
+      HRESULT hr = S_OK;
 
       if (GetWindowSubclass(info.hwndList, list_subclass, 1, &listed)) {
-        RemoveWindowSubclass(info.hwndList, list_subclass, 1);
+        if (!RemoveWindowSubclass(info.hwndList, list_subclass, 1)) {
+          OV_ERROR_SET_HRESULT(err, HRESULT_FROM_WIN32(GetLastError()));
+          goto cleanup;
+        }
       }
-      SetWindowTheme(info.hwndList, NULL, NULL);
+      hr = SetWindowTheme(info.hwndList, NULL, NULL);
+      if (FAILED(hr)) {
+        OV_ERROR_SET_HRESULT(err, hr);
+        goto cleanup;
+      }
     }
   }
+  success = true;
+
+cleanup:
+  return success;
 }
 
 /**
@@ -627,27 +966,35 @@ static void theme_combo_detach(HWND const combo) {
  * light then.
  *
  * @param combo the window to attach to, NULL is allowed
+ * @param err receives the failure of the subclass
+ * @return false when the painting could not be taken over
  */
-void theme_combo_attach(HWND const combo) {
-  struct ov_error err = {0};
+NODISCARD bool theme_combo_attach(HWND const combo, struct ov_error *const err) {
   LONG_PTR style = 0;
 
   if (combo == NULL) {
-    return;
+    return true;
   }
   if (!theme_state_dark()) {
-    theme_combo_detach(combo);
-    return;
+    if (!detach(combo, err)) {
+      OV_ERROR_ADD_TRACE(err);
+      return false;
+    }
+    return true;
   }
   style = GetWindowLongPtrW(combo, GWL_STYLE);
   if ((style & 0x3) != CBS_DROPDOWNLIST) {
     // another style has an edit of its own, which the palette answers through
     // theme_message(), and no field this component knows how to paint
-    return;
+    return true;
   }
-  if (ensure_subclass(combo, &err) == NULL) {
-    OV_ERROR_REPORT(&err, NULL);
-    return;
+  if (ensure_subclass(combo, err) == NULL) {
+    OV_ERROR_ADD_TRACE(err);
+    return false;
   }
-  theme_combo_list(combo);
+  if (!list(combo, err)) {
+    OV_ERROR_ADD_TRACE(err);
+    return false;
+  }
+  return true;
 }

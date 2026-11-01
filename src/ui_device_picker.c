@@ -19,15 +19,13 @@
 #include <ovprintf.h>
 #include <ovprintf_ex.h>
 
-#include "device.h"
+#include "device_probe.h"
 #include "layout.h"
 #include "repair.h"
 #include "settings.h"
 
 #define IDC_PICKER_LABEL 16
 #define IDC_PICKER_COMBO 17
-#define IDC_PICKER_OK 18
-#define IDC_PICKER_CANCEL 19
 
 /** @brief The room of one line of the combo */
 enum { ADC_PICKER_TEXT_CHARS = 512 };
@@ -38,6 +36,65 @@ enum { ADC_PICKER_TEXT_CHARS = 512 };
 #define LH(r) ((r).bottom - (r).top)
 
 static wchar_t const ph[] = L"%1$s";
+
+/** @brief The name the window keeps its state under */
+static wchar_t const state_prop[] = L"audient_device_closer_picker_state";
+
+/**
+ * @brief The geometry of the window that asks which device to repair, in logical units
+ *
+ * The window holds the sentence that says why it asks, the combo of the connected devices
+ * under it and the two buttons that answer the question.  Its least width is below; the
+ * window grows to the widest line the combo holds, so no name is cut off.
+ */
+enum picker_layout_size {
+  ADC_PICKER_W = 360,         /* the least width the sentences read in */
+  ADC_PICKER_LABEL_H = 40,    /* the two sentences that ask the question */
+  ADC_PICKER_COMBO_H = 26,    /* the combo of the connected devices */
+  ADC_PICKER_COMBO_INSET = 8, /* the frame and the padding the combo draws its line away from */
+  ADC_PICKER_BUTTON_H = 26,   /* the two buttons that answer it */
+  ADC_PICKER_BUTTON_W = 120,
+};
+
+/**
+ * @brief Every rectangle of the window that asks which device to repair
+ *
+ * All values are physical pixels in the client coordinates of the window.  The stack is
+ * placed from the top edge the way the progress window is.
+ */
+struct picker_layout {
+  RECT label;  /* the sentence that asks the question */
+  RECT combo;  /* the connected devices, one line each */
+  RECT ok;     /* the button that repairs the chosen device */
+  RECT cancel; /* the button that answers nothing */
+};
+
+/**
+ * @brief Compute the geometry of the window that asks which device to repair
+ *
+ * The stack is placed from the top edge: the sentence, the combo of the connected devices
+ * under it and the two buttons that answer the question side by side under that.
+ *
+ * @param width  the client width of the window in pixels
+ * @param dpi    the dpi of the window
+ * @param out    receives the geometry
+ */
+static void picker_compute(int const width, UINT const dpi, struct picker_layout *const out) {
+  int const margin = layout_scale(ADC_LAYOUT_MARGIN_X, dpi);
+  int const usable = (width > 2 * margin) ? (width - 2 * margin) : 0;
+  int const combo_bottom = layout_scale(ADC_LAYOUT_MARGIN_TOP, dpi) + layout_scale(ADC_PICKER_LABEL_H, dpi) +
+                           layout_scale(ADC_LAYOUT_GAP, dpi) + layout_scale(ADC_PICKER_COMBO_H, dpi);
+  int const button_w = layout_scale(ADC_PICKER_BUTTON_W, dpi);
+  int const button_h = layout_scale(ADC_PICKER_BUTTON_H, dpi);
+  int const button_row = combo_bottom + layout_scale(ADC_LAYOUT_GAP, dpi);
+  int const right = margin + usable;
+
+  memset(out, 0, sizeof(*out));
+  out->label = layout_rect(margin, layout_scale(ADC_LAYOUT_MARGIN_TOP, dpi), usable, layout_scale(ADC_PICKER_LABEL_H, dpi));
+  out->combo = layout_rect(margin, out->label.bottom + layout_scale(ADC_LAYOUT_GAP, dpi), usable, layout_scale(ADC_PICKER_COMBO_H, dpi));
+  out->ok = layout_rect(right - 2 * button_w - layout_scale(ADC_LAYOUT_GAP, dpi), button_row, button_w, button_h);
+  out->cancel = layout_rect(right - button_w, button_row, button_w, button_h);
+}
 
 /** @brief The styles of the window: a frame it is not resized with */
 static DWORD const picker_window_style = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU;
@@ -70,7 +127,11 @@ struct picker_window {
   HWND cancel_btn;
   int dpi;
   HFONT font;
-  struct picker_result *result; // borrowed
+  struct picker_result *result;        // borrowed
+  struct settings const *settings;     // borrowed, names the devices the combo lists
+  struct device_target const *targets; // borrowed, the units the combo lists
+  struct ov_error *err;                // borrowed, why the window could not be made
+  bool failed;                         // the controls could not be made
 };
 
 /**
@@ -88,13 +149,11 @@ struct picker_window {
  * @param out_size room of out
  * @return false when the arguments name nothing
  */
-static bool
-ui_device_picker_label(struct device_entry const *const entry, char const *const devnode, char *const out, size_t const out_size) {
-  if ((entry == NULL) || (entry->name == NULL) || (devnode == NULL) || (devnode[0] == '\0') || (out == NULL) || (out_size == 0)) {
+static bool label(struct device_entry const *const entry, wchar_t const *const devnode, wchar_t *const out, size_t const out_size) {
+  if ((entry == NULL) || (entry->name == NULL) || (devnode == NULL) || (devnode[0] == L'\0') || (out == NULL) || (out_size == 0)) {
     return false;
   }
-  OV_SNPRINTF(out, out_size, "%1$s (%2$s)", "%1$s (%2$s)", entry->name, devnode);
-  return true;
+  return OV_SNPRINTF(out, out_size, L"%1$ls (%2$ls)", L"%1$ls (%2$ls)", entry->name, devnode) >= 0;
 }
 
 /**
@@ -103,23 +162,26 @@ ui_device_picker_label(struct device_entry const *const entry, char const *const
  * @param pw the window to draw with
  * @param dpi the dpi to draw for
  */
-static void picker_apply_font(struct picker_window *const pw, int const dpi) {
+static NODISCARD bool apply_font(struct picker_window *const pw, int const dpi, struct ov_error *const err) {
   HFONT stale = pw->font;
   HFONT font = layout_make_font((UINT)dpi);
 
   pw->dpi = dpi;
   if (font == NULL) {
-    return; // the geometry follows the monitor, the window keeps the font it has
+    // the geometry follows the monitor, the window keeps the font it has
+    OV_ERROR_SET_GENERIC(err, ov_error_generic_fail); // GDI does not say why
+    return false;
   }
   pw->font = font;
   SendMessageW(pw->label, WM_SETFONT, (WPARAM)font, TRUE);
   SendMessageW(pw->combo, WM_SETFONT, (WPARAM)font, TRUE);
   SendMessageW(pw->ok_btn, WM_SETFONT, (WPARAM)font, TRUE);
   SendMessageW(pw->cancel_btn, WM_SETFONT, (WPARAM)font, TRUE);
-  if (stale != NULL) {
-    DeleteObject(stale);
-    stale = NULL;
+  if ((stale != NULL) && !DeleteObject(stale)) {
+    OV_ERROR_SET_GENERIC(err, ov_error_generic_fail);
+    return false;
   }
+  return true;
 }
 
 /**
@@ -128,28 +190,50 @@ static void picker_apply_font(struct picker_window *const pw, int const dpi) {
  * @param pw the window that draws the text
  * @param text the text to measure
  * @param len how many characters of the text to measure
- * @return the width in pixels, 0 when it could not be measured
+ * @param out receives the width in pixels
+ * @param err receives the failure of the measurement
+ * @return false when the text could not be measured
  */
-static int picker_text_width(struct picker_window const *const pw, wchar_t const *const text, size_t const len) {
-  HDC dc = GetDC(pw->hwnd);
+static NODISCARD bool
+text_width(struct picker_window const *const pw, wchar_t const *const text, size_t const len, int *const out, struct ov_error *const err) {
+  HDC dc = NULL;
   HFONT old = NULL;
   SIZE size = {0, 0};
-  int width = 0;
+  bool success = false;
 
+  *out = 0;
+  dc = GetDC(pw->hwnd);
   if (dc == NULL) {
-    return 0;
+    OV_ERROR_SET_HRESULT(err, HRESULT_FROM_WIN32(GetLastError()));
+    goto cleanup;
   }
   if (pw->font != NULL) {
     old = (HFONT)SelectObject(dc, pw->font);
+    if ((old == NULL) || (old == HGDI_ERROR)) {
+      OV_ERROR_SET_GENERIC(err, ov_error_generic_fail); // GDI does not say why
+      old = NULL;
+      goto cleanup;
+    }
   }
-  if (GetTextExtentPoint32W(dc, text, (int)len, &size)) {
-    width = size.cx;
+  if (!GetTextExtentPoint32W(dc, text, (int)len, &size)) {
+    OV_ERROR_SET_GENERIC(err, ov_error_generic_fail);
+    goto cleanup;
   }
-  if (old != NULL) {
-    SelectObject(dc, old);
+  *out = size.cx;
+  success = true;
+
+cleanup:
+  if (dc != NULL) {
+    if ((old != NULL) && (SelectObject(dc, old) == NULL)) {
+      OV_ERROR_SET_GENERIC(err, ov_error_generic_fail);
+      success = false;
+    }
+    if (!ReleaseDC(pw->hwnd, dc)) {
+      OV_ERROR_SET_GENERIC(err, ov_error_generic_fail);
+      success = false;
+    }
   }
-  ReleaseDC(pw->hwnd, dc);
-  return width;
+  return success;
 }
 
 /**
@@ -161,21 +245,31 @@ static int picker_text_width(struct picker_window const *const pw, wchar_t const
  *
  * @param pw the window that draws the text
  * @param text the text to measure, its lines separated by line breaks
- * @return the width of the widest line in pixels, 0 when it could not be measured
+ * @param err receives the failure of the measurement
+ * @param out receives the width of the widest line in pixels
+ * @return false when the text could not be measured
  */
-static int picker_line_width(struct picker_window const *const pw, wchar_t const *const text) {
+static NODISCARD bool
+line_width(struct picker_window const *const pw, wchar_t const *const text, int *const out, struct ov_error *const err) {
   wchar_t const *line = text;
   int width = 0;
 
+  *out = 0;
   while (line != NULL) {
     wchar_t const *const end = wcschr(line, L'\n');
-    int const room = picker_text_width(pw, line, (end != NULL) ? (size_t)(end - line) : wcslen(line));
+    int room = 0;
+
+    if (!text_width(pw, line, ((end != NULL) ? (size_t)(end - line) : wcslen(line)), &room, err)) {
+      OV_ERROR_ADD_TRACE(err);
+      return false;
+    }
     if (room > width) {
       width = room;
     }
     line = (end != NULL) ? (end + 1) : NULL;
   }
-  return width;
+  *out = width;
+  return true;
 }
 
 /**
@@ -190,7 +284,7 @@ static int picker_line_width(struct picker_window const *const pw, wchar_t const
  * @param pw the window that draws the combo
  * @return the width in pixels the combo keeps for itself
  */
-static int picker_combo_room(struct picker_window const *const pw) {
+static int combo_room(struct picker_window const *const pw) {
   COMBOBOXINFO info = {0};
   int button = 0;
 
@@ -202,7 +296,7 @@ static int picker_combo_room(struct picker_window const *const pw) {
     // button of a combo is the width a scroll bar is
     button = GetSystemMetrics(SM_CXVSCROLL);
   }
-  return button + (2 * GetSystemMetrics(SM_CXEDGE)) + layout_scale(ADC_LAYOUT_PICKER_COMBO_INSET, (UINT)pw->dpi);
+  return button + (2 * GetSystemMetrics(SM_CXEDGE)) + layout_scale(ADC_PICKER_COMBO_INSET, (UINT)pw->dpi);
 }
 
 /**
@@ -215,19 +309,32 @@ static int picker_combo_room(struct picker_window const *const pw) {
  * @param pw the window to widen
  * @param label_text the text of the sentences
  * @param widest the widest line the combo holds, NULL for the sentence
+ * @param err receives the failure of the measurement or of the resize
+ * @return false when the window could not be widened
  */
-static void picker_fit(struct picker_window *const pw, wchar_t const *const label_text, wchar_t const *const widest) {
+static NODISCARD bool
+fit(struct picker_window *const pw, wchar_t const *const label_text, wchar_t const *const widest, struct ov_error *const err) {
   int const margin = layout_scale(ADC_LAYOUT_MARGIN_X, (UINT)pw->dpi);
-  int const least = layout_scale(ADC_LAYOUT_PICKER_W, (UINT)pw->dpi);
-  int width = picker_line_width(pw, label_text);
+  int const least = layout_scale(ADC_PICKER_W, (UINT)pw->dpi);
+  int width = 0;
   int combo_width = 0;
   int needed = 0;
   int client = 0;
   RECT outer;
   RECT now;
 
+  if (!line_width(pw, label_text, &width, err)) {
+    OV_ERROR_ADD_TRACE(err);
+    return false;
+  }
   if (widest != NULL) {
-    combo_width = picker_text_width(pw, widest, wcslen(widest)) + picker_combo_room(pw);
+    int room = 0;
+
+    if (!text_width(pw, widest, wcslen(widest), &room, err)) {
+      OV_ERROR_ADD_TRACE(err);
+      return false;
+    }
+    combo_width = room + combo_room(pw);
   }
   if (combo_width > width) {
     width = combo_width;
@@ -235,39 +342,56 @@ static void picker_fit(struct picker_window *const pw, wchar_t const *const labe
   needed = width + 2 * margin;
   client = (needed > least) ? needed : least;
   layout_window_rect(client,
-                     layout_scale(ADC_LAYOUT_MARGIN_TOP + ADC_LAYOUT_PICKER_LABEL_H + ADC_LAYOUT_GAP + ADC_LAYOUT_PICKER_COMBO_H +
-                                      ADC_LAYOUT_GAP + ADC_LAYOUT_PICKER_BUTTON_H + ADC_LAYOUT_MARGIN_BOTTOM,
-                                  (UINT)pw->dpi),
+                     layout_scale(ADC_LAYOUT_MARGIN_TOP, (UINT)pw->dpi) + layout_scale(ADC_PICKER_LABEL_H, (UINT)pw->dpi) +
+                         layout_scale(ADC_LAYOUT_GAP, (UINT)pw->dpi) + layout_scale(ADC_PICKER_COMBO_H, (UINT)pw->dpi) +
+                         layout_scale(ADC_LAYOUT_GAP, (UINT)pw->dpi) + layout_scale(ADC_PICKER_BUTTON_H, (UINT)pw->dpi) +
+                         layout_scale(ADC_LAYOUT_MARGIN_BOTTOM, (UINT)pw->dpi),
                      (UINT)pw->dpi,
                      picker_window_style,
                      picker_window_extra,
                      &outer);
-  GetWindowRect(pw->hwnd, &now);
-  if (((now.right - now.left) == (outer.right - outer.left)) && ((now.bottom - now.top) == (outer.bottom - outer.top))) {
-    return;
+  if (!GetWindowRect(pw->hwnd, &now)) {
+    OV_ERROR_SET_HRESULT(err, HRESULT_FROM_WIN32(GetLastError()));
+    return false;
   }
-  SetWindowPos(pw->hwnd, NULL, 0, 0, outer.right - outer.left, outer.bottom - outer.top, SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
+  if (((now.right - now.left) == (outer.right - outer.left)) && ((now.bottom - now.top) == (outer.bottom - outer.top))) {
+    return true; // already wide enough
+  }
+  if (!SetWindowPos(pw->hwnd, NULL, 0, 0, outer.right - outer.left, outer.bottom - outer.top, SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE)) {
+    OV_ERROR_SET_HRESULT(err, HRESULT_FROM_WIN32(GetLastError()));
+    return false;
+  }
   SendMessageW(pw->combo, CB_SETDROPPEDWIDTH, (WPARAM)(client - 2 * margin), 0);
+  return true;
 }
 
 /**
  * @brief Place the controls of the picker window
  *
- * The geometry itself lives in layout_picker_compute(), this only hands
+ * The geometry itself lives in picker_compute(), this only hands
  * the rectangles to the window manager.
  *
  * @param pw the picker window to place
+ * @param err receives the failure of the placement
+ * @return false when a control could not be placed
  */
-static void picker_layout(struct picker_window *const pw) {
+static NODISCARD bool layout(struct picker_window *const pw, struct ov_error *const err) {
   struct picker_layout g;
   RECT rc;
 
-  GetClientRect(pw->hwnd, &rc);
-  layout_picker_compute(rc.right - rc.left, (UINT)pw->dpi, &g);
-  MoveWindow(pw->label, LX(g.label), LY(g.label), LW(g.label), LH(g.label), TRUE);
-  MoveWindow(pw->combo, LX(g.combo), LY(g.combo), LW(g.combo), LH(g.combo), TRUE);
-  MoveWindow(pw->ok_btn, LX(g.ok), LY(g.ok), LW(g.ok), LH(g.ok), TRUE);
-  MoveWindow(pw->cancel_btn, LX(g.cancel), LY(g.cancel), LW(g.cancel), LH(g.cancel), TRUE);
+  if (!GetClientRect(pw->hwnd, &rc)) {
+    OV_ERROR_SET_HRESULT(err, HRESULT_FROM_WIN32(GetLastError()));
+    return false;
+  }
+  picker_compute(rc.right - rc.left, (UINT)pw->dpi, &g);
+  if (!MoveWindow(pw->label, LX(g.label), LY(g.label), LW(g.label), LH(g.label), TRUE) ||
+      !MoveWindow(pw->combo, LX(g.combo), LY(g.combo), LW(g.combo), LH(g.combo), TRUE) ||
+      !MoveWindow(pw->ok_btn, LX(g.ok), LY(g.ok), LW(g.ok), LH(g.ok), TRUE) ||
+      !MoveWindow(pw->cancel_btn, LX(g.cancel), LY(g.cancel), LW(g.cancel), LH(g.cancel), TRUE)) {
+    OV_ERROR_SET_HRESULT(err, HRESULT_FROM_WIN32(GetLastError()));
+    return false;
+  }
+  return true;
 }
 
 /**
@@ -275,15 +399,127 @@ static void picker_layout(struct picker_window *const pw) {
  *
  * @param pw the picker window that answers
  * @param answered the button that repairs was pressed
+ * @param err receives the failure of the takedown
+ * @return false when the window could not be taken down
  */
-static void picker_answer(struct picker_window *const pw, bool const answered) {
+static NODISCARD bool answer(struct picker_window *const pw, bool const answered, struct ov_error *const err) {
   if (pw->result != NULL) {
     if (answered) {
       pw->result->selected = (int)SendMessageW(pw->combo, CB_GETCURSEL, 0, 0);
     }
     pw->result->answered = answered;
   }
-  DestroyWindow(pw->hwnd);
+  if (!DestroyWindow(pw->hwnd)) {
+    OV_ERROR_SET_HRESULT(err, HRESULT_FROM_WIN32(GetLastError()));
+    return false;
+  }
+  return true;
+}
+
+/**
+ * @brief Make the controls of the picker window and fill the combo
+ *
+ * Called from WM_CREATE.  The caller makes the window and shows it; the controls, the
+ * font, the theme and the lines of the combo are in place by then.
+ *
+ * @param pw the window to fill, its hwnd, dpi, settings and targets are already set
+ * @param err receives the reason a control could not be made or a device could not be named
+ * @return false when the window could not be filled, with the reason in err
+ */
+static bool build(struct picker_window *const pw, struct ov_error *const err) {
+  wchar_t label_text[ADC_PICKER_TEXT_CHARS] = {0};
+  wchar_t text[128] = {0};
+  wchar_t line[ADC_PICKER_TEXT_CHARS] = {0};
+  wchar_t widest[ADC_PICKER_TEXT_CHARS] = {0};
+  size_t widest_len = 0;
+  bool success = false;
+
+  OV_SNPRINTF(text, sizeof(text) / sizeof(text[0]), ph, ph, gettext("Audient Device Closer"));
+  if (!SetWindowTextW(pw->hwnd, text)) {
+    OV_ERROR_SET_HRESULT(err, HRESULT_FROM_WIN32(GetLastError()));
+    goto cleanup;
+  }
+  OV_SNPRINTF(label_text,
+              sizeof(label_text) / sizeof(label_text[0]),
+              ph,
+              ph,
+              gettext("None of the connected devices needs a repair.\nTo repair one anyway, choose it below."));
+  pw->label = CreateWindowExW(
+      0, L"STATIC", label_text, WS_CHILD | WS_VISIBLE | SS_LEFT, 0, 0, 0, 0, pw->hwnd, (HMENU)(INT_PTR)IDC_PICKER_LABEL, NULL, NULL);
+  pw->combo = CreateWindowExW(0,
+                              WC_COMBOBOXW,
+                              L"",
+                              WS_CHILD | WS_VISIBLE | WS_VSCROLL | WS_TABSTOP | CBS_DROPDOWNLIST,
+                              0,
+                              0,
+                              0,
+                              0,
+                              pw->hwnd,
+                              (HMENU)(INT_PTR)IDC_PICKER_COMBO,
+                              NULL,
+                              NULL);
+  OV_SNPRINTF(text, sizeof(text) / sizeof(text[0]), ph, ph, gettext("Repair"));
+  pw->ok_btn = CreateWindowExW(
+      0, L"BUTTON", text, WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON | WS_TABSTOP, 0, 0, 0, 0, pw->hwnd, (HMENU)(INT_PTR)IDOK, NULL, NULL);
+  OV_SNPRINTF(text, sizeof(text) / sizeof(text[0]), ph, ph, gettext("Cancel"));
+  pw->cancel_btn = CreateWindowExW(0,
+                                   L"BUTTON",
+                                   text,
+                                   WS_CHILD | WS_VISIBLE | BS_DEFPUSHBUTTON | WS_TABSTOP,
+                                   0,
+                                   0,
+                                   0,
+                                   0,
+                                   pw->hwnd,
+                                   (HMENU)(INT_PTR)IDCANCEL,
+                                   NULL,
+                                   NULL);
+  if ((pw->label == NULL) || (pw->combo == NULL) || (pw->ok_btn == NULL) || (pw->cancel_btn == NULL)) {
+    OV_ERROR_SET_HRESULT(err, HRESULT_FROM_WIN32(GetLastError()));
+    goto cleanup;
+  }
+  if (!theme_attach(pw->hwnd, err) || !theme_attach(pw->label, err) || !theme_attach(pw->combo, err) || !theme_attach(pw->ok_btn, err) ||
+      !theme_attach(pw->cancel_btn, err)) {
+    OV_ERROR_ADD_TRACE(err);
+    goto cleanup;
+  }
+  if (!apply_font(pw, pw->dpi, err)) {
+    OV_ERROR_ADD_TRACE(err);
+    goto cleanup;
+  }
+  for (size_t i = 0; i < OV_ARRAY_LENGTH(pw->targets); i++) {
+    size_t const index = device_find_entry(pw->targets[i].devnode, pw->settings->devices, OV_ARRAY_LENGTH(pw->settings->devices), err);
+
+    if (index == SIZE_MAX) {
+      OV_ERROR_ADD_TRACE(err);
+      goto cleanup;
+    }
+    if (!label(&pw->settings->devices[index], pw->targets[i].devnode, line, sizeof(line) / sizeof(line[0]))) {
+      OV_ERROR_SET_GENERIC(err, ov_error_generic_invalid_argument);
+      goto cleanup;
+    }
+    if (SendMessageW(pw->combo, CB_ADDSTRING, 0, (LPARAM)line) == (LRESULT)CB_ERR) {
+      OV_ERROR_SET_HRESULT(err, HRESULT_FROM_WIN32(GetLastError()));
+      goto cleanup;
+    }
+    if (wcslen(line) > widest_len) {
+      widest_len = wcslen(line);
+      memcpy(widest, line, (widest_len + 1) * sizeof(line[0]));
+    }
+  }
+  SendMessageW(pw->combo, CB_SETCURSEL, 0, 0);
+  if (!fit(pw, label_text, (widest[0] != L'\0') ? widest : NULL, err)) {
+    OV_ERROR_ADD_TRACE(err);
+    goto cleanup;
+  }
+  if (!layout(pw, err)) {
+    OV_ERROR_ADD_TRACE(err);
+    goto cleanup;
+  }
+  success = true;
+
+cleanup:
+  return success;
 }
 
 /**
@@ -295,13 +531,27 @@ static void picker_answer(struct picker_window *const pw, bool const answered) {
  * @param lparam the second message parameter
  * @return the answer the message carries
  */
-static LRESULT CALLBACK picker_proc(HWND const hwnd, UINT const msg, WPARAM const wparam, LPARAM const lparam) {
-  struct picker_window *pw = (struct picker_window *)(INT_PTR)GetWindowLongPtrW(hwnd, GWLP_USERDATA);
+static LRESULT CALLBACK proc(HWND const hwnd, UINT const msg, WPARAM const wparam, LPARAM const lparam) {
+  struct picker_window *pw = (struct picker_window *)GetPropW(hwnd, state_prop);
 
   switch (msg) {
   case WM_NCCREATE:
-    SetWindowLongPtrW(hwnd, GWLP_USERDATA, (LONG_PTR)((CREATESTRUCTW const *)lparam)->lpCreateParams);
+    if (SetPropW(hwnd, state_prop, (HANDLE)((CREATESTRUCTW const *)lparam)->lpCreateParams) == 0) {
+      struct ov_error err = {0};
+
+      OV_ERROR_SET_HRESULT(&err, HRESULT_FROM_WIN32(GetLastError()));
+      OV_ERROR_REPORT(&err, NULL);
+      return FALSE;
+    }
     return DefWindowProcW(hwnd, msg, wparam, lparam);
+  case WM_CREATE:
+    if (pw != NULL) {
+      pw->hwnd = hwnd;
+      if (!build(pw, pw->err)) {
+        pw->failed = true;
+      }
+    }
+    return 0;
   case WM_DESTROY: {
     HWND const owner = GetWindow(hwnd, GW_OWNER);
 
@@ -311,51 +561,88 @@ static LRESULT CALLBACK picker_proc(HWND const hwnd, UINT const msg, WPARAM cons
     }
     if (pw != NULL) {
       if (pw->font != NULL) {
-        DeleteObject(pw->font);
+        if (!DeleteObject(pw->font)) {
+          struct ov_error err = {0};
+
+          OV_ERROR_SET_GENERIC(&err, ov_error_generic_fail);
+          OV_ERROR_REPORT(&err, NULL);
+        }
         pw->font = NULL;
+      }
+      if (!RemovePropW(hwnd, state_prop)) {
+        struct ov_error err = {0};
+
+        OV_ERROR_SET_HRESULT(&err, HRESULT_FROM_WIN32(GetLastError()));
+        OV_ERROR_REPORT(&err, NULL);
       }
       OV_FREE(&pw);
     }
-    SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
     return 0;
   }
   case WM_DPICHANGED: {
     RECT const *const rc = (RECT const *)(void *)lparam;
+    struct ov_error err = {0};
+    bool ok = false;
 
     /* the reader chose this size: the monitor's suggestion of it is kept,
      * only the font and the geometry follow the new dpi */
-    SetWindowPos(hwnd, NULL, rc->left, rc->top, rc->right - rc->left, rc->bottom - rc->top, SWP_NOZORDER | SWP_NOACTIVATE);
-    picker_apply_font(pw, (int)LOWORD(wparam));
-    picker_layout(pw);
+    if (!SetWindowPos(hwnd, NULL, rc->left, rc->top, rc->right - rc->left, rc->bottom - rc->top, SWP_NOZORDER | SWP_NOACTIVATE)) {
+      OV_ERROR_SET_HRESULT(&err, HRESULT_FROM_WIN32(GetLastError()));
+    } else if (!apply_font(pw, (int)LOWORD(wparam), &err)) {
+      OV_ERROR_ADD_TRACE(&err);
+    } else if (!layout(pw, &err)) {
+      OV_ERROR_ADD_TRACE(&err);
+    } else {
+      ok = true;
+    }
+    if (!ok) {
+      OV_ERROR_REPORT(&err, NULL);
+    }
     return 0;
   }
-  case WM_SIZE:
-    picker_layout(pw);
-    return 0;
-  case WM_COMMAND:
-    if (HIWORD(wparam) != BN_CLICKED) {
-      break;
-    }
-    if (LOWORD(wparam) == (WORD)IDC_PICKER_OK) {
-      picker_answer(pw, true);
-    } else if (LOWORD(wparam) == (WORD)IDC_PICKER_CANCEL) {
-      picker_answer(pw, false);
+  case WM_SIZE: {
+    struct ov_error err = {0};
+
+    if (!layout(pw, &err)) {
+      OV_ERROR_REPORT(&err, NULL);
     }
     return 0;
-  case WM_CLOSE:
-    picker_answer(pw, false);
+  }
+  case WM_COMMAND: {
+    struct ov_error err = {0};
+    bool ok = true;
+
+    if (LOWORD(wparam) == (WORD)IDCANCEL) {
+      ok = answer(pw, false, &err); // IsDialogMessageW sends this, with no notification code, for ESC
+    } else if ((LOWORD(wparam) == (WORD)IDOK) && (HIWORD(wparam) == BN_CLICKED)) {
+      ok = answer(pw, true, &err);
+    }
+    if (!ok) {
+      OV_ERROR_REPORT(&err, NULL);
+    }
     return 0;
+  }
+  case WM_CLOSE: {
+    struct ov_error err = {0};
+
+    if (!answer(pw, false, &err)) {
+      OV_ERROR_REPORT(&err, NULL);
+    }
+    return 0;
+  }
   default:
     break;
   }
   {
     LRESULT handled_result = 0;
-    bool handled = false;
+    struct ov_error err = {0};
+    ov_tribool const handled = theme_message(hwnd, msg, wparam, lparam, &handled_result, &err);
 
-    if (!theme_message(hwnd, msg, wparam, lparam, &handled_result, &handled, NULL)) {
+    if (handled == ov_indeterminate) {
+      OV_ERROR_REPORT(&err, NULL);
       return DefWindowProcW(hwnd, msg, wparam, lparam);
     }
-    if (handled) {
+    if (handled == ov_true) {
       return handled_result;
     }
   }
@@ -370,7 +657,7 @@ static LRESULT CALLBACK picker_proc(HWND const hwnd, UINT const msg, WPARAM cons
  * @param err receives the failure of the registration
  * @return false when the class could not be registered
  */
-static bool picker_register_class(struct ov_error *const err) {
+static NODISCARD bool register_class(struct ov_error *const err) {
   static ATOM atom = 0;
 
   if (atom != 0) {
@@ -381,12 +668,17 @@ static bool picker_register_class(struct ov_error *const err) {
 
     memset(&wc, 0, sizeof(wc));
     wc.cbSize = sizeof(wc);
-    wc.lpfnWndProc = picker_proc;
+    wc.lpfnWndProc = proc;
     wc.hInstance = GetModuleHandleW(NULL);
     wc.hCursor = LoadCursorW(NULL, (LPCWSTR)IDC_ARROW);
-    wc.hbrBackground = theme_class_brush();
+    // the system deletes the background brush of a class when the class is unregistered,
+    // so the class gets a brush of its own
+    wc.hbrBackground = theme_class_brush(err);
+    if (wc.hbrBackground == NULL) {
+      OV_ERROR_ADD_TRACE(err);
+      return false;
+    }
     wc.lpszClassName = L"audient_device_closer_picker";
-    wc.hIcon = LoadIconW(NULL, (LPCWSTR)IDI_APPLICATION);
     atom = RegisterClassExW(&wc);
   }
   if (atom == 0) {
@@ -396,25 +688,14 @@ static bool picker_register_class(struct ov_error *const err) {
   return true;
 }
 
-bool ui_device_picker_show(HWND const owner,
-                           struct settings const *const s,
-                           struct device_target const *const targets,
-                           struct device_target **const out_target,
-                           struct ov_error *const err) {
+NODISCARD bool ui_device_picker_show(HWND const owner,
+                                     struct settings const *const s,
+                                     struct device_target const *const targets,
+                                     struct device_target **const out_target,
+                                     struct ov_error *const err) {
   struct picker_window *pw = NULL;
-  struct picker_result result;
+  struct picker_result result = {.selected = -1};
   struct device_target *picked = NULL;
-  wchar_t title[128];
-  wchar_t label_text[512];
-  wchar_t ok_text[64];
-  wchar_t cancel_text[64];
-  wchar_t widest[ADC_PICKER_TEXT_CHARS];
-  size_t widest_len = 0;
-  RECT owner_rc = {0, 0, 0, 0};
-  int dpi = 0;
-  int width = 0;
-  int height = 0;
-  size_t i = 0;
   HWND window = NULL; // the handle of the window while the modal loop is on it
   bool success = false;
 
@@ -423,180 +704,80 @@ bool ui_device_picker_show(HWND const owner,
     goto cleanup;
   }
   *out_target = NULL;
-  memset(&result, 0, sizeof(result));
-  result.selected = -1;
   if (OV_ARRAY_LENGTH(targets) == 0) {
     success = true; // nothing is connected, so there is nothing to pick
     goto cleanup;
   }
-  if (!picker_register_class(err)) {
+  if (!register_class(err)) {
     OV_ERROR_ADD_TRACE(err);
     goto cleanup;
   }
-  dpi = (int)GetDpiForWindow(owner);
-  OV_SNPRINTF(title, sizeof(title) / sizeof(WCHAR), ph, ph, gettext("Audient Device Closer"));
-  OV_SNPRINTF(label_text,
-              sizeof(label_text) / sizeof(WCHAR),
-              ph,
-              ph,
-              gettext("None of the connected devices needs a repair.\nTo repair one anyway, choose it below."));
-  OV_SNPRINTF(ok_text, sizeof(ok_text) / sizeof(WCHAR), ph, ph, gettext("Repair"));
-  OV_SNPRINTF(cancel_text, sizeof(cancel_text) / sizeof(WCHAR), ph, ph, gettext("Cancel"));
   if (!OV_REALLOC(&pw, 1, sizeof(*pw))) {
     OV_ERROR_SET_GENERIC(err, ov_error_generic_out_of_memory);
-    OV_ERROR_ADD_TRACE(err);
     goto cleanup;
   }
-  memset(pw, 0, sizeof(*pw));
-  pw->dpi = dpi;
+  *pw = (struct picker_window){0};
+  pw->dpi = (int)GetDpiForWindow(owner);
   pw->result = &result;
-  GetWindowRect(owner, &owner_rc);
+  pw->settings = s;
+  pw->targets = targets;
+  pw->err = err;
   {
+    RECT owner_rc = {0, 0, 0, 0};
     RECT outer;
+    int width = 0;
+    int height = 0;
 
-    layout_window_rect(layout_scale(ADC_LAYOUT_PICKER_W, (UINT)dpi),
-                       layout_scale(ADC_LAYOUT_MARGIN_TOP + ADC_LAYOUT_PICKER_LABEL_H + ADC_LAYOUT_GAP + ADC_LAYOUT_PICKER_COMBO_H +
-                                        ADC_LAYOUT_GAP + ADC_LAYOUT_PICKER_BUTTON_H + ADC_LAYOUT_MARGIN_BOTTOM,
-                                    (UINT)dpi),
-                       (UINT)dpi,
+    if (!GetWindowRect(owner, &owner_rc)) {
+      OV_ERROR_SET_HRESULT(err, HRESULT_FROM_WIN32(GetLastError()));
+      goto cleanup;
+    }
+    layout_window_rect(layout_scale(ADC_PICKER_W, (UINT)pw->dpi),
+                       layout_scale(ADC_LAYOUT_MARGIN_TOP, (UINT)pw->dpi) + layout_scale(ADC_PICKER_LABEL_H, (UINT)pw->dpi) +
+                           layout_scale(ADC_LAYOUT_GAP, (UINT)pw->dpi) + layout_scale(ADC_PICKER_COMBO_H, (UINT)pw->dpi) +
+                           layout_scale(ADC_LAYOUT_GAP, (UINT)pw->dpi) + layout_scale(ADC_PICKER_BUTTON_H, (UINT)pw->dpi) +
+                           layout_scale(ADC_LAYOUT_MARGIN_BOTTOM, (UINT)pw->dpi),
+                       (UINT)pw->dpi,
                        picker_window_style,
                        picker_window_extra,
                        &outer);
     width = outer.right - outer.left;
     height = outer.bottom - outer.top;
+    pw->hwnd = CreateWindowExW(picker_window_extra,
+                               L"audient_device_closer_picker",
+                               L"",
+                               picker_window_style,
+                               owner_rc.left + ((owner_rc.right - owner_rc.left) - width) / 2,
+                               owner_rc.top + ((owner_rc.bottom - owner_rc.top) - height) / 2,
+                               width,
+                               height,
+                               owner,
+                               NULL,
+                               GetModuleHandleW(NULL),
+                               pw);
   }
-  pw->hwnd = CreateWindowExW(picker_window_extra,
-                             L"audient_device_closer_picker",
-                             title,
-                             picker_window_style,
-                             owner_rc.left + ((owner_rc.right - owner_rc.left) - width) / 2,
-                             owner_rc.top + ((owner_rc.bottom - owner_rc.top) - height) / 2,
-                             width,
-                             height,
-                             owner,
-                             NULL,
-                             GetModuleHandleW(NULL),
-                             pw);
   if (pw->hwnd == NULL) {
     OV_ERROR_SET_HRESULT(err, HRESULT_FROM_WIN32(GetLastError()));
+    goto cleanup;
+  }
+  if (pw->failed) {
     OV_ERROR_ADD_TRACE(err);
     goto cleanup;
   }
-  pw->label = CreateWindowExW(0,
-                              L"STATIC",
-                              (wchar_t const *)label_text,
-                              WS_CHILD | WS_VISIBLE | SS_LEFT,
-                              0,
-                              0,
-                              0,
-                              0,
-                              pw->hwnd,
-                              (HMENU)(INT_PTR)IDC_PICKER_LABEL,
-                              NULL,
-                              NULL);
-  pw->combo = CreateWindowExW(0,
-                              WC_COMBOBOXW,
-                              L"",
-                              WS_CHILD | WS_VISIBLE | WS_VSCROLL | WS_TABSTOP | CBS_DROPDOWNLIST,
-                              0,
-                              0,
-                              0,
-                              0,
-                              pw->hwnd,
-                              (HMENU)(INT_PTR)IDC_PICKER_COMBO,
-                              NULL,
-                              NULL);
-  pw->ok_btn = CreateWindowExW(0,
-                               L"BUTTON",
-                               (wchar_t const *)ok_text,
-                               WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON | WS_TABSTOP,
-                               0,
-                               0,
-                               0,
-                               0,
-                               pw->hwnd,
-                               (HMENU)(INT_PTR)IDC_PICKER_OK,
-                               NULL,
-                               NULL);
-  pw->cancel_btn = CreateWindowExW(0,
-                                   L"BUTTON",
-                                   (wchar_t const *)cancel_text,
-                                   WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON | WS_TABSTOP,
-                                   0,
-                                   0,
-                                   0,
-                                   0,
-                                   pw->hwnd,
-                                   (HMENU)(INT_PTR)IDC_PICKER_CANCEL,
-                                   NULL,
-                                   NULL);
-  if ((pw->label == NULL) || (pw->combo == NULL) || (pw->ok_btn == NULL) || (pw->cancel_btn == NULL)) {
-    OV_ERROR_SET_HRESULT(err, HRESULT_FROM_WIN32(GetLastError()));
-    OV_ERROR_ADD_TRACE(err);
-    goto cleanup;
-  }
-  theme_attach(pw->hwnd);
-  theme_attach(pw->label);
-  theme_attach(pw->combo);
-  theme_attach(pw->ok_btn);
-  theme_attach(pw->cancel_btn);
-  picker_apply_font(pw, dpi);
-  widest[0] = L'\0';
-  for (i = 0; i < OV_ARRAY_LENGTH(targets); i++) {
-    char line[ADC_PICKER_TEXT_CHARS];
-    wchar_t wline[ADC_PICKER_TEXT_CHARS];
-    size_t index = 0;
-    struct device_entry const *entry = NULL;
-    char const *text = NULL;
-
-    index = device_find_entry(targets[i].devnode, s->devices, OV_ARRAY_LENGTH(s->devices), err);
-    if (index == SIZE_MAX) {
-      OV_ERROR_ADD_TRACE(err);
-      goto cleanup;
-    }
-    entry = &s->devices[index];
-
-    if (!ui_device_picker_label(entry, targets[i].devnode, line, sizeof(line))) {
-      OV_ERROR_SET_GENERIC(err, ov_error_generic_invalid_argument);
-      goto cleanup;
-    }
-    text = line;
-    if (OV_SNPRINTF(wline, sizeof(wline) / sizeof(WCHAR), ph, ph, text) < 0) {
-      OV_ERROR_SET_HRESULT(err, HRESULT_FROM_WIN32(ERROR_INSUFFICIENT_BUFFER));
-      goto cleanup;
-    }
-    if (SendMessageW(pw->combo, CB_ADDSTRING, 0, (LPARAM)wline) == (LRESULT)CB_ERR) {
-      OV_ERROR_SET_HRESULT(err, HRESULT_FROM_WIN32(GetLastError()));
-      goto cleanup;
-    }
-    if (wcslen(wline) > widest_len) {
-      widest_len = wcslen(wline);
-      memcpy(widest, wline, (wcslen(wline) + 1) * sizeof(WCHAR));
-    }
-  }
-  SendMessageW(pw->combo, CB_SETCURSEL, 0, 0);
-  picker_fit(pw, label_text, widest[0] != L'\0' ? widest : NULL);
-  picker_layout(pw);
-  EnableWindow(owner, FALSE); // the dialog holds its owner until the reader is done
-  ShowWindow(pw->hwnd, SW_SHOW);
-  UpdateWindow(pw->hwnd);
   window = pw->hwnd;
+  EnableWindow(owner, FALSE); // the dialog holds its owner until the reader is done
+  // ShowWindow answers the state the window was in and does not set the last error, so
+  // there is nothing to read from it
+  ShowWindow(window, SW_SHOW);
+  if (!UpdateWindow(window)) {
+    OV_ERROR_SET_HRESULT(err, HRESULT_FROM_WIN32(GetLastError()));
+    goto cleanup;
+  }
+  if (SetFocus(pw->cancel_btn) == NULL) { // the window opens on the answer that repairs nothing
+    OV_ERROR_SET_HRESULT(err, HRESULT_FROM_WIN32(GetLastError()));
+    goto cleanup;
+  }
   pw = NULL;
-  success = true;
-
-cleanup:
-  if ((pw != NULL) && (pw->hwnd != NULL)) {
-    DestroyWindow(pw->hwnd); // answers through WM_DESTROY, which frees the state
-  } else if (pw != NULL) {
-    if (pw->font != NULL) {
-      DeleteObject(pw->font);
-      pw->font = NULL;
-    }
-    OV_FREE(&pw);
-  }
-  if (!success) {
-    return false;
-  }
   {
     MSG msg;
 
@@ -608,26 +789,41 @@ cleanup:
     }
   }
   if (result.answered && (result.selected >= 0) && ((size_t)result.selected < OV_ARRAY_LENGTH(targets))) {
-    struct device_target const *row = &targets[(size_t)result.selected];
-    struct device_target t;
-    char *devnode = NULL;
+    struct device_target const *const row = &targets[(size_t)result.selected];
+    size_t const chars = wcslen(row->devnode) + 1;
 
-    if (!ov_sprintf_char(&devnode, err, NULL, "%s", row->devnode)) {
-      OV_ERROR_ADD_TRACE(err);
-      success = false;
-      goto release;
-    }
-    memset(&t, 0, sizeof(t));
-    t.devnode = devnode;
-    t.state = row->state;
-    if (!OV_ARRAY_PUSH(&picked, t)) {
+    if (!OV_ARRAY_GROW(&picked, 1)) {
       OV_ERROR_SET_GENERIC(err, ov_error_generic_out_of_memory);
-      device_string_free(&devnode);
-      success = false;
-      goto release;
+      goto cleanup;
     }
+    picked[0] = (struct device_target){0};
+    if (!OV_ARRAY_GROW(&picked[0].devnode, chars)) {
+      OV_ERROR_SET_GENERIC(err, ov_error_generic_out_of_memory);
+      goto cleanup;
+    }
+    OV_ARRAY_SET_LENGTH(picked[0].devnode, chars - 1);
+    wcscpy(picked[0].devnode, row->devnode);
+    picked[0].state = row->state;
+    picked[0].problem_code = row->problem_code;
+    OV_ARRAY_SET_LENGTH(picked, 1);
     *out_target = picked;
+    picked = NULL;
   }
-release:
+  success = true;
+
+cleanup:
+  if (picked != NULL) {
+    device_targets_release(&picked);
+  }
+  if (pw != NULL) {
+    if (pw->hwnd != NULL) {
+      // answers through WM_DESTROY, which frees the state
+      if (!DestroyWindow(pw->hwnd)) {
+        OV_ERROR_PUSH(err, ov_error_type_hresult, HRESULT_FROM_WIN32(GetLastError()), NULL);
+      }
+    } else {
+      OV_FREE(&pw);
+    }
+  }
   return success;
 }

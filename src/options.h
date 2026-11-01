@@ -2,8 +2,6 @@
 
 #include <ovbase.h>
 
-#include <stdbool.h>
-
 /**
  * @brief What this run was asked to do
  */
@@ -31,4 +29,4 @@ void options_default(struct options *const out);
  * @param err receives a failure of the parsing
  * @return false only on a hard failure
  */
-bool options_parse(NATIVE_CHAR const *const command_line, struct options *const out, struct ov_error *const err);
+NODISCARD bool options_parse(NATIVE_CHAR const *const command_line, struct options *const out, struct ov_error *const err);

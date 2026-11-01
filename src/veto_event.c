@@ -1,16 +1,12 @@
 #include "veto_event.h"
 
-#include <windows.h>
-
-#include <winevt.h>
-
-#include <stdio.h>
 #include <string.h>
 #include <time.h>
+#include <wchar.h>
 
 #include <ovarray.h>
 #include <ovnum.h>
-#include <ovprintf_ex.h>
+#include <ovprintf.h>
 
 /**
  * @brief Find the value of one <Data> element of the event
@@ -18,47 +14,47 @@
  * The value is not copied: it is a span of the event, and copying it is the business of
  * whoever has to outlive the event.
  *
- * @param xml the rendered event, UTF-8
+ * @param xml the rendered event
  * @param name the Name attribute to look for
  * @param out_value receives the span of the value, it is not terminated
  * @param out_len receives the length of the value
  * @return false when the event holds no such element or its value is empty
  */
-static bool find_data(char const *const xml, char const *const name, char const **const out_value, size_t *const out_len) {
-  char const *tag = NULL;
+static bool find_data(wchar_t const *const xml, wchar_t const *const name, wchar_t const **const out_value, size_t *const out_len) {
+  wchar_t const *tag = NULL;
 
   *out_value = NULL;
   *out_len = 0;
-  for (tag = strstr(xml, "<Data"); tag != NULL; tag = strstr(tag + 5, "<Data")) {
-    char const *name_attr = strstr(tag, "Name=");
+  for (tag = wcsstr(xml, L"<Data"); tag != NULL; tag = wcsstr(tag + 5, L"<Data")) {
+    wchar_t const *name_attr = wcsstr(tag, L"Name=");
     if (name_attr == NULL) {
       continue;
     }
-    char const *q = name_attr + 5;
-    char const quote = *q;
-    if ((quote != '"') && (quote != '\'')) {
+    wchar_t const *q = name_attr + 5;
+    wchar_t const quote = *q;
+    if ((quote != L'"') && (quote != L'\'')) {
       continue;
     }
     q++;
-    char const *const end = strchr(q, quote);
+    wchar_t const *const end = wcschr(q, quote);
     if (end == NULL) {
       continue;
     }
     size_t const got = (size_t)(end - q);
-    char found[64];
-    if ((got + 1) > sizeof(found)) {
+    wchar_t found[64];
+    if ((got + 1) > (sizeof(found) / sizeof(found[0]))) {
       continue;
     }
-    memcpy(found, q, got);
-    found[got] = '\0';
-    if (strcmp(found, name) != 0) {
+    memcpy(found, q, got * sizeof(found[0]));
+    found[got] = L'\0';
+    if (wcscmp(found, name) != 0) {
       continue;
     }
-    char const *const gt = strchr(end, '>');
+    wchar_t const *const gt = wcschr(end, L'>');
     if (gt == NULL) {
       continue;
     }
-    char const *const lt = strchr(gt, '<');
+    wchar_t const *const lt = wcschr(gt, L'<');
     if (lt == NULL) {
       continue;
     }
@@ -78,36 +74,36 @@ static bool find_data(char const *const xml, char const *const name, char const 
  * @param out_size room of out
  * @return how many characters were written, the rest did not fit
  */
-static size_t unescape_into(char const *const src, size_t const src_len, char *const out, size_t const out_size) {
+static size_t unescape_into(wchar_t const *const src, size_t const src_len, wchar_t *const out, size_t const out_size) {
   size_t o = 0;
 
-  out[0] = '\0';
+  out[0] = L'\0';
   for (size_t i = 0; (i < src_len) && ((o + 1) < out_size); i++) {
-    char const *const p = &src[i];
-    if ((*p != '&') || ((i + 5) >= src_len)) {
+    wchar_t const *const p = &src[i];
+    if ((*p != L'&') || ((i + 5) >= src_len)) {
       out[o++] = *p;
       continue;
     }
-    if (strncmp(p, "&amp;", 5) == 0) {
-      out[o++] = '&';
+    if (wcsncmp(p, L"&amp;", 5) == 0) {
+      out[o++] = L'&';
       i += 4;
-    } else if (strncmp(p, "&lt;", 4) == 0) {
-      out[o++] = '<';
+    } else if (wcsncmp(p, L"&lt;", 4) == 0) {
+      out[o++] = L'<';
       i += 3;
-    } else if (strncmp(p, "&gt;", 4) == 0) {
-      out[o++] = '>';
+    } else if (wcsncmp(p, L"&gt;", 4) == 0) {
+      out[o++] = L'>';
       i += 3;
-    } else if (strncmp(p, "&quot;", 6) == 0) {
-      out[o++] = '"';
+    } else if (wcsncmp(p, L"&quot;", 6) == 0) {
+      out[o++] = L'"';
       i += 5;
-    } else if (strncmp(p, "&apos;", 6) == 0) {
-      out[o++] = '\'';
+    } else if (wcsncmp(p, L"&apos;", 6) == 0) {
+      out[o++] = L'\'';
       i += 5;
     } else {
       out[o++] = *p;
     }
   }
-  out[o] = '\0';
+  out[o] = L'\0';
   return o;
 }
 
@@ -116,18 +112,18 @@ static size_t unescape_into(char const *const src, size_t const src_len, char *c
  *
  * A value that does not fit is refused: a cut one would be read as another value.
  *
- * @param xml the rendered event, UTF-8
+ * @param xml the rendered event
  * @param name the Name attribute to look for
  * @param out receives the value with its entities resolved, terminated
  * @param out_size room of out
  * @return false when the element is missing, empty or its value does not fit
  */
-static bool read_data(char const *const xml, char const *const name, char *const out, size_t const out_size) {
-  char const *value = NULL;
+static bool read_data(wchar_t const *const xml, wchar_t const *const name, wchar_t *const out, size_t const out_size) {
+  wchar_t const *value = NULL;
   size_t value_len = 0;
 
   if (!find_data(xml, name, &value, &value_len) || ((value_len + 1) > out_size)) {
-    out[0] = '\0';
+    out[0] = L'\0';
     return false;
   }
   return unescape_into(value, value_len, out, out_size) > 0;
@@ -139,39 +135,26 @@ static bool read_data(char const *const xml, char const *const name, char *const
  * The value becomes the caller's: the render buffer is reused for the next event, so a
  * record keeps its own.
  *
- * @param xml the rendered event, UTF-8
+ * @param xml the rendered event
  * @param name the Name attribute to look for
  * @return the value with its entities resolved, NULL when the element is missing or empty
- * @note Release with OV_FREE.
+ * @note Release with OV_ARRAY_DESTROY.
  */
-static char *read_data_dup(char const *const xml, char const *const name MEM_FILEPOS_PARAMS) {
-  char const *value = NULL;
+static wchar_t *read_data_dup(wchar_t const *const xml, wchar_t const *const name) {
+  wchar_t const *value = NULL;
   size_t value_len = 0;
-  char *out = NULL;
+  wchar_t *out = NULL;
 
   if (!find_data(xml, name, &value, &value_len)) {
     return NULL;
   }
-  if (!ov_mem_realloc(&out, value_len + 1, sizeof(out[0]) MEM_FILEPOS_VALUES_PASSTHRU)) {
+  if (!OV_ARRAY_GROW(&out, value_len + 1)) {
     return NULL;
   }
   unescape_into(value, value_len, out, value_len + 1);
+  OV_ARRAY_SET_LENGTH(out, value_len);
   return out;
 }
-
-/**
- * @brief Read the value of one <Data> element into a copy of its own, at the position of the
- *        call
- *
- * The caller should not have to write MEM_FILEPOS_VALUES itself: this appends the position
- * of the call, which read_data_dup hands down to the allocator.
- *
- * @param xml the rendered event, UTF-8
- * @param name the Name attribute to look for
- * @return the value with its entities resolved, NULL when the element is missing or empty
- * @note Release with OV_FREE.
- */
-#define READ_DATA_DUP(xml, name) read_data_dup((xml), (name)MEM_FILEPOS_VALUES)
 
 /**
  * @brief The moment of a SystemTime attribute
@@ -179,7 +162,7 @@ static char *read_data_dup(char const *const xml, char const *const name MEM_FIL
  * @param value the attribute value, "2000-01-01T00:00:00.0000000Z"
  * @return the moment in epoch milliseconds UTC, 0 when the value cannot be read
  */
-static uint64_t parse_system_time_ms(char const *const value) {
+static uint64_t parse_system_time_ms(wchar_t const *const value) {
   struct tm tmv;
   int year = 0;
   int month = 0;
@@ -188,12 +171,12 @@ static uint64_t parse_system_time_ms(char const *const value) {
   int minute = 0;
   int second = 0;
   int parsed = 0;
-  char const *dot = NULL;
+  wchar_t const *dot = NULL;
   long long seconds = 0;
   uint64_t ms = 0;
 
   memset(&tmv, 0, sizeof(tmv));
-  parsed = sscanf(value, "%4d-%2d-%2dT%2d:%2d:%2d", &year, &month, &day, &hour, &minute, &second);
+  parsed = swscanf(value, L"%4d-%2d-%2dT%2d:%2d:%2d", &year, &month, &day, &hour, &minute, &second);
   if (parsed != 6) {
     return 0;
   }
@@ -205,18 +188,18 @@ static uint64_t parse_system_time_ms(char const *const value) {
   tmv.tm_sec = second;
   tmv.tm_isdst = 0;
   seconds = (long long)_mkgmtime(&tmv);
-  dot = strchr(value, '.');
+  dot = wcschr(value, L'.');
   if (dot != NULL) {
-    char frac[4] = {'0', '0', '0', '\0'};
+    wchar_t frac[4] = {L'0', L'0', L'0', L'\0'};
     for (int i = 0; i < 3; i++) {
-      char const c = dot[1 + i];
-      if ((c < '0') || (c > '9')) {
+      wchar_t const c = dot[1 + i];
+      if ((c < L'0') || (c > L'9')) {
         break;
       }
       frac[i] = c;
     }
     int64_t frac_ms = 0;
-    if (ov_atoi_char(frac, &frac_ms, true)) {
+    if (ov_atoi_wchar(frac, &frac_ms, true)) {
       ms = (uint64_t)frac_ms;
     }
   }
@@ -229,29 +212,29 @@ static uint64_t parse_system_time_ms(char const *const value) {
  * A value that does not fit is refused: nothing here reads one that long, and a cut one
  * would be read as another value.
  *
- * @param xml the rendered event, UTF-8
+ * @param xml the rendered event
  * @param name the attribute name including its equals sign
  * @param out receives the value, terminated
  * @param out_size room of out
  * @return false when the attribute is missing or its value does not fit
  */
-static bool read_attr(char const *const xml, char const *const name, char *const out, size_t const out_size) {
-  char const *p = strstr(xml, name);
-  char quote = 0;
-  char const *end = NULL;
+static bool read_attr(wchar_t const *const xml, wchar_t const *const name, wchar_t *const out, size_t const out_size) {
+  wchar_t const *p = wcsstr(xml, name);
+  wchar_t quote = 0;
+  wchar_t const *end = NULL;
   size_t got = 0;
 
-  out[0] = '\0';
+  out[0] = L'\0';
   if (p == NULL) {
     return false;
   }
-  p += strlen(name);
+  p += wcslen(name);
   quote = *p;
-  if ((quote != '"') && (quote != '\'')) {
+  if ((quote != L'"') && (quote != L'\'')) {
     return false;
   }
   p++;
-  end = strchr(p, quote);
+  end = wcschr(p, quote);
   if (end == NULL) {
     return false;
   }
@@ -259,56 +242,62 @@ static bool read_attr(char const *const xml, char const *const name, char *const
   if ((got + 1) > out_size) {
     return false;
   }
-  memcpy(out, p, got);
-  out[got] = '\0';
+  memcpy(out, p, got * sizeof(out[0]));
+  out[got] = L'\0';
   return true;
 }
 
 /**
  * @brief Parse one rendered event into a record
  *
- * The input is one rendered event (EvtRenderEventXml).
+ * The input is one rendered event (EvtRenderEventXml).  Only the log that writes the events
+ * reads them, so the parser stays behind the builder rather than being a thing a caller can
+ * ask for: what a caller gets is a list of records, not the parts of one.
  *
- * @param xml_utf8 the event as EvtRenderEventXml produced it, UTF-8
+ * @param xml the event as EvtRenderEventXml produced it
  * @param out filled in when the event names a process; the strings become the caller's
  * @return false when the event carries no readable process id, true otherwise
  */
-static bool veto_event_parse_xml(char const *const xml_utf8, struct veto_event *const out) {
-  char text[64];
-  char time_value[64];
+static NODISCARD bool veto_event_parse_xml(wchar_t const *const xml, struct veto_event *const out) {
+  wchar_t text[64];
+  wchar_t time_value[64];
   uint64_t pid = 0;
   bool success = false;
 
-  if ((xml_utf8 == NULL) || (out == NULL)) {
+  if ((xml == NULL) || (out == NULL)) {
     return false; // nothing to write the record into, the cleanup would touch it
   }
   memset(out, 0, sizeof(*out));
 
-  if (!read_data(xml_utf8, "ProcessId", text, sizeof(text))) {
+  if (!read_data(xml, L"ProcessId", text, sizeof(text) / sizeof(text[0]))) {
     goto cleanup;
   }
-  if (!ov_atou_char(text, &pid, false)) {
+  if (!ov_atou_wchar(text, &pid, false)) {
     goto cleanup;
   }
   out->pid = (uint32_t)pid;
 
-  out->path = READ_DATA_DUP(xml_utf8, "ProcessName");
-  out->device_instance = READ_DATA_DUP(xml_utf8, "DeviceInstance");
+  out->path = read_data_dup(xml, L"ProcessName");
+  out->device_instance = read_data_dup(xml, L"DeviceInstance");
   if (out->device_instance != NULL) {
-    char *const nl = strpbrk(out->device_instance, "\r\n");
+    wchar_t *const nl = wcspbrk(out->device_instance, L"\r\n");
     if (nl != NULL) {
-      *nl = '\0'; // the first entry of the list is the device that vetoed
+      *nl = L'\0'; // the first entry of the list is the device that vetoed
     }
   }
-  if (read_attr(xml_utf8, "SystemTime=", time_value, sizeof(time_value))) {
+  if (read_attr(xml, L"SystemTime=", time_value, sizeof(time_value) / sizeof(time_value[0]))) {
     out->event_time_ms = parse_system_time_ms(time_value);
   }
   success = true;
 
 cleanup:
   if (!success || (out->pid == 0)) {
-    OV_FREE(&out->path);
-    OV_FREE(&out->device_instance);
+    if (out->path != NULL) {
+      OV_ARRAY_DESTROY(&out->path);
+    }
+    if (out->device_instance != NULL) {
+      OV_ARRAY_DESTROY(&out->device_instance);
+    }
     memset(out, 0, sizeof(*out));
     success = false;
   }
@@ -316,126 +305,115 @@ cleanup:
 }
 
 /**
- * @brief Drop what the caller must not act on any more
+ * @brief What a list that is being built keeps beyond what the emitter reaches
  *
- * Events older than since_ms and duplicates of the same pid + device go,
- * the newest of the duplicates is kept.
- *
- * @param list the list to shrink in place
- * @param since_ms events older than this are dropped, 0 keeps every age
+ * The context the emitter is given is the first member, so the two are the same address
+ * and emit can reach what the list holds without the emitter knowing of it.
  */
-void veto_event_prune(struct veto_event **const list, uint64_t const since_ms) {
-  size_t n = 0;
-  size_t kept = 0;
+struct veto_event_context_private {
+  struct veto_event_context ctx; //!< what the emitter is given, must stay first
+  struct veto_event *list;       //!< the records so far
+};
 
-  if ((list == NULL) || (*list == NULL)) {
+/**
+ * @brief Take one event into the list
+ *
+ * @param ctx the context the emitter was given
+ * @param xml the event as the log writes it
+ * @param err receives the failure
+ * @return false when the list could not take the event
+ */
+static NODISCARD bool emit_event(struct veto_event_context *const ctx, wchar_t const *const xml, struct ov_error *const err) {
+  struct veto_event_context_private *const self = (struct veto_event_context_private *)ctx;
+  struct veto_event item;
+  bool success = false;
+
+  memset(&item, 0, sizeof(item));
+  if (!veto_event_parse_xml(xml, &item)) {
+    // an event the reader makes nothing of is not one the log failed to write
+    success = true;
     goto cleanup;
   }
-  n = OV_ARRAY_LENGTH(*list);
-
-  for (size_t i = 0; i < n; i++) {
-    if ((*list)[i].pid == 0) {
-      continue;
-    }
-    for (size_t j = i + 1; j < n; j++) {
-      bool same_device = false;
-      if ((*list)[j].pid != (*list)[i].pid) {
-        continue;
-      }
-      if (((*list)[i].device_instance == NULL) && ((*list)[j].device_instance == NULL)) {
-        same_device = true;
-      } else if (((*list)[i].device_instance != NULL) && ((*list)[j].device_instance != NULL)) {
-        same_device = (strcmp((*list)[i].device_instance, (*list)[j].device_instance) == 0);
-      }
-      if (!same_device) {
-        continue;
-      }
-      struct veto_event *const loser = ((*list)[i].event_time_ms >= (*list)[j].event_time_ms) ? &(*list)[j] : &(*list)[i];
-      loser->pid = 0;
-      if (loser == &(*list)[i]) {
-        break;
-      }
-    }
+  if (!OV_ARRAY_PUSH(&self->list, item)) {
+    OV_ERROR_SET_GENERIC(err, ov_error_generic_out_of_memory);
+    goto cleanup;
   }
-
-  for (size_t i = 0; i < n; i++) {
-    bool const too_old = (since_ms != 0) && ((*list)[i].event_time_ms != 0) && ((*list)[i].event_time_ms < since_ms);
-    if (((*list)[i].pid == 0) || too_old) {
-      continue;
-    }
-    if (kept != i) {
-      struct veto_event tmp = (*list)[kept];
-      (*list)[kept] = (*list)[i];
-      (*list)[i] = tmp;
-    }
-    kept++;
-  }
-  OV_ARRAY_SET_LENGTH(*list, kept);
+  memset(&item, 0, sizeof(item)); // the list owns the strings now
+  success = true;
 
 cleanup:
-  for (size_t i = kept; i < n; i++) {
-    OV_FREE(&(*list)[i].path);
-    OV_FREE(&(*list)[i].device_instance);
-    (*list)[i].pid = 0;
+  if (item.path != NULL) {
+    OV_ARRAY_DESTROY(&item.path);
   }
+  if (item.device_instance != NULL) {
+    OV_ARRAY_DESTROY(&item.device_instance);
+  }
+  return success;
 }
 
 /**
- * @brief Number of records in the list
+ * @brief Build a list of the records an emitter reads
  *
- * @param list NULL is allowed
- * @return the number of records, 0 for NULL
+ * @param emitter called once, handing its events to ctx->emit
+ * @param userdata handed to the emitter
+ * @param err receives the failure of the emitter or of the list
+ * @return the records, empty but never NULL when the emitter answered; NULL with err set
+ *         when it did not
  */
-size_t veto_event_count(struct veto_event const *const list) {
-  if (list == NULL) {
-    return 0;
+NODISCARD struct veto_event *
+veto_event_list_build(bool (*const emitter)(struct veto_event_context *const ctx, void *const userdata, struct ov_error *const err),
+                      void *const userdata,
+                      struct ov_error *const err) {
+  struct veto_event_context_private self;
+  struct veto_event *list = NULL;
+  bool success = false;
+
+  if (emitter == NULL) {
+    OV_ERROR_SET_GENERIC(err, ov_error_generic_invalid_argument);
+    goto cleanup;
   }
-  return OV_ARRAY_LENGTH(list);
+  memset(&self, 0, sizeof(self));
+  self.ctx.emit = emit_event;
+  if (!emitter(&self.ctx, userdata, err)) {
+    OV_ERROR_ADD_TRACE(err);
+    goto cleanup;
+  }
+  if ((self.list == NULL) && !OV_ARRAY_GROW(&self.list, 1)) {
+    OV_ERROR_SET_GENERIC(err, ov_error_generic_out_of_memory);
+    goto cleanup;
+  }
+  list = self.list;
+  self.list = NULL;
+  success = true;
+
+cleanup:
+  if (!success) {
+    if (self.list != NULL) {
+      veto_event_destroy_list(&self.list);
+    }
+  }
+  return success ? list : NULL;
 }
 
 /**
- * @brief Drop every record that names one of the given processes
+ * @brief Take the next record of the list
  *
- * A process this run closed is gone from the machine, so the record that named it is no
- * longer a reason the device is held and must not be shown as one.  The caller passes the
- * ids it closed, so a record that names anybody else stays.
- *
- * @param list the list to shrink in place
- * @param pids the process ids that were closed
- * @param count how many of them there are
+ * @param list the list to walk, NULL walks nothing
+ * @param it where the walk stands, zeroed before the first call
+ * @return true when it now holds the next record, false when the walk is over
  */
-void veto_event_drop_pids(struct veto_event **const list, uint32_t const *const pids, size_t const count) {
-  size_t n = 0;
-  size_t kept = 0;
+NODISCARD bool veto_event_next(struct veto_event const *const list, struct veto_event_iter *const it) {
+  size_t const n = OV_ARRAY_LENGTH(list);
 
-  if ((list == NULL) || (*list == NULL) || (pids == NULL) || (count == 0)) {
-    return;
+  if ((it == NULL) || (it->idx >= n)) {
+    return false;
   }
-  n = OV_ARRAY_LENGTH(*list);
-  for (size_t i = 0; i < n; i++) {
-    bool drop = false;
-    for (size_t k = 0; k < count; k++) {
-      if (((*list)[i].pid != 0) && ((*list)[i].pid == pids[k])) {
-        drop = true;
-        break;
-      }
-    }
-    if (drop) {
-      continue;
-    }
-    if (kept != i) {
-      struct veto_event tmp = (*list)[kept];
-      (*list)[kept] = (*list)[i];
-      (*list)[i] = tmp;
-    }
-    kept++;
-  }
-  OV_ARRAY_SET_LENGTH(*list, kept);
-  for (size_t i = kept; i < n; i++) {
-    OV_FREE(&(*list)[i].path);
-    OV_FREE(&(*list)[i].device_instance);
-    (*list)[i].pid = 0;
-  }
+  it->pid = list[it->idx].pid;
+  it->event_time_ms = list[it->idx].event_time_ms;
+  it->path = list[it->idx].path;
+  it->device_instance = list[it->idx].device_instance;
+  it->idx++;
+  return true;
 }
 
 /**
@@ -449,241 +427,12 @@ void veto_event_destroy_list(struct veto_event **const list) {
   }
   size_t const n = OV_ARRAY_LENGTH(*list);
   for (size_t i = 0; i < n; i++) {
-    OV_FREE(&(*list)[i].path);
-    OV_FREE(&(*list)[i].device_instance);
+    if ((*list)[i].path != NULL) {
+      OV_ARRAY_DESTROY(&(*list)[i].path);
+    }
+    if ((*list)[i].device_instance != NULL) {
+      OV_ARRAY_DESTROY(&(*list)[i].device_instance);
+    }
   }
   OV_ARRAY_DESTROY(list);
-}
-
-/**
- * @brief Render one event of a batch and append it to the list when it names a process
- *
- * xml and utf8 are passed by address so that the loop can reuse them; ov_sprintf_* clears
- * an existing buffer before formatting, and OV_REALLOC resizes xml in place.
- *
- * @param event the event to render
- * @param xml the wide render buffer, reused by the loop
- * @param utf8 the UTF-8 form of the render, reused by the loop
- * @param out_list receives the record when the event names a process
- * @param err receives a failure that is worth stopping the query for
- * @return false on such a failure; an event that cannot be read is not one
- */
-static bool harvest_event(
-    EVT_HANDLE const event, wchar_t **const xml, char **const utf8, struct veto_event **const out_list, struct ov_error *const err) {
-  bool success = false;
-  DWORD used = 0;
-  struct veto_event item;
-
-  memset(&item, 0, sizeof(item));
-  if (!EvtRender(NULL, event, EvtRenderEventXml, 0, NULL, &used, NULL) && (GetLastError() != ERROR_INSUFFICIENT_BUFFER)) {
-    OV_ERROR_SET_HRESULT(err, HRESULT_FROM_WIN32(GetLastError()));
-    goto cleanup;
-  }
-  if (!OV_REALLOC(xml, (size_t)used, sizeof((*xml)[0]))) {
-    OV_ERROR_SET_GENERIC(err, ov_error_generic_out_of_memory);
-    goto cleanup;
-  }
-  if (!EvtRender(NULL, event, EvtRenderEventXml, used, *xml, &used, NULL)) {
-    OV_ERROR_SET_HRESULT(err, HRESULT_FROM_WIN32(GetLastError()));
-    goto cleanup;
-  }
-  if (!ov_sprintf_char(utf8, err, NULL, "%ls", *xml)) {
-    OV_ERROR_ADD_TRACE(err);
-    goto cleanup;
-  }
-  if (!veto_event_parse_xml(*utf8, &item)) {
-    success = true; // an event we cannot read must not fail the whole query
-    goto cleanup;
-  }
-  if (!OV_ARRAY_PUSH(out_list, item)) {
-    OV_ERROR_SET_GENERIC(err, ov_error_generic_out_of_memory);
-    goto cleanup;
-  }
-  success = true;
-
-cleanup:
-  if (!success) {
-    OV_FREE(&item.path);
-    OV_FREE(&item.device_instance);
-  }
-  return success;
-}
-
-/**
- * @brief Render the events of one batch and append the readable ones to the list
- *
- * It holds no resources of its own, so a failure only ends the batch.
- *
- * @param items the events of the batch
- * @param got how many there are
- * @param xml the wide render buffer, reused by the loop
- * @param utf8 the UTF-8 form of the render, reused by the loop
- * @param out_list receives the records of the readable events
- * @param err receives a failure that is worth stopping the query for
- * @return false on such a failure
- */
-static bool harvest_batch(EVT_HANDLE const *const items,
-                          DWORD const got,
-                          wchar_t **const xml,
-                          char **const utf8,
-                          struct veto_event **const out_list,
-                          struct ov_error *const err) {
-  for (DWORD i = 0; i < got; i++) {
-    if (!harvest_event(items[i], xml, utf8, out_list, err)) {
-      OV_ERROR_ADD_TRACE(err);
-      return false;
-    }
-  }
-  return true;
-}
-
-/**
- * @brief What one batch of the query answered
- */
-enum batch_result {
-  BATCH_MORE,   //!< there are more events to read
-  BATCH_DONE,   //!< the query holds no more events
-  BATCH_FAILED, //!< the read failed, err says why
-};
-
-/**
- * @brief Read one batch of the query: up to 8 events, their handles are closed again
- *
- * @param q the query to advance
- * @param xml the wide render buffer, reused by the loop
- * @param utf8 the UTF-8 form of the render, reused by the loop
- * @param out_list receives the records of the readable events
- * @param err receives the failure of the read
- * @return BATCH_DONE at the end of the query, BATCH_FAILED when err says why
- */
-static enum batch_result query_events_step(
-    EVT_HANDLE const q, wchar_t **const xml, char **const utf8, struct veto_event **const out_list, struct ov_error *const err) {
-  enum batch_result result = BATCH_FAILED;
-  EVT_HANDLE items[8] = {0};
-  DWORD got = 0;
-
-  memset(items, 0, sizeof(items));
-  if (!EvtNext(q, 8, items, 1000, 0, &got)) {
-    DWORD const le = GetLastError();
-    if ((le == ERROR_NO_MORE_ITEMS) || (le == ERROR_TIMEOUT)) {
-      result = BATCH_DONE;
-      goto cleanup;
-    }
-    OV_ERROR_SET_HRESULT(err, HRESULT_FROM_WIN32(le));
-    goto cleanup;
-  }
-  if (!harvest_batch(items, got, xml, utf8, out_list, err)) {
-    goto cleanup;
-  }
-  result = BATCH_MORE;
-
-cleanup:
-  for (DWORD i = 0; i < 8; i++) {
-    if (items[i]) {
-      EvtClose(items[i]);
-    }
-  }
-  return result;
-}
-
-/**
- * @brief Read every event the query matches
- *
- * @param channel the event log to ask
- * @param query the XPath the log understands
- * @param out_list receives the records of the readable events
- * @param err receives the failure of the query
- * @return false when the query itself failed
- */
-static bool
-query_events(wchar_t const *const channel, wchar_t const *const query, struct veto_event **const out_list, struct ov_error *const err) {
-  bool success = false;
-  EVT_HANDLE q = NULL;
-  wchar_t *xml = NULL;
-  char *utf8 = NULL;
-
-  q = EvtQuery(NULL, channel, query, EvtQueryChannelPath | EvtQueryForwardDirection);
-  if (q == NULL) {
-    OV_ERROR_SET_HRESULT(err, HRESULT_FROM_WIN32(GetLastError()));
-    goto cleanup;
-  }
-  for (;;) {
-    enum batch_result const result = query_events_step(q, &xml, &utf8, out_list, err);
-    if (result == BATCH_FAILED) {
-      break;
-    }
-    if (result == BATCH_DONE) {
-      success = true;
-      break;
-    }
-  }
-
-cleanup:
-  if (q) {
-    EvtClose(q);
-  }
-  OV_FREE(&xml);
-  if (utf8) {
-    OV_ARRAY_DESTROY(&utf8);
-  }
-  return success;
-}
-
-/**
- * @brief Read the veto events of the last 24 hours
- *
- * They come in the order the log returns them.
- *
- * @param log_name event log that holds the records
- * @param provider_name provider that writes them
- * @param event_id the veto event of that provider
- * @param err receives the failure of the query itself
- * @return NULL only when the query itself failed; an empty array means there is no veto event
- */
-struct veto_event *
-veto_event_read(char const *const log_name, char const *const provider_name, unsigned short const event_id, struct ov_error *const err) {
-  struct veto_event *list = NULL;
-  wchar_t *channel = NULL;
-  wchar_t *query = NULL;
-  bool success = false;
-
-  if ((log_name == NULL) || (provider_name == NULL)) {
-    OV_ERROR_SET_GENERIC(err, ov_error_generic_invalid_argument);
-    goto cleanup;
-  }
-  if (!ov_sprintf_wchar(&channel, err, NULL, L"%s", log_name)) {
-    OV_ERROR_ADD_TRACE(err);
-    goto cleanup;
-  }
-  if (!ov_sprintf_wchar(&query,
-                        err,
-                        NULL,
-                        L"*[System[Provider[@Name='%s'] and EventID=%u and TimeCreated[timediff(@SystemTime) <= 86400000]]]",
-                        provider_name,
-                        (unsigned)event_id)) {
-    OV_ERROR_ADD_TRACE(err);
-    goto cleanup;
-  }
-  if (!query_events(channel, query, &list, err)) {
-    OV_ERROR_ADD_TRACE(err);
-    goto cleanup;
-  }
-  success = true;
-
-cleanup:
-  if (channel != NULL) {
-    OV_ARRAY_DESTROY(&channel); // made by ov_sprintf_wchar
-    channel = NULL;
-  }
-  if (query != NULL) {
-    OV_ARRAY_DESTROY(&query);
-    query = NULL;
-  }
-  if (success && (list == NULL) && !OV_ARRAY_GROW(&list, 1)) {
-    success = false;
-  }
-  if (!success) {
-    veto_event_destroy_list(&list);
-  }
-  return success ? list : NULL;
 }

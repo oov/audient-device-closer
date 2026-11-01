@@ -1,7 +1,7 @@
 #ifndef ADC_LOGGATE_H
 #define ADC_LOGGATE_H
 
-#include <ovbase.h>
+#include <stdbool.h>
 
 /**
  * @brief Suppresses the repetition of the same error message

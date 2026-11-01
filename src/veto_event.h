@@ -2,8 +2,7 @@
 
 #include <ovbase.h>
 
-#include <stddef.h>
-#include <stdint.h>
+#include <wchar.h>
 
 /**
  * @brief One veto event as the event log recorded it
@@ -11,59 +10,82 @@
  * What the log states at the moment it stated it: which process was named, when it was
  * named, which device it blocked, and what that process was called.  The path is the
  * record of what happened, so it is what the reader is shown.
+ *
+ * A caller that only reads the list walks it with veto_event_next rather than indexing it:
+ * what it does with the records is a walk, and how the list keeps them is its own business.
  */
 struct veto_event {
   uint64_t event_time_ms; // epoch milliseconds, UTC, 0 when unknown
   uint32_t pid;
-  char *path;            // UTF-8, what the process was called then.  Shown, never acted on
-  char *device_instance; // UTF-8, the device whose removal was stopped
+  wchar_t *path;            // what the process was called then.  Shown, never acted on
+  wchar_t *device_instance; // the device whose removal was stopped
 };
 
 /**
- * @brief Read the veto events of the last 24 hours
+ * @brief Where a walk of the list stands
  *
- * They come in the order the log returns them.
- *
- * @param log_name event log that holds the records
- * @param provider_name provider that writes them
- * @param event_id the veto event of that provider
- * @param err receives the failure of the query itself
- * @return NULL only when the query itself failed; an empty array means there is no veto event
+ * Zero it before the first call and hand the same one back until the walk is over.  The
+ * fields are the record the walk just reached; the caller does not write them.
  */
-struct veto_event *
-veto_event_read(char const *const log_name, char const *const provider_name, unsigned short const event_id, struct ov_error *const err);
+struct veto_event_iter {
+  size_t idx;               //!< position in the list, the record is at this one
+  uint32_t pid;             //!< the process the record named
+  uint64_t event_time_ms;   //!< the moment of the record, epoch milliseconds UTC
+  wchar_t *path;            //!< what the process was called then, borrowed from the list
+  wchar_t *device_instance; //!< the device whose removal was stopped, borrowed from the list
+};
 
 /**
- * @brief Drop what the caller must not act on any more
+ * @brief Where a list that is being built takes its records
  *
- * Events older than since_ms and duplicates of the same pid + device go,
- * the newest of the duplicates is kept.
- *
- * @param list the list to shrink in place
- * @param since_ms events older than this are dropped, 0 keeps every age
+ * The builder hands one of these to the emitter, and the emitter calls emit for every
+ * event it has.  What a record is made of is the business of the builder: the emitter hands
+ * over the event as the log writes it, and the list keeps what could be read out of it.  A
+ * caller never makes one of these itself; it is what the emitter is given.
  */
-void veto_event_prune(struct veto_event **const list, uint64_t const since_ms);
+struct veto_event_context {
+  /**
+   * @brief Take one event into the list
+   *
+   * An event the reader makes nothing of is not a failure: the log holds such records, and
+   * a list that kept them would be a list of guesses.  It is left out, and true is answered.
+   *
+   * @param ctx the context itself
+   * @param xml the event as the log writes it
+   * @param err receives the failure
+   * @return false when the list could not take the event
+   */
+  bool (*emit)(struct veto_event_context *const ctx, wchar_t const *const xml, struct ov_error *const err);
+};
 
 /**
- * @brief Number of records in the list
+ * @brief Build a list of the records an emitter reads
  *
- * @param list NULL is allowed
- * @return the number of records, 0 for NULL
+ * The emitter is called once and hands every event it has to ctx->emit, as often as it has
+ * one.  What it reads them from is its own business: the log of the system, a script of a
+ * stand-in, or anything else that can be written as an event.
+ *
+ * @param emitter called once, handing its events to ctx->emit
+ * @param userdata handed to the emitter
+ * @param err receives the failure of the emitter or of the list
+ * @return the records, empty but never NULL when the emitter answered; NULL with err set
+ *         when it did not; release with veto_event_destroy_list
  */
-size_t veto_event_count(struct veto_event const *const list);
+NODISCARD struct veto_event *
+veto_event_list_build(bool (*emitter)(struct veto_event_context *const ctx, void *const userdata, struct ov_error *const err),
+                      void *const userdata,
+                      struct ov_error *const err);
 
 /**
- * @brief Drop every record that names one of the given processes
+ * @brief Take the next record of the list
  *
- * A process this run closed is gone from the machine, so the record that named it is no
- * longer a reason the device is held and must not be shown as one.  The caller passes the
- * ids it closed, so a record that names anybody else stays.
+ * The records come out in the order the log wrote them.
  *
- * @param list  the list to shrink in place
- * @param pids  the process ids that were closed
- * @param count how many of them there are
+ * @param list the list to walk, NULL walks nothing
+ * @param it where the walk stands, zeroed before the first call
+ * @return true when it now holds the next record, false when the walk is over
  */
-void veto_event_drop_pids(struct veto_event **list, uint32_t const *pids, size_t count);
+NODISCARD bool veto_event_next(struct veto_event const *const list, struct veto_event_iter *const it);
 
 /**
  * @brief Release the list and every record in it

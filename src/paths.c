@@ -2,35 +2,28 @@
 
 #include <windows.h>
 
-#include <ctype.h>
 #include <shlobj.h>
+#include <shlwapi.h>
 #include <string.h>
+#include <wchar.h>
 
 #include <ovarray.h>
+#include <ovmo.h>
 #include <ovprintf.h>
 #include <ovprintf_ex.h>
-
-/**
- * @brief Release a string this module handed out
- *
- * @param value set to NULL afterwards, NULL is allowed
- */
-void paths_string_free(char **const value) {
-  if ((value != NULL) && (*value != NULL)) {
-    OV_ARRAY_DESTROY(value); // made by ov_sprintf_char
-  }
-}
 
 /**
  * @brief Full path of the running executable
  *
  * @param err receives the failure of the lookup
- * @return the path in UTF-8, NULL when it could not be read
- * @note Release with paths_string_free.
+ * @return the path, NULL when it could not be read
+ * @note Release with OV_ARRAY_DESTROY.
  */
-char *paths_executable(struct ov_error *const err) {
-  char *result = NULL;
-  wchar_t self[PATHS_MAX];
+NODISCARD wchar_t *paths_executable(struct ov_error *const err) {
+  wchar_t *result = NULL;
+  // PathRelativePathToW, which paths_is_in_program_files compares through, refuses a path
+  // of MAX_PATH or more, so a longer one could not be followed through the program anyway.
+  wchar_t self[MAX_PATH];
   DWORD len = 0;
 
   len = GetModuleFileNameW(NULL, self, (DWORD)(sizeof(self) / sizeof(self[0])));
@@ -39,7 +32,7 @@ char *paths_executable(struct ov_error *const err) {
     return NULL;
   }
   self[len] = L'\0';
-  if (!ov_sprintf_char(&result, err, NULL, "%ls", self)) {
+  if (!ov_sprintf_wchar(&result, err, NULL, L"%ls", self)) {
     OV_ERROR_ADD_TRACE(err);
     return NULL;
   }
@@ -49,51 +42,137 @@ char *paths_executable(struct ov_error *const err) {
 /**
  * @brief The file name of a path, the part behind the last separator
  *
- * @param path_utf8 the path to look at, UTF-8, NULL is allowed
- * @return the file name inside path_utf8, empty when the path ends with a separator, NULL for
+ * @param path the path to look at, NULL is allowed
+ * @return the file name inside path, empty when the path ends with a separator, NULL for
  *         NULL
- * @note The returned string lives inside path_utf8, there is nothing to release.
+ * @note The returned string lives inside path, there is nothing to release.
  */
-char const *paths_file_name(char const *const path_utf8) {
-  char const *name = NULL;
+wchar_t const *paths_file_name(wchar_t const *const path) {
+  wchar_t const *name = NULL;
 
-  if (path_utf8 == NULL) {
+  if (path == NULL) {
     return NULL;
   }
-  name = path_utf8;
-  for (char const *p = path_utf8; *p != '\0'; p++) {
-    if ((*p == '\\') || (*p == '/') || (*p == ':')) {
+  name = path;
+  for (wchar_t const *p = path; *p != L'\0'; p++) {
+    if ((*p == L'\\') || (*p == L'/') || (*p == L':')) {
       name = p + 1;
     }
   }
   return name;
 }
 
-bool paths_is_in_program_files(char const *const exe_path) {
-  static char const *const folders[] = {"\\program files\\", "\\program files (x86)\\"};
+/**
+ * @brief Is the file name of a path the name the caller gives
+ *
+ * @param path the path to look at, NULL is not a match
+ * @param name the file name to look for, NULL and the empty name are not a match
+ * @return true when the last component of path is name
+ */
+bool paths_file_name_matches(wchar_t const *const path, wchar_t const *const name) {
+  wchar_t const *const leaf = paths_file_name(path);
 
-  if (exe_path == NULL) {
+  if ((leaf == NULL) || (name == NULL) || (name[0] == L'\0')) {
     return false;
   }
-  for (size_t i = 0; i < (sizeof(folders) / sizeof(folders[0])); i++) {
-    size_t const n = strlen(folders[i]);
-    for (char const *p = exe_path; *p != '\0'; p++) {
-      size_t j = 0;
-      while ((j < n) && (p[j] != '\0') && (tolower((unsigned char)p[j]) == folders[i][j])) {
-        j++;
-      }
-      if (j == n) {
-        return true;
-      }
-    }
-  }
-  return false;
+  return CompareStringOrdinal(leaf, -1, name, -1, TRUE) == CSTR_EQUAL;
 }
 
-char *paths_log_folder(struct ov_error *const err) {
+/**
+ * @brief Is a path inside a folder
+ *
+ * The comparison is the one of the system, not of the strings.
+ *
+ * @param folder the folder to look inside
+ * @param path the path to look at
+ * @param err receives the failure of the comparison
+ * @return ov_true when path names a file under folder, ov_false when it does not,
+ *         ov_indeterminate when the two could not be compared, with err set
+ */
+static NODISCARD ov_tribool is_inside_folder(wchar_t const *const folder, wchar_t const *const path, struct ov_error *const err) {
+  wchar_t relative[MAX_PATH];
+
+  // PathRelativePathToW refuses both paths beyond MAX_PATH
+  if ((wcslen(folder) >= MAX_PATH) || (wcslen(path) >= MAX_PATH)) {
+    OV_ERROR_SET(err, ov_error_type_generic, ov_error_generic_fail, gettext("The path is too long to compare"));
+    return ov_indeterminate;
+  }
+  if (!PathRelativePathToW(relative, folder, FILE_ATTRIBUTE_DIRECTORY, path, 0)) {
+    return ov_false;
+  }
+  return ((relative[0] == L'.') && (relative[1] == L'.')) ? ov_false : ov_true;
+}
+
+/**
+ * @brief Look up one known folder and ask whether the path is inside it
+ *
+ * @param id the known folder to look up
+ * @param path the path to look at
+ * @param err receives the failure of the lookup
+ * @return ov_true when path is inside the folder, ov_false when it is not,
+ *         ov_indeterminate when the answer could not be worked out, with err set
+ */
+static NODISCARD ov_tribool folder_holds(KNOWNFOLDERID const *const id, wchar_t const *const path, struct ov_error *const err) {
+  ov_tribool result = ov_indeterminate;
+  wchar_t *folder = NULL;
+  HRESULT const hr = SHGetKnownFolderPath(id, 0, NULL, &folder);
+  if (FAILED(hr)) {
+    OV_ERROR_SET_HRESULT(err, hr);
+    goto cleanup;
+  }
+  if (folder == NULL) {
+    OV_ERROR_SET_GENERIC(err, ov_error_generic_unexpected);
+    goto cleanup;
+  }
+  result = is_inside_folder(folder, path, err);
+  if (result == ov_indeterminate) {
+    OV_ERROR_ADD_TRACE(err);
+    goto cleanup;
+  }
+
+cleanup:
+  if (folder != NULL) {
+    CoTaskMemFree(folder);
+  }
+  return result;
+}
+
+NODISCARD ov_tribool paths_is_in_program_files(wchar_t const *const exe_path, struct ov_error *const err) {
+  if (exe_path == NULL) {
+    OV_ERROR_SET_GENERIC(err, ov_error_generic_invalid_argument);
+    return ov_indeterminate;
+  }
+
+  ov_tribool ret = ov_indeterminate;
+
+  // is_inside_folder compares with PathRelativePathToW, which refuses MAX_PATH and beyond
+  if (wcslen(exe_path) >= MAX_PATH) {
+    OV_ERROR_SET_GENERIC(err, ov_error_generic_invalid_argument);
+    goto cleanup;
+  }
+
+  static KNOWNFOLDERID const *const folders[] = {&FOLDERID_ProgramFiles, &FOLDERID_ProgramFilesX86};
+  for (size_t i = 0; i < (sizeof(folders) / sizeof(folders[0])); i++) {
+    ov_tribool const holds = folder_holds(folders[i], exe_path, err);
+
+    if (holds == ov_indeterminate) {
+      OV_ERROR_ADD_TRACE(err);
+      goto cleanup;
+    }
+    if (holds == ov_true) {
+      ret = ov_true;
+      goto cleanup;
+    }
+  }
+  ret = ov_false;
+cleanup:
+  return ret;
+}
+
+NODISCARD wchar_t *paths_log_folder(struct ov_error *const err) {
   wchar_t *shared = NULL;
-  char *result = NULL;
-  char *joined = NULL;
+  wchar_t *result = NULL;
+  wchar_t *joined = NULL;
   bool success = false;
   HRESULT const hr = SHGetKnownFolderPath(&FOLDERID_ProgramData, 0, NULL, &shared);
 
@@ -101,11 +180,11 @@ char *paths_log_folder(struct ov_error *const err) {
     OV_ERROR_SET_HRESULT(err, hr);
     goto cleanup;
   }
-  if (!ov_sprintf_char(&result, err, NULL, "%ls", shared)) {
+  if (!ov_sprintf_wchar(&result, err, NULL, L"%ls", shared)) {
     OV_ERROR_ADD_TRACE(err);
     goto cleanup;
   }
-  joined = paths_join(result, "AudientDeviceCloser", err);
+  joined = paths_join(result, L"AudientDeviceCloser", err);
   if (joined == NULL) {
     OV_ERROR_ADD_TRACE(err);
     goto cleanup;
@@ -116,42 +195,31 @@ cleanup:
   if (shared != NULL) {
     CoTaskMemFree(shared);
   }
-  paths_string_free(&result);
+  if (result != NULL) {
+    OV_ARRAY_DESTROY(&result);
+  }
   if (!success) {
     if (joined != NULL) {
-      OV_ARRAY_DESTROY(&joined); // made by paths_join
+      OV_ARRAY_DESTROY(&joined);
     }
     return NULL;
   }
   return joined;
 }
 
-bool paths_create_folder(char const *const folder_utf8, struct ov_error *const err) {
-  bool success = false;
-  wchar_t *wide = NULL;
-
-  if (folder_utf8 == NULL) {
+NODISCARD bool paths_create_folder(wchar_t const *const folder, struct ov_error *const err) {
+  if (folder == NULL) {
     OV_ERROR_SET_GENERIC(err, ov_error_generic_invalid_argument);
-    goto cleanup;
+    return false;
   }
-  if (!ov_sprintf_wchar(&wide, err, NULL, L"%s", folder_utf8)) {
-    OV_ERROR_ADD_TRACE(err);
-    goto cleanup;
-  }
-  if (!CreateDirectoryW(wide, NULL)) {
+  if (!CreateDirectoryW(folder, NULL)) {
     DWORD const last_error = GetLastError();
     if (last_error != ERROR_ALREADY_EXISTS) {
       OV_ERROR_SET_HRESULT(err, HRESULT_FROM_WIN32(last_error));
-      goto cleanup;
+      return false;
     }
   }
-  success = true;
-
-cleanup:
-  if (wide != NULL) {
-    OV_ARRAY_DESTROY(&wide); // made by ov_sprintf_wchar
-  }
-  return success;
+  return true;
 }
 
 /**
@@ -160,18 +228,18 @@ cleanup:
  * @param directory the directory, without a trailing separator
  * @param name the file name
  * @param err receives a failure of the join
- * @return the path in UTF-8, NULL when it could not be built
- * @note Release with paths_string_free.
+ * @return the path, NULL when it could not be built
+ * @note Release with OV_ARRAY_DESTROY.
  */
-char *paths_join(char const *const directory, char const *const name, struct ov_error *const err) {
-  char *result = NULL;
+NODISCARD wchar_t *paths_join(wchar_t const *const directory, wchar_t const *const name, struct ov_error *const err) {
+  wchar_t *result = NULL;
   bool success = false;
 
   if ((directory == NULL) || (name == NULL)) {
     OV_ERROR_SET_GENERIC(err, ov_error_generic_invalid_argument);
     goto cleanup;
   }
-  if (!ov_sprintf_char(&result, err, NULL, "%hs\\%hs", directory, name)) {
+  if (!ov_sprintf_wchar(&result, err, NULL, L"%ls\\%ls", directory, name)) {
     OV_ERROR_ADD_TRACE(err);
     goto cleanup;
   }
@@ -189,14 +257,14 @@ cleanup:
 /**
  * @brief The path of a file that sits next to an executable under the same name
  *
- * @param exe_path the executable the file belongs to, UTF-8
+ * @param exe_path the executable the file belongs to
  * @param extension the extension the file carries, with its dot
  * @param err receives the failure of the build
- * @return the path in UTF-8, NULL when it could not be built
- * @note Release with OV_FREE.
+ * @return the path, NULL when it could not be built
+ * @note Release with OV_ARRAY_DESTROY.
  */
-char *paths_replace_extension(char const *const exe_path, char const *const extension, struct ov_error *const err) {
-  char *result = NULL;
+NODISCARD wchar_t *paths_replace_extension(wchar_t const *const exe_path, wchar_t const *const extension, struct ov_error *const err) {
+  wchar_t *result = NULL;
   size_t len = 0;
   size_t dot = 0;
   size_t sep = 0;
@@ -207,31 +275,32 @@ char *paths_replace_extension(char const *const exe_path, char const *const exte
     OV_ERROR_SET_GENERIC(err, ov_error_generic_invalid_argument);
     goto cleanup;
   }
-  len = strlen(exe_path);
-  ext_len = strlen(extension);
+  len = wcslen(exe_path);
+  ext_len = wcslen(extension);
   for (size_t i = 0; i < len; i++) {
-    if ((exe_path[i] == '\\') || (exe_path[i] == '/') || (exe_path[i] == ':')) {
+    if ((exe_path[i] == L'\\') || (exe_path[i] == L'/') || (exe_path[i] == L':')) {
       sep = i + 1;
     }
-    if (exe_path[i] == '.') {
+    if (exe_path[i] == L'.') {
       dot = i;
     }
   }
   if (dot < sep) {
     dot = len; // a dot inside a directory name is not the extension
   }
-  if (!OV_REALLOC(&result, dot + ext_len + 1, sizeof(result[0]))) {
+  if (!OV_ARRAY_GROW(&result, dot + ext_len + 1)) {
     OV_ERROR_SET_GENERIC(err, ov_error_generic_out_of_memory);
     goto cleanup;
   }
-  memcpy(result, exe_path, dot);
-  memcpy(&result[dot], extension, ext_len + 1); // the terminator comes along with the extension
+  OV_ARRAY_SET_LENGTH(result, dot + ext_len);
+  memcpy(result, exe_path, dot * sizeof(result[0]));
+  memcpy(&result[dot], extension, (ext_len + 1) * sizeof(result[0])); // the terminator comes along with the extension
   success = true;
 
 cleanup:
   if (!success) {
     if (result != NULL) {
-      OV_FREE(&result);
+      OV_ARRAY_DESTROY(&result);
     }
   }
   return success ? result : NULL;

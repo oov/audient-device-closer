@@ -11,7 +11,8 @@ static char const kFull[] = "{"
                             "\"veto_provider_name\": \"Microsoft-Windows-Kernel-PnP\","
                             "\"veto_event_id\": 225,"
                             "\"mixer_process_names\": [\"iD.exe\", \"EVO.exe\"],"
-                            "\"task_name\": \"\\\\AudientDeviceCloser\""
+                            "\"task_dir\": \"AudientDeviceCloser\","
+                            "\"task_name\": \"Device recovery after resume from sleep\""
                             "}";
 
 static char const kDevices[] = // the table this file is mostly about
@@ -77,6 +78,16 @@ static char const kConfirmWait[] = "{"
                                    "\"devices\": [{\"name\": \"iD14mkII\", \"id\": \"TUSBAUDIO_ENUM\\\\VID_2708&PID_0008&KS\"}]"
                                    "}";
 
+static char const kVetoWait[] = "{"
+                                "\"ks_service\": \"someks\","
+                                "\"veto_log_name\": \"System\","
+                                "\"veto_provider_name\": \"Some-Provider\","
+                                "\"veto_event_id\": 1,"
+                                "\"mixer_process_names\": [\"foo.exe\"],"
+                                "\"veto_max_wait_ms\": 12000,"
+                                "\"devices\": [{\"name\": \"iD14mkII\", \"id\": \"TUSBAUDIO_ENUM\\\\VID_2708&PID_0008&KS\"}]"
+                                "}";
+
 /**
  * @brief A settings file that has every key loads
  */
@@ -85,24 +96,25 @@ static void test_full(void) {
   struct ov_error err = {0};
 
   memset(&s, 0, sizeof(s));
-  if (!TEST_SUCCEEDED(settings_apply_json(kFull, &s, &err), &err)) {
+  if (!TEST_SUCCEEDED(apply_json(kFull, &s, &err), &err)) {
     goto cleanup;
   }
-  TEST_CHECK(s.ks_service != NULL && strcmp(s.ks_service, "audientusbaudioks") == 0);
+  TEST_CHECK(s.ks_service != NULL && wcscmp(s.ks_service, L"audientusbaudioks") == 0);
   TEST_CHECK(OV_ARRAY_LENGTH(s.devices) == 1);
   if (TEST_CHECK(OV_ARRAY_LENGTH(s.devices) == 1)) {
-    TEST_CHECK(s.devices[0].name != NULL && strcmp(s.devices[0].name, "iD14mkII") == 0);
-    TEST_CHECK(s.devices[0].id != NULL && strcmp(s.devices[0].id, "TUSBAUDIO_ENUM\\VID_2708&PID_0008&KS") == 0);
+    TEST_CHECK(s.devices[0].name != NULL && wcscmp(s.devices[0].name, L"iD14mkII") == 0);
+    TEST_CHECK(s.devices[0].id != NULL && wcscmp(s.devices[0].id, L"TUSBAUDIO_ENUM\\VID_2708&PID_0008&KS") == 0);
   }
-  TEST_CHECK(s.veto_log_name != NULL && strcmp(s.veto_log_name, "System") == 0);
-  TEST_CHECK(s.veto_provider_name != NULL && strcmp(s.veto_provider_name, "Microsoft-Windows-Kernel-PnP") == 0);
+  TEST_CHECK(s.veto_log_name != NULL && wcscmp(s.veto_log_name, L"System") == 0);
+  TEST_CHECK(s.veto_provider_name != NULL && wcscmp(s.veto_provider_name, L"Microsoft-Windows-Kernel-PnP") == 0);
   TEST_CHECK(s.veto_event_id == 225);
   TEST_CHECK(OV_ARRAY_LENGTH(s.mixer_process_names) == 2);
   if (TEST_CHECK(OV_ARRAY_LENGTH(s.mixer_process_names) == 2)) {
-    TEST_CHECK(s.mixer_process_names[0] != NULL && strcmp(s.mixer_process_names[0], "iD.exe") == 0);
-    TEST_CHECK(s.mixer_process_names[1] != NULL && strcmp(s.mixer_process_names[1], "EVO.exe") == 0);
+    TEST_CHECK(s.mixer_process_names[0] != NULL && wcscmp(s.mixer_process_names[0], L"iD.exe") == 0);
+    TEST_CHECK(s.mixer_process_names[1] != NULL && wcscmp(s.mixer_process_names[1], L"EVO.exe") == 0);
   }
-  TEST_CHECK(s.task_name != NULL);
+  TEST_CHECK(s.task_dir != NULL && wcscmp(s.task_dir, L"AudientDeviceCloser") == 0);
+  TEST_CHECK(s.task_name != NULL && wcscmp(s.task_name, L"Device recovery after resume from sleep") == 0);
 
 cleanup:
   settings_release(&s);
@@ -121,21 +133,21 @@ static void test_use_theme_key(void) {
   struct ov_error err = {0};
 
   memset(&s, 0, sizeof(s));
-  if (!TEST_SUCCEEDED(settings_apply_json(kRequiredOnly, &s, &err), &err)) {
+  if (!TEST_SUCCEEDED(apply_json(kRequiredOnly, &s, &err), &err)) {
     goto cleanup;
   }
   TEST_CHECK(s.use_theme == true);
   settings_release(&s);
 
   memset(&s, 0, sizeof(s));
-  if (!TEST_SUCCEEDED(settings_apply_json(kThemeOff, &s, &err), &err)) {
+  if (!TEST_SUCCEEDED(apply_json(kThemeOff, &s, &err), &err)) {
     goto cleanup;
   }
   TEST_CHECK(s.use_theme == false);
   settings_release(&s);
 
   memset(&s, 0, sizeof(s));
-  if (!TEST_SUCCEEDED(settings_apply_json(kThemeOn, &s, &err), &err)) {
+  if (!TEST_SUCCEEDED(apply_json(kThemeOn, &s, &err), &err)) {
     goto cleanup;
   }
   TEST_CHECK(s.use_theme == true);
@@ -156,20 +168,55 @@ static void test_allow_audio_service_pause_key(void) {
 
   TEST_CASE("a file that does not mention the key leaves it off");
   memset(&s, 0, sizeof(s));
-  if (TEST_SUCCEEDED(settings_apply_json(kThemeOn, &s, &err), &err)) {
+  if (TEST_SUCCEEDED(apply_json(kThemeOn, &s, &err), &err)) {
     TEST_CHECK(s.allow_audio_service_pause == false);
   }
   settings_release(&s);
 
   TEST_CASE("a file that turns it on is read");
   memset(&s, 0, sizeof(s));
-  if (TEST_SUCCEEDED(settings_apply_json("{\"ks_service\":\"a\",\"veto_log_name\":\"b\",\"veto_provider_name\":\"c\","
-                                         "\"veto_event_id\":1,\"mixer_process_names\":[\"d\"],\"allow_audio_service_pause\":true,"
-                                         "\"devices\":[{\"name\": \"iD14mkII\", \"id\": \"TUSBAUDIO_ENUM\\\\VID_2708&PID_0008&KS\"}]}",
-                                         &s,
-                                         &err),
+  if (TEST_SUCCEEDED(apply_json("{\"ks_service\":\"a\",\"veto_log_name\":\"b\",\"veto_provider_name\":\"c\","
+                                "\"veto_event_id\":1,\"mixer_process_names\":[\"d\"],\"allow_audio_service_pause\":true,"
+                                "\"devices\":[{\"name\": \"iD14mkII\", \"id\": \"TUSBAUDIO_ENUM\\\\VID_2708&PID_0008&KS\"}]}",
+                                &s,
+                                &err),
                      &err)) {
     TEST_CHECK(s.allow_audio_service_pause == true);
+  }
+  settings_release(&s);
+}
+
+/**
+ * @brief The key of the made-up machine is read, and defaults to off
+ *
+ * A debug build can be taken through a machine that is not this one; a build that ships
+ * cannot, and the sample settings file carries the key for both, so the key is left off there.
+ */
+static void test_simulate_key(void) {
+  struct settings s;
+  struct ov_error err = {0};
+
+  TEST_CASE("a file that does not mention the key leaves it off");
+  memset(&s, 0, sizeof(s));
+  if (TEST_SUCCEEDED(apply_json(kThemeOn, &s, &err), &err)) {
+    TEST_CHECK(s.simulate == NULL);
+  }
+  settings_release(&s);
+
+  TEST_CASE("a file that names a machine is read");
+  memset(&s, 0, sizeof(s));
+  if (TEST_SUCCEEDED(apply_json("{\"ks_service\":\"a\",\"veto_log_name\":\"b\",\"veto_provider_name\":\"c\","
+                                "\"veto_event_id\":1,\"mixer_process_names\":[\"d\"],\"simulate\":\"veto\","
+                                "\"devices\":[{\"name\": \"iD14mkII\", \"id\": \"TUSBAUDIO_ENUM\\\\VID_2708&PID_0008&KS\"}]}",
+                                &s,
+                                &err),
+                     &err)) {
+#ifdef NDEBUG
+    TEST_CHECK(s.simulate == NULL); // no stand-in exists in this build
+#else
+    TEST_CHECK(s.simulate != NULL);
+    TEST_CHECK(wcscmp(s.simulate, L"veto") == 0);
+#endif
   }
   settings_release(&s);
 }
@@ -182,11 +229,11 @@ static void test_allow_audio_service_pause_wrong_type(void) {
   struct ov_error err = {0};
 
   memset(&s, 0, sizeof(s));
-  TEST_FAILED_WITH(settings_apply_json("{\"ks_service\":\"a\",\"veto_log_name\":\"b\",\"veto_provider_name\":\"c\","
-                                       "\"veto_event_id\":1,\"mixer_process_names\":[\"d\"],\"allow_audio_service_pause\":\"no\","
-                                       "\"devices\":[{\"name\": \"iD14mkII\", \"id\": \"TUSBAUDIO_ENUM\\\\VID_2708&PID_0008&KS\"}]}",
-                                       &s,
-                                       &err),
+  TEST_FAILED_WITH(apply_json("{\"ks_service\":\"a\",\"veto_log_name\":\"b\",\"veto_provider_name\":\"c\","
+                              "\"veto_event_id\":1,\"mixer_process_names\":[\"d\"],\"allow_audio_service_pause\":\"no\","
+                              "\"devices\":[{\"name\": \"iD14mkII\", \"id\": \"TUSBAUDIO_ENUM\\\\VID_2708&PID_0008&KS\"}]}",
+                              &s,
+                              &err),
                    &err,
                    ov_error_type_generic,
                    ov_error_generic_invalid_argument);
@@ -202,11 +249,11 @@ static void test_use_theme_wrong_type(void) {
   struct ov_error err = {0};
 
   memset(&s, 0, sizeof(s));
-  TEST_FAILED_WITH(settings_apply_json("{\"ks_service\":\"a\",\"veto_log_name\":\"b\",\"veto_provider_name\":\"c\","
-                                       "\"veto_event_id\":1,\"mixer_process_names\":[\"d\"],\"use_theme\":\"no\","
-                                       "\"devices\":[{\"name\": \"iD14mkII\", \"id\": \"TUSBAUDIO_ENUM\\\\VID_2708&PID_0008&KS\"}]}",
-                                       &s,
-                                       &err),
+  TEST_FAILED_WITH(apply_json("{\"ks_service\":\"a\",\"veto_log_name\":\"b\",\"veto_provider_name\":\"c\","
+                              "\"veto_event_id\":1,\"mixer_process_names\":[\"d\"],\"use_theme\":\"no\","
+                              "\"devices\":[{\"name\": \"iD14mkII\", \"id\": \"TUSBAUDIO_ENUM\\\\VID_2708&PID_0008&KS\"}]}",
+                              &s,
+                              &err),
                    &err,
                    ov_error_type_generic,
                    ov_error_generic_invalid_argument);
@@ -226,14 +273,14 @@ static void test_confirm_max_wait_key(void) {
   struct ov_error err = {0};
 
   memset(&s, 0, sizeof(s));
-  if (!TEST_SUCCEEDED(settings_apply_json(kConfirmWait, &s, &err), &err)) {
+  if (!TEST_SUCCEEDED(apply_json(kConfirmWait, &s, &err), &err)) {
     goto cleanup;
   }
   TEST_CHECK_(s.confirm_max_wait_ms == 15000, "want the wait the file names, got %lu", s.confirm_max_wait_ms);
   settings_release(&s);
 
   memset(&s, 0, sizeof(s));
-  if (!TEST_SUCCEEDED(settings_apply_json(kRequiredOnly, &s, &err), &err)) {
+  if (!TEST_SUCCEEDED(apply_json(kRequiredOnly, &s, &err), &err)) {
     goto cleanup;
   }
   TEST_CHECK_(s.confirm_max_wait_ms == adc_settings_confirm_max_wait_ms, "want the wait of the defaults, got %lu", s.confirm_max_wait_ms);
@@ -254,7 +301,53 @@ static void test_confirm_max_wait_out_of_range(void) {
     char const *const json = "{\"ks_service\":\"someks\",\"veto_log_name\":\"System\",\"veto_provider_name\":\"Some-Provider\","
                              "\"veto_event_id\":1,\"mixer_process_names\":[\"foo.exe\"],\"confirm_max_wait_ms\":99999999,"
                              "\"devices\":[{\"name\": \"iD14mkII\", \"id\": \"TUSBAUDIO_ENUM\\\\VID_2708&PID_0008&KS\"}]}";
-    TEST_FAILED_WITH(settings_apply_json(json, &s, &err), &err, ov_error_type_generic, ov_error_generic_invalid_argument);
+    TEST_FAILED_WITH(apply_json(json, &s, &err), &err, ov_error_type_generic, ov_error_generic_invalid_argument);
+  }
+
+  settings_release(&s);
+}
+
+/**
+ * @brief How long the run waits for its veto record differs from machine to machine
+ *
+ * The record is written a moment after the removal call returns, and how long that takes
+ * differs from machine to machine, so the key may name it.  When it is absent the wait is
+ * the one of the defaults.
+ */
+static void test_veto_max_wait_key(void) {
+  struct settings s;
+  struct ov_error err = {0};
+
+  memset(&s, 0, sizeof(s));
+  if (!TEST_SUCCEEDED(apply_json(kVetoWait, &s, &err), &err)) {
+    goto cleanup;
+  }
+  TEST_CHECK_(s.veto_max_wait_ms == 12000, "want the wait the file names, got %lu", s.veto_max_wait_ms);
+  settings_release(&s);
+
+  memset(&s, 0, sizeof(s));
+  if (!TEST_SUCCEEDED(apply_json(kRequiredOnly, &s, &err), &err)) {
+    goto cleanup;
+  }
+  TEST_CHECK_(s.veto_max_wait_ms == adc_settings_veto_max_wait_ms, "want the wait of the defaults, got %lu", s.veto_max_wait_ms);
+
+cleanup:
+  settings_release(&s);
+}
+
+/**
+ * @brief A wait that is not a wait is refused
+ */
+static void test_veto_max_wait_out_of_range(void) {
+  struct settings s;
+  struct ov_error err = {0};
+
+  memset(&s, 0, sizeof(s));
+  {
+    char const *const json = "{\"ks_service\":\"someks\",\"veto_log_name\":\"System\",\"veto_provider_name\":\"Some-Provider\","
+                             "\"veto_event_id\":1,\"mixer_process_names\":[\"foo.exe\"],\"veto_max_wait_ms\":99999999,"
+                             "\"devices\":[{\"name\": \"iD14mkII\", \"id\": \"TUSBAUDIO_ENUM\\\\VID_2708&PID_0008&KS\"}]}";
+    TEST_FAILED_WITH(apply_json(json, &s, &err), &err, ov_error_type_generic, ov_error_generic_invalid_argument);
   }
 
   settings_release(&s);
@@ -268,10 +361,11 @@ static void test_optional_absent(void) {
   struct ov_error err = {0};
 
   memset(&s, 0, sizeof(s));
-  if (!TEST_SUCCEEDED(settings_apply_json(kRequiredOnly, &s, &err), &err)) {
+  if (!TEST_SUCCEEDED(apply_json(kRequiredOnly, &s, &err), &err)) {
     goto cleanup;
   }
   TEST_CHECK(s.task_name == NULL);
+  TEST_CHECK(s.task_dir == NULL);
   TEST_CHECK(s.veto_event_id == 1);
 
 cleanup:
@@ -286,7 +380,7 @@ static void test_legacy_healthy_key(void) {
   struct ov_error err = {0};
 
   memset(&s, 0, sizeof(s));
-  if (!TEST_SUCCEEDED(settings_apply_json(kLegacyHealthyKey, &s, &err), &err)) {
+  if (!TEST_SUCCEEDED(apply_json(kLegacyHealthyKey, &s, &err), &err)) {
     goto cleanup;
   }
   TEST_CHECK(s.ks_service != NULL);
@@ -306,7 +400,7 @@ static void test_legacy_restart_keys(void) {
   struct ov_error err = {0};
 
   memset(&s, 0, sizeof(s));
-  if (!TEST_SUCCEEDED(settings_apply_json(kLegacyRestartKeys, &s, &err), &err)) {
+  if (!TEST_SUCCEEDED(apply_json(kLegacyRestartKeys, &s, &err), &err)) {
     goto cleanup;
   }
   TEST_CHECK(s.ks_service != NULL);
@@ -323,8 +417,7 @@ static void test_missing_required(void) {
   struct ov_error err = {0};
 
   memset(&s, 0, sizeof(s));
-  TEST_FAILED_WITH(
-      settings_apply_json("{\"veto_log_name\":\"System\"}", &s, &err), &err, ov_error_type_generic, ov_error_generic_not_found);
+  TEST_FAILED_WITH(apply_json("{\"veto_log_name\":\"System\"}", &s, &err), &err, ov_error_type_generic, ov_error_generic_not_found);
   TEST_CHECK(s.ks_service == NULL); // released on failure
   settings_release(&s);
 }
@@ -337,11 +430,11 @@ static void test_missing_required_number(void) {
   struct ov_error err = {0};
 
   memset(&s, 0, sizeof(s));
-  TEST_FAILED_WITH(settings_apply_json("{\"ks_service\":\"a\",\"veto_log_name\":\"b\",\"veto_provider_name\":\"c\","
-                                       "\"mixer_process_names\":[\"d\"],\"devices\":[{\"name\": \"iD14mkII\", \"id\": "
-                                       "\"TUSBAUDIO_ENUM\\\\VID_2708&PID_0008&KS\"}]}",
-                                       &s,
-                                       &err),
+  TEST_FAILED_WITH(apply_json("{\"ks_service\":\"a\",\"veto_log_name\":\"b\",\"veto_provider_name\":\"c\","
+                              "\"mixer_process_names\":[\"d\"],\"devices\":[{\"name\": \"iD14mkII\", \"id\": "
+                              "\"TUSBAUDIO_ENUM\\\\VID_2708&PID_0008&KS\"}]}",
+                              &s,
+                              &err),
                    &err,
                    ov_error_type_generic,
                    ov_error_generic_not_found);
@@ -357,15 +450,13 @@ static void test_wrong_types(void) {
   struct ov_error not_a_number = {0};
 
   memset(&s, 0, sizeof(s));
-  TEST_FAILED_WITH(settings_apply_json("{\"ks_service\":1}", &s, &not_a_string),
-                   &not_a_string,
-                   ov_error_type_generic,
-                   ov_error_generic_invalid_argument);
-  TEST_FAILED_WITH(settings_apply_json("{\"ks_service\":\"a\",\"veto_log_name\":\"b\",\"veto_provider_name\":\"c\","
-                                       "\"veto_event_id\":\"225\",\"mixer_process_names\":[\"d\"],\"devices\":[{\"name\": "
-                                       "\"iD14mkII\", \"id\": \"TUSBAUDIO_ENUM\\\\VID_2708&PID_0008&KS\"}]}",
-                                       &s,
-                                       &not_a_number),
+  TEST_FAILED_WITH(
+      apply_json("{\"ks_service\":1}", &s, &not_a_string), &not_a_string, ov_error_type_generic, ov_error_generic_invalid_argument);
+  TEST_FAILED_WITH(apply_json("{\"ks_service\":\"a\",\"veto_log_name\":\"b\",\"veto_provider_name\":\"c\","
+                              "\"veto_event_id\":\"225\",\"mixer_process_names\":[\"d\"],\"devices\":[{\"name\": "
+                              "\"iD14mkII\", \"id\": \"TUSBAUDIO_ENUM\\\\VID_2708&PID_0008&KS\"}]}",
+                              &s,
+                              &not_a_number),
                    &not_a_number,
                    ov_error_type_generic,
                    ov_error_generic_invalid_argument);
@@ -382,19 +473,19 @@ static void test_out_of_range(void) {
   struct ov_error too_big = {0};
 
   memset(&s, 0, sizeof(s));
-  TEST_FAILED_WITH(settings_apply_json("{\"ks_service\":\"a\",\"veto_log_name\":\"b\",\"veto_provider_name\":\"c\","
-                                       "\"veto_event_id\":0,\"mixer_process_names\":[\"d\"],\"devices\":[{\"name\": \"iD14mkII\", "
-                                       "\"id\": \"TUSBAUDIO_ENUM\\\\VID_2708&PID_0008&KS\"}]}",
-                                       &s,
-                                       &too_small),
+  TEST_FAILED_WITH(apply_json("{\"ks_service\":\"a\",\"veto_log_name\":\"b\",\"veto_provider_name\":\"c\","
+                              "\"veto_event_id\":0,\"mixer_process_names\":[\"d\"],\"devices\":[{\"name\": \"iD14mkII\", "
+                              "\"id\": \"TUSBAUDIO_ENUM\\\\VID_2708&PID_0008&KS\"}]}",
+                              &s,
+                              &too_small),
                    &too_small,
                    ov_error_type_generic,
                    ov_error_generic_invalid_argument);
-  TEST_FAILED_WITH(settings_apply_json("{\"ks_service\":\"a\",\"veto_log_name\":\"b\",\"veto_provider_name\":\"c\","
-                                       "\"veto_event_id\":99999999,\"mixer_process_names\":[\"d\"],\"devices\":[{\"name\": "
-                                       "\"iD14mkII\", \"id\": \"TUSBAUDIO_ENUM\\\\VID_2708&PID_0008&KS\"}]}",
-                                       &s,
-                                       &too_big),
+  TEST_FAILED_WITH(apply_json("{\"ks_service\":\"a\",\"veto_log_name\":\"b\",\"veto_provider_name\":\"c\","
+                              "\"veto_event_id\":99999999,\"mixer_process_names\":[\"d\"],\"devices\":[{\"name\": "
+                              "\"iD14mkII\", \"id\": \"TUSBAUDIO_ENUM\\\\VID_2708&PID_0008&KS\"}]}",
+                              &s,
+                              &too_big),
                    &too_big,
                    ov_error_type_generic,
                    ov_error_generic_invalid_argument);
@@ -411,9 +502,8 @@ static void test_broken_json(void) {
   struct ov_error no_object = {0};
 
   memset(&s, 0, sizeof(s));
-  TEST_FAILED_WITH(
-      settings_apply_json("{ \"ks_service\": ", &s, &broken), &broken, ov_error_type_generic, ov_error_generic_invalid_argument);
-  TEST_FAILED_WITH(settings_apply_json("[1,2]", &s, &no_object), &no_object, ov_error_type_generic, ov_error_generic_invalid_argument);
+  TEST_FAILED_WITH(apply_json("{ \"ks_service\": ", &s, &broken), &broken, ov_error_type_generic, ov_error_generic_invalid_argument);
+  TEST_FAILED_WITH(apply_json("[1,2]", &s, &no_object), &no_object, ov_error_type_generic, ov_error_generic_invalid_argument);
 
   settings_release(&s);
 }
@@ -427,8 +517,8 @@ static void test_null_arguments(void) {
   struct ov_error no_out = {0};
 
   memset(&s, 0, sizeof(s));
-  TEST_FAILED_WITH(settings_apply_json(NULL, &s, &no_json), &no_json, ov_error_type_generic, ov_error_generic_invalid_argument);
-  TEST_FAILED_WITH(settings_apply_json("{}", NULL, &no_out), &no_out, ov_error_type_generic, ov_error_generic_invalid_argument);
+  TEST_FAILED_WITH(apply_json(NULL, &s, &no_json), &no_json, ov_error_type_generic, ov_error_generic_invalid_argument);
+  TEST_FAILED_WITH(apply_json("{}", NULL, &no_out), &no_out, ov_error_type_generic, ov_error_generic_invalid_argument);
 
   settings_release(&s);
 }
@@ -439,7 +529,7 @@ static void test_null_arguments(void) {
 static void test_release_is_idempotent(void) {
   struct settings s;
   struct ov_error err = {0};
-  TEST_CHECK(settings_apply_json(kFull, &s, &err) == true);
+  TEST_SUCCEEDED(apply_json(kFull, &s, &err), &err);
   settings_release(&s);
   settings_release(&s); // double release must not touch freed memory
   settings_release(NULL);
@@ -454,16 +544,18 @@ static void test_release_is_idempotent(void) {
  */
 static void test_default_path(void) {
   struct ov_error err = {0};
-  char *path = settings_default_path(&err);
+  wchar_t *path = settings_default_path(&err);
 
   if (!TEST_SUCCEEDED(path != NULL, &err)) {
     goto cleanup;
   }
-  TEST_CHECK(strstr(path, "test_settings.json") != NULL);
-  TEST_CHECK(strstr(path, "audient-device-closer.json") == NULL);
+  TEST_CHECK(wcsstr(path, L"test_settings.json") != NULL);
+  TEST_CHECK(wcsstr(path, L"audient-device-closer.json") == NULL);
 
 cleanup:
-  settings_string_free(&path);
+  if (path != NULL) {
+    OV_ARRAY_DESTROY(&path);
+  }
 }
 
 /**
@@ -475,7 +567,7 @@ static void test_load_missing_file(void) {
 
   memset(&s, 0, sizeof(s));
   TEST_FAILED_WITH(
-      settings_load("no-such-file-here.json", &s, &err), &err, ov_error_type_hresult, (int)HRESULT_FROM_WIN32(ERROR_FILE_NOT_FOUND));
+      settings_load(L"no-such-file-here.json", &s, &err), &err, ov_error_type_hresult, (int)HRESULT_FROM_WIN32(ERROR_FILE_NOT_FOUND));
   settings_release(&s);
 }
 
@@ -487,15 +579,15 @@ static void test_devices_table(void) {
   struct ov_error err = {0};
 
   memset(&s, 0, sizeof(s));
-  if (!TEST_SUCCEEDED(settings_apply_json(kDevices, &s, &err), &err)) {
+  if (!TEST_SUCCEEDED(apply_json(kDevices, &s, &err), &err)) {
     goto cleanup;
   }
   TEST_CHECK(OV_ARRAY_LENGTH(s.devices) == 2);
   if (TEST_CHECK(OV_ARRAY_LENGTH(s.devices) == 2)) {
-    TEST_CHECK(s.devices[0].name != NULL && strcmp(s.devices[0].name, "iD14mkII") == 0);
-    TEST_CHECK(s.devices[0].id != NULL && strcmp(s.devices[0].id, "TUSBAUDIO_ENUM\\VID_2708&PID_0008&KS") == 0);
-    TEST_CHECK(s.devices[1].name != NULL && strcmp(s.devices[1].name, "iD44") == 0);
-    TEST_CHECK(s.devices[1].id != NULL && strcmp(s.devices[1].id, "TUSBAUDIO_ENUM\\VID_2708&PID_000B&KS") == 0);
+    TEST_CHECK(s.devices[0].name != NULL && wcscmp(s.devices[0].name, L"iD14mkII") == 0);
+    TEST_CHECK(s.devices[0].id != NULL && wcscmp(s.devices[0].id, L"TUSBAUDIO_ENUM\\VID_2708&PID_0008&KS") == 0);
+    TEST_CHECK(s.devices[1].name != NULL && wcscmp(s.devices[1].name, L"iD44") == 0);
+    TEST_CHECK(s.devices[1].id != NULL && wcscmp(s.devices[1].id, L"TUSBAUDIO_ENUM\\VID_2708&PID_000B&KS") == 0);
   }
 
 cleanup:
@@ -510,33 +602,33 @@ static void test_devices_missing_field(void) {
   struct ov_error err = {0};
 
   memset(&s, 0, sizeof(s));
-  TEST_FAILED_WITH(settings_apply_json("{\"ks_service\":\"a\",\"devices\":[{\"id\":\"b\"}],"
-                                       "\"veto_log_name\":\"c\",\"veto_provider_name\":\"d\","
-                                       "\"veto_event_id\":1,\"mixer_process_names\":[\"e\"]}",
-                                       &s,
-                                       &err),
+  TEST_FAILED_WITH(apply_json("{\"ks_service\":\"a\",\"devices\":[{\"id\":\"b\"}],"
+                              "\"veto_log_name\":\"c\",\"veto_provider_name\":\"d\","
+                              "\"veto_event_id\":1,\"mixer_process_names\":[\"e\"]}",
+                              &s,
+                              &err),
                    &err,
                    ov_error_type_generic,
                    ov_error_generic_not_found);
   settings_release(&s);
 
   memset(&s, 0, sizeof(s));
-  TEST_FAILED_WITH(settings_apply_json("{\"ks_service\":\"a\",\"devices\":[{\"name\":\"b\"}],"
-                                       "\"veto_log_name\":\"c\",\"veto_provider_name\":\"d\","
-                                       "\"veto_event_id\":1,\"mixer_process_names\":[\"e\"]}",
-                                       &s,
-                                       &err),
+  TEST_FAILED_WITH(apply_json("{\"ks_service\":\"a\",\"devices\":[{\"name\":\"b\"}],"
+                              "\"veto_log_name\":\"c\",\"veto_provider_name\":\"d\","
+                              "\"veto_event_id\":1,\"mixer_process_names\":[\"e\"]}",
+                              &s,
+                              &err),
                    &err,
                    ov_error_type_generic,
                    ov_error_generic_not_found);
   settings_release(&s);
 
   memset(&s, 0, sizeof(s));
-  TEST_FAILED_WITH(settings_apply_json("{\"ks_service\":\"a\",\"devices\":[{\"name\":\"\",\"id\":\"b\"}],"
-                                       "\"veto_log_name\":\"c\",\"veto_provider_name\":\"d\","
-                                       "\"veto_event_id\":1,\"mixer_process_names\":[\"e\"]}",
-                                       &s,
-                                       &err),
+  TEST_FAILED_WITH(apply_json("{\"ks_service\":\"a\",\"devices\":[{\"name\":\"\",\"id\":\"b\"}],"
+                              "\"veto_log_name\":\"c\",\"veto_provider_name\":\"d\","
+                              "\"veto_event_id\":1,\"mixer_process_names\":[\"e\"]}",
+                              &s,
+                              &err),
                    &err,
                    ov_error_type_generic,
                    ov_error_generic_invalid_argument);
@@ -551,33 +643,33 @@ static void test_devices_bad_shape(void) {
   struct ov_error err = {0};
 
   memset(&s, 0, sizeof(s));
-  TEST_FAILED_WITH(settings_apply_json("{\"ks_service\":\"a\",\"devices\":[],"
-                                       "\"veto_log_name\":\"c\",\"veto_provider_name\":\"d\","
-                                       "\"veto_event_id\":1,\"mixer_process_names\":[\"e\"]}",
-                                       &s,
-                                       &err),
+  TEST_FAILED_WITH(apply_json("{\"ks_service\":\"a\",\"devices\":[],"
+                              "\"veto_log_name\":\"c\",\"veto_provider_name\":\"d\","
+                              "\"veto_event_id\":1,\"mixer_process_names\":[\"e\"]}",
+                              &s,
+                              &err),
                    &err,
                    ov_error_type_generic,
                    ov_error_generic_invalid_argument);
   settings_release(&s);
 
   memset(&s, 0, sizeof(s));
-  TEST_FAILED_WITH(settings_apply_json("{\"ks_service\":\"a\",\"devices\":\"nope\","
-                                       "\"veto_log_name\":\"c\",\"veto_provider_name\":\"d\","
-                                       "\"veto_event_id\":1,\"mixer_process_names\":[\"e\"]}",
-                                       &s,
-                                       &err),
+  TEST_FAILED_WITH(apply_json("{\"ks_service\":\"a\",\"devices\":\"nope\","
+                              "\"veto_log_name\":\"c\",\"veto_provider_name\":\"d\","
+                              "\"veto_event_id\":1,\"mixer_process_names\":[\"e\"]}",
+                              &s,
+                              &err),
                    &err,
                    ov_error_type_generic,
                    ov_error_generic_invalid_argument);
   settings_release(&s);
 
   memset(&s, 0, sizeof(s));
-  TEST_FAILED_WITH(settings_apply_json("{\"ks_service\":\"a\",\"devices\":[{\"name\":5,\"id\":\"b\"}],"
-                                       "\"veto_log_name\":\"c\",\"veto_provider_name\":\"d\","
-                                       "\"veto_event_id\":1,\"mixer_process_names\":[\"e\"]}",
-                                       &s,
-                                       &err),
+  TEST_FAILED_WITH(apply_json("{\"ks_service\":\"a\",\"devices\":[{\"name\":5,\"id\":\"b\"}],"
+                              "\"veto_log_name\":\"c\",\"veto_provider_name\":\"d\","
+                              "\"veto_event_id\":1,\"mixer_process_names\":[\"e\"]}",
+                              &s,
+                              &err),
                    &err,
                    ov_error_type_generic,
                    ov_error_generic_invalid_argument);
@@ -592,22 +684,22 @@ static void test_devices_required(void) {
   struct ov_error err = {0};
 
   memset(&s, 0, sizeof(s));
-  TEST_FAILED_WITH(settings_apply_json("{\"ks_service\":\"a\","
-                                       "\"veto_log_name\":\"c\",\"veto_provider_name\":\"d\","
-                                       "\"veto_event_id\":1,\"mixer_process_names\":[\"e\"]}",
-                                       &s,
-                                       &err),
+  TEST_FAILED_WITH(apply_json("{\"ks_service\":\"a\","
+                              "\"veto_log_name\":\"c\",\"veto_provider_name\":\"d\","
+                              "\"veto_event_id\":1,\"mixer_process_names\":[\"e\"]}",
+                              &s,
+                              &err),
                    &err,
                    ov_error_type_generic,
                    ov_error_generic_not_found);
   settings_release(&s);
 
   memset(&s, 0, sizeof(s));
-  TEST_FAILED_WITH(settings_apply_json("{\"ks_service\":\"a\",\"ks_instance_prefix\":\"TUSBAUDIO_ENUM\","
-                                       "\"veto_log_name\":\"c\",\"veto_provider_name\":\"d\","
-                                       "\"veto_event_id\":1,\"mixer_process_names\":[\"e\"]}",
-                                       &s,
-                                       &err),
+  TEST_FAILED_WITH(apply_json("{\"ks_service\":\"a\",\"ks_instance_prefix\":\"TUSBAUDIO_ENUM\","
+                              "\"veto_log_name\":\"c\",\"veto_provider_name\":\"d\","
+                              "\"veto_event_id\":1,\"mixer_process_names\":[\"e\"]}",
+                              &s,
+                              &err),
                    &err,
                    ov_error_type_generic,
                    ov_error_generic_not_found);
@@ -622,55 +714,55 @@ static void test_mixer_names(void) {
   struct ov_error err = {0};
 
   memset(&s, 0, sizeof(s));
-  TEST_FAILED_WITH(settings_apply_json("{\"ks_service\":\"a\",\"devices\":[{\"name\":\"b\",\"id\":\"c\"}],"
-                                       "\"veto_log_name\":\"d\",\"veto_provider_name\":\"e\","
-                                       "\"veto_event_id\":1,\"mixer_process_names\":[]}",
-                                       &s,
-                                       &err),
+  TEST_FAILED_WITH(apply_json("{\"ks_service\":\"a\",\"devices\":[{\"name\":\"b\",\"id\":\"c\"}],"
+                              "\"veto_log_name\":\"d\",\"veto_provider_name\":\"e\","
+                              "\"veto_event_id\":1,\"mixer_process_names\":[]}",
+                              &s,
+                              &err),
                    &err,
                    ov_error_type_generic,
                    ov_error_generic_invalid_argument);
   settings_release(&s);
 
   memset(&s, 0, sizeof(s));
-  TEST_FAILED_WITH(settings_apply_json("{\"ks_service\":\"a\",\"devices\":[{\"name\":\"b\",\"id\":\"c\"}],"
-                                       "\"veto_log_name\":\"d\",\"veto_provider_name\":\"e\","
-                                       "\"veto_event_id\":1,\"mixer_process_names\":\"iD.exe\"}",
-                                       &s,
-                                       &err),
+  TEST_FAILED_WITH(apply_json("{\"ks_service\":\"a\",\"devices\":[{\"name\":\"b\",\"id\":\"c\"}],"
+                              "\"veto_log_name\":\"d\",\"veto_provider_name\":\"e\","
+                              "\"veto_event_id\":1,\"mixer_process_names\":\"iD.exe\"}",
+                              &s,
+                              &err),
                    &err,
                    ov_error_type_generic,
                    ov_error_generic_invalid_argument);
   settings_release(&s);
 
   memset(&s, 0, sizeof(s));
-  TEST_FAILED_WITH(settings_apply_json("{\"ks_service\":\"a\",\"devices\":[{\"name\":\"b\",\"id\":\"c\"}],"
-                                       "\"veto_log_name\":\"d\",\"veto_provider_name\":\"e\","
-                                       "\"veto_event_id\":1,\"mixer_process_names\":[7]}",
-                                       &s,
-                                       &err),
+  TEST_FAILED_WITH(apply_json("{\"ks_service\":\"a\",\"devices\":[{\"name\":\"b\",\"id\":\"c\"}],"
+                              "\"veto_log_name\":\"d\",\"veto_provider_name\":\"e\","
+                              "\"veto_event_id\":1,\"mixer_process_names\":[7]}",
+                              &s,
+                              &err),
                    &err,
                    ov_error_type_generic,
                    ov_error_generic_invalid_argument);
   settings_release(&s);
 
   memset(&s, 0, sizeof(s));
-  TEST_FAILED_WITH(settings_apply_json("{\"ks_service\":\"a\",\"devices\":[{\"name\":\"b\",\"id\":\"c\"}],"
-                                       "\"veto_log_name\":\"d\",\"veto_provider_name\":\"e\","
-                                       "\"veto_event_id\":1,\"mixer_process_names\":[\"\"]}",
-                                       &s,
-                                       &err),
+  TEST_FAILED_WITH(apply_json("{\"ks_service\":\"a\",\"devices\":[{\"name\":\"b\",\"id\":\"c\"}],"
+                              "\"veto_log_name\":\"d\",\"veto_provider_name\":\"e\","
+                              "\"veto_event_id\":1,\"mixer_process_names\":[\"\"]}",
+                              &s,
+                              &err),
                    &err,
                    ov_error_type_generic,
                    ov_error_generic_invalid_argument);
   settings_release(&s);
 
   memset(&s, 0, sizeof(s));
-  TEST_FAILED_WITH(settings_apply_json("{\"ks_service\":\"a\",\"devices\":[{\"name\":\"b\",\"id\":\"c\"}],"
-                                       "\"veto_log_name\":\"d\",\"veto_provider_name\":\"e\","
-                                       "\"veto_event_id\":1}",
-                                       &s,
-                                       &err),
+  TEST_FAILED_WITH(apply_json("{\"ks_service\":\"a\",\"devices\":[{\"name\":\"b\",\"id\":\"c\"}],"
+                              "\"veto_log_name\":\"d\",\"veto_provider_name\":\"e\","
+                              "\"veto_event_id\":1}",
+                              &s,
+                              &err),
                    &err,
                    ov_error_type_generic,
                    ov_error_generic_not_found);
@@ -689,8 +781,11 @@ TEST_LIST = {
     {"use_theme_wrong_type", test_use_theme_wrong_type},
     {"allow_audio_service_pause_key", test_allow_audio_service_pause_key},
     {"allow_audio_service_pause_wrong_type", test_allow_audio_service_pause_wrong_type},
+    {"simulate_key", test_simulate_key},
     {"confirm_max_wait_key", test_confirm_max_wait_key},
     {"confirm_max_wait_out_of_range", test_confirm_max_wait_out_of_range},
+    {"veto_max_wait_key", test_veto_max_wait_key},
+    {"veto_max_wait_out_of_range", test_veto_max_wait_out_of_range},
     {"legacy_healthy_key", test_legacy_healthy_key},
     {"legacy_restart_keys", test_legacy_restart_keys},
     {"missing_required", test_missing_required},

@@ -2,57 +2,69 @@
 
 #include <ovbase.h>
 
-/**
- * The paths this program derives from its own location: the log has to sit next to the
- * executable, and so does the settings file.  Both computations live here.  The log of an
- * installed copy is the exception: Program Files is not writable, so the log moves to the
- * local application data of the user.
- */
+#include <wchar.h>
 
 /**
- * @brief The longest path this program handles, in wide characters
+ * The paths this program derives from its own location: the log has to sit next to the
+ * executable, and so does the settings file.  Both computations live here.
  *
- * The path of the executable is read into a stack buffer of this size and every other path
- * is derived from it, so a path that does not fit is refused instead of being cut into
- * another path.
+ * A path is what the system is asked to open, not a text this program shows or writes, so
+ * everything here is a wide string: the Win32 calls take one, and the conversions a UTF-8
+ * form would need on the way in and on the way out are the only thing that form would add.
+ * The text inside a file is another matter: that is UTF-8, and it stays there.
  */
-#define PATHS_MAX 1024
 
 /**
  * @brief Full path of the running executable
  *
  * @param err receives the failure of the lookup
- * @return the path in UTF-8, NULL when it could not be read
- * @note Release with paths_string_free.
+ * @return the path, NULL when it could not be read
+ * @note Release with OV_ARRAY_DESTROY.
  */
-char *paths_executable(struct ov_error *const err);
+NODISCARD wchar_t *paths_executable(struct ov_error *const err);
 
 /**
  * @brief The file name of a path, the part behind the last separator
  *
- * @param path_utf8 the path to look at, UTF-8, NULL is allowed
- * @return the file name inside path_utf8, empty when the path ends with a separator, NULL for
+ * @param path the path to look at, NULL is allowed
+ * @return the file name inside path, empty when the path ends with a separator, NULL for
  *         NULL
- * @note The returned string lives inside path_utf8, there is nothing to release.
+ * @note The returned string lives inside path, there is nothing to release.
  */
-char const *paths_file_name(char const *const path_utf8);
+wchar_t const *paths_file_name(wchar_t const *const path);
 
 /**
- * @brief Is the executable installed under one of the Program Files folders
+ * @brief Is the file name of a path the name the caller gives
+ *
+ * The name has to be a component of its own, so "foo.exe" never matches "foobar.exe", and
+ * the case folds the way the system folds it.
+ *
+ * @param path the path to look at, NULL is not a match
+ * @param name the file name to look for, NULL and the empty name are not a match
+ * @return true when the last component of path is name
+ */
+bool paths_file_name_matches(wchar_t const *const path, wchar_t const *const name);
+
+/**
+ * @brief Is the executable installed under the Program Files folder of this machine
  *
  * A copy that sits in Program Files belongs to the machine rather than to the person who
  * unpacked it, and the run that repairs the device is often the one the task scheduler
  * started, not the one at the screen: the log of such a copy therefore goes to
- * paths_log_folder instead of next to the executable.  The check is case-insensitive and
- * looks for the folder name behind a separator, so "C:\\Program Files\\..." and
- * "C:\\Program Files (x86)\\..." both match whatever drive they sit on.  A folder of the
- * same name somewhere else in the path matches as well, which is fine: a folder that
- * calls itself Program Files asks for the same treatment.
+ * paths_log_folder instead of next to the executable.
  *
- * @param exe_path the path to look at, UTF-8, NULL is allowed
- * @return true when exe_path names a file inside a Program Files folder
+ * The folder is the one the system names, not one the path spells: a machine may put its
+ * programs elsewhere, and a directory that merely carries the name says nothing about
+ * where the file sits.  The two paths are compared through the system, so the cases of
+ * the letters, the separators and the "." and ".." inside them fold away as the system
+ * folds them, which is the whole reason the answer is asked for rather than worked out.
+ *
+ * @param exe_path the path to look at, NULL is refused
+ * @param err receives the failure of the lookup or the refused argument
+ * @return ov_true when exe_path names a file under the folder of the system, ov_false when
+ *         it does not, ov_indeterminate when the folder could not be read, with err set
  */
-bool paths_is_in_program_files(char const *const exe_path);
+NODISCARD ov_tribool paths_is_in_program_files(wchar_t const *const exe_path, struct ov_error *const err);
 
 /**
  * @brief The folder the log of an installed copy writes into
@@ -67,21 +79,21 @@ bool paths_is_in_program_files(char const *const exe_path);
  * repair that happened while nobody was signed in is meant to be read.
  *
  * @param err receives the failure of the lookup
- * @return the folder in UTF-8 without a trailing separator, NULL when it could not be built
- * @note Release with paths_string_free.
+ * @return the folder without a trailing separator, NULL when it could not be built
+ * @note Release with OV_ARRAY_DESTROY.
  */
-char *paths_log_folder(struct ov_error *const err);
+NODISCARD wchar_t *paths_log_folder(struct ov_error *const err);
 
 /**
  * @brief Make the folder of this name exist
  *
  * A folder that is already there is the answer the caller wanted, so this is not a failure.
  *
- * @param folder_utf8 the folder to make, UTF-8, NULL is refused
+ * @param folder the folder to make, NULL is refused
  * @param err receives the failure of the create
  * @return false when the folder could not be made
  */
-bool paths_create_folder(char const *const folder_utf8, struct ov_error *const err);
+NODISCARD bool paths_create_folder(wchar_t const *const folder, struct ov_error *const err);
 
 /**
  * @brief The path of a file that sits next to an executable under the same name
@@ -92,13 +104,13 @@ bool paths_create_folder(char const *const folder_utf8, struct ov_error *const e
  * is the extension, a dot inside a directory name is not, and a name without an extension
  * only gets the extension appended.
  *
- * @param exe_path the executable the file belongs to, UTF-8
+ * @param exe_path the executable the file belongs to
  * @param extension the extension the file carries, with its dot
  * @param err receives the failure of the build
- * @return the path in UTF-8, NULL when it could not be built
- * @note Release with OV_FREE.
+ * @return the path, NULL when it could not be built
+ * @note Release with OV_ARRAY_DESTROY.
  */
-char *paths_replace_extension(char const *const exe_path, char const *const extension, struct ov_error *const err);
+NODISCARD wchar_t *paths_replace_extension(wchar_t const *const exe_path, wchar_t const *const extension, struct ov_error *const err);
 
 /**
  * @brief Join a directory and a file name with one backslash
@@ -106,14 +118,7 @@ char *paths_replace_extension(char const *const exe_path, char const *const exte
  * @param directory the directory, without a trailing separator
  * @param name the file name
  * @param err receives a failure of the join
- * @return the path in UTF-8, NULL when it could not be built
- * @note Release with paths_string_free.
+ * @return the path, NULL when it could not be built
+ * @note Release with OV_ARRAY_DESTROY.
  */
-char *paths_join(char const *const directory, char const *const name, struct ov_error *const err);
-
-/**
- * @brief Release a string this module handed out
- *
- * @param value set to NULL afterwards, NULL is allowed
- */
-void paths_string_free(char **const value);
+NODISCARD wchar_t *paths_join(wchar_t const *const directory, wchar_t const *const name, struct ov_error *const err);

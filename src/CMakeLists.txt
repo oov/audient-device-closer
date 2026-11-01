@@ -83,18 +83,26 @@ target_link_options(adc_intf INTERFACE
 
 # Everything that is not the window itself, so that the tests can reach it.
 add_library(adc_core STATIC
+  async.c
   veto_event.c
+  veto_log_manager.c
+  real/veto_log.c
+  clock_manager.c
+  real/clock.c
   blocker.c
-  audio_service.c
   layout.c
   settings.c
   logger.c
   paths.c
-  process.c
-  device.c
+  process_manager.c
+  real/process.c
+  device_probe.c
+  device_manager.c
+  real/device.c
   loggate.c
   options.c
-  removal.c
+  removal_manager.c
+  real/removal.c
   repair.c
   task.c
   instance.c
@@ -105,9 +113,11 @@ target_link_libraries(adc_core PRIVATE
   adc_intf
   yyjson
   cfgmgr32
+  ksguid
   advapi32
   wevtapi
   shell32
+  shlwapi
   ole32
   uuid
   oleaut32
@@ -115,6 +125,9 @@ target_link_libraries(adc_core PRIVATE
   comctl32
 )
 target_include_directories(adc_core PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
+# The debug build carries the stand-ins, and the managers name them through the select
+# functions, which exist in this configuration of the core as well.
+target_compile_definitions(adc_core PRIVATE $<$<CONFIG:Debug>:ADC_MOCK>)
 
 # The translations are compiled into the executable as a resource: langs.csv lists the
 # languages, i18n_rc.cmake runs msgfmt over every *.po.DO_NOT_EDIT and writes the .rc that
@@ -165,6 +178,18 @@ add_executable(adc
 # The rc compiler picks the manifest by this define, so the debug build starts with the
 # ordinary token and the release one asks for the administrator (see app.rc).
 target_compile_definitions(adc PRIVATE $<$<CONFIG:Debug>:ADC_DEBUG_TOKEN>)
+# A debug build can be asked, through the settings file, to walk the whole way a repair goes
+# against a made-up device fault instead of the machine.  The stand-ins are part of that
+# build alone: a build that ships has no way to be told the machine is not what it is.
+target_sources(adc PRIVATE
+  $<$<CONFIG:Debug>:mock/device.c>
+  $<$<CONFIG:Debug>:mock/removal.c>
+  $<$<CONFIG:Debug>:mock/veto_log.c>
+  $<$<CONFIG:Debug>:mock/process.c>
+  $<$<CONFIG:Debug>:mock/clock.c>
+  $<$<CONFIG:Debug>:simulate.c>
+)
+target_compile_definitions(adc PRIVATE $<$<CONFIG:Debug>:ADC_MOCK>)
 # The RC compiler reports no dependencies of its own, so a change of a file the script
 # names would not reach the object file.  These are declared by hand.
 set_property(SOURCE app.rc APPEND PROPERTY OBJECT_DEPENDS
@@ -231,18 +256,22 @@ target_link_libraries(test_dummy PRIVATE adc_intf)
 # that is what app.debug.manifest makes possible for the debug builds.
 add_executable(test_ui
   ui_test.c
-  ui.c
   ui_blockers_window.c
   ui_progress_window.c
+  ui_device_picker.c
   theme.c
   theme_button.c
   theme_combo.c
   theme_header.c
+  theme_button.c
+  theme_combo.c
+  theme_header.c
+  test_suppress.c
   app.rc
   "${CMAKE_CURRENT_BINARY_DIR}/i18n.rc"
 )
-# layout.c is included by ui_test.c itself: it must not be linked a second time through
-# adc_core, or the static functions the test reaches would live in two objects.
+# The geometry of the main window is computed in ui.c, which this test compiles itself, and
+# only the measuring every window shares arrives through adc_core.
 set_property(TARGET test_ui APPEND PROPERTY LINK_LIBRARIES)
 set_property(SOURCE app.rc APPEND PROPERTY OBJECT_DEPENDS
   "${CMAKE_CURRENT_SOURCE_DIR}/res/app.manifest"
@@ -257,44 +286,106 @@ target_link_libraries(test_ui PRIVATE adc_core adc_intf comctl32 user32 gdi32 ux
 add_dependencies(test_ui ${PROJECT_NAME}_generate_i18n_rc)
 add_test(NAME ui COMMAND test_ui)
 
-# Unit tests: the pure decision logic of each module, no real device needed.  A test that
-# writes a file next to itself (logger) cleans up after itself.
-foreach(adc_test device removal veto_event blocker process settings repair options layout loggate logger paths task instance)
-  if(adc_test STREQUAL "veto_event" OR adc_test STREQUAL "device" OR adc_test STREQUAL "removal" OR adc_test STREQUAL "repair" OR adc_test STREQUAL "settings" OR adc_test STREQUAL "task" OR adc_test STREQUAL "logger" OR adc_test STREQUAL "process")
-    add_executable(test_${adc_test} ${adc_test}_test.c)
-    if(adc_test STREQUAL "veto_event")
-      target_link_libraries(test_${adc_test} PRIVATE ovbase adc_intf wevtapi)
-    elseif(adc_test STREQUAL "blocker")
-      target_link_libraries(test_${adc_test} PRIVATE adc_core ovbase adc_intf)
-    elseif(adc_test STREQUAL "removal" OR adc_test STREQUAL "device")
-      target_link_libraries(test_${adc_test} PRIVATE ovbase adc_intf cfgmgr32)
-    elseif(adc_test STREQUAL "process")
-      target_link_libraries(test_${adc_test} PRIVATE ovbase adc_intf advapi32)
-      target_sources(test_${adc_test} PRIVATE process.c)
-    elseif(adc_test STREQUAL "settings" OR adc_test STREQUAL "logger")
-      target_link_libraries(test_${adc_test} PRIVATE ovbase adc_intf yyjson)
-      target_sources(test_${adc_test} PRIVATE paths.c loggate.c process.c)
-    elseif(adc_test STREQUAL "task")
-      target_link_libraries(test_${adc_test} PRIVATE ovbase adc_intf ole32 oleaut32 uuid taskschd)
-      target_sources(test_${adc_test} PRIVATE paths.c)
-    else()
-      target_link_libraries(test_${adc_test} PRIVATE adc_core ovbase adc_intf)
-    endif()
-  else()
-    add_executable(test_${adc_test} ${adc_test}_test.c)
-    target_link_libraries(test_${adc_test} PRIVATE adc_core ovbase adc_intf)
-  endif()
-  add_test(NAME ${adc_test} COMMAND test_${adc_test})
-endforeach()
-
 # clang-format rewrites the sources, so it has to finish before anything compiles them.
-# Every target that compiles one of our sources is listed here.
+# Every target that compiles one of our sources belongs here; the unit tests add themselves
+# in adc_add_unit_test below.
 if(TARGET ${PROJECT_NAME}-format)
-  foreach(adc_target adc_core adc test_dummy)
+  foreach(adc_target adc_core adc test_dummy test_ui)
     add_dependencies(${adc_target} ${PROJECT_NAME}-format)
   endforeach()
-  foreach(adc_test device removal veto_event blocker process settings repair options layout loggate logger paths task instance)
-    add_dependencies(test_${adc_test} ${PROJECT_NAME}-format)
-  endforeach()
-  add_dependencies(test_ui ${PROJECT_NAME}-format)
 endif()
+
+# Unit tests: the decision logic of each module, without a real device.  A test compiles the
+# module it tests itself, so it names the sources that module needs; a test that has nothing
+# to name links adc_core, which already holds every module.  A test that writes a file next
+# to itself (logger) cleans up after itself.
+#
+# The keyword arguments are the ones target_link_libraries and target_compile_definitions
+# take, so the two stand out from each other and from the sources.  TEST names the file of the
+# test when it does not sit next to this one (the machines under real/ and mock/ carry their
+# own).
+function(adc_add_unit_test name)
+  cmake_parse_arguments(ARG "" "TEST" "SOURCES;LIBS;DEFINES" ${ARGN})
+  if(NOT ARG_LIBS)
+    set(ARG_LIBS adc_core)
+  endif()
+  if(ARG_TEST)
+    set(ARG_TEST_FILE ${ARG_TEST})
+  else()
+    set(ARG_TEST_FILE ${name}_test.c)
+  endif()
+  add_executable(test_${name} ${ARG_TEST_FILE} ${ARG_SOURCES})
+  target_link_libraries(test_${name} PRIVATE ovbase adc_intf ${ARG_LIBS})
+  # The sources of a test live under real/ and mock/ as often as they do here, so the folder
+  # that holds the headers they reach for comes along.
+  target_include_directories(test_${name} PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+  if(ARG_DEFINES)
+    target_compile_definitions(test_${name} PRIVATE ${ARG_DEFINES})
+  endif()
+  # clang-format rewrites the sources, so it has to finish before anything compiles them.
+  if(TARGET ${PROJECT_NAME}-format)
+    add_dependencies(test_${name} ${PROJECT_NAME}-format)
+  endif()
+  add_test(NAME ${name} COMMAND test_${name})
+endfunction()
+
+# device_probe.c answers through the machine, so the manager and the machines it can ask
+# come along.
+adc_add_unit_test(device_probe SOURCES async.c device_manager.c real/device.c mock/device.c LIBS cfgmgr32 ksguid DEFINES ADC_MOCK)
+adc_add_unit_test(removal SOURCES async.c removal_manager.c real/removal.c mock/removal.c LIBS cfgmgr32 DEFINES ADC_MOCK)
+# The machine of the system has a test of its own, because the code that runs before the
+# removal call is worth checking without an elevation.  It compiles the machine itself, so the
+# manager that would name it does not come along.
+adc_add_unit_test(real_removal SOURCES async.c LIBS cfgmgr32 TEST real/removal_test.c)
+adc_add_unit_test(veto_event SOURCES async.c veto_log_manager.c real/veto_log.c mock/veto_log.c LIBS wevtapi DEFINES ADC_MOCK)
+adc_add_unit_test(blocker SOURCES process_manager.c mock/process.c DEFINES ADC_MOCK)
+# The machine of the system has a test of its own, because ending a process is worth checking
+# without a stand-in.  It compiles the machine itself, so the manager that would name it does
+# not come along.
+adc_add_unit_test(real_process SOURCES async.c logger.c paths.c loggate.c clock_manager.c real/clock.c LIBS "advapi32;shlwapi" TEST real/process_test.c)
+adc_add_unit_test(settings SOURCES paths.c loggate.c clock_manager.c real/clock.c LIBS "yyjson;shlwapi")
+adc_add_unit_test(logger SOURCES paths.c loggate.c clock_manager.c real/clock.c LIBS "yyjson;shlwapi")
+adc_add_unit_test(task SOURCES paths.c LIBS "ole32;oleaut32;uuid;taskschd;shlwapi")
+
+# The modules whose tests compile them and need nothing else in particular.
+adc_add_unit_test(async)
+adc_add_unit_test(repair SOURCES
+  clock_manager.c device_manager.c process_manager.c removal_manager.c veto_log_manager.c
+  mock/device.c mock/removal.c mock/veto_log.c mock/process.c mock/clock.c simulate.c DEFINES ADC_MOCK)
+adc_add_unit_test(options)
+# What every window measures with: the scaling, the frame the window manager is asked for
+# and the font.  A window's own geometry is checked in that window's test.
+adc_add_unit_test(layout)
+# The theme puts windows of its own up: the buttons, the combo boxes and the headers it
+# subclasses come along, and the measuring they share arrives through adc_core.
+adc_add_unit_test(
+  theme SOURCES theme_button.c theme_combo.c theme_header.c test_suppress.c LIBS "adc_core;comctl32;user32;gdi32;uxtheme;dwmapi" DEFINES ADC_DEBUG_TOKEN)
+# The windows this test makes carry the common controls the program asks for, and that request
+# is part of the manifest: the test is built with the same one the program is built with.
+target_sources(test_theme PRIVATE app.rc "${CMAKE_CURRENT_BINARY_DIR}/i18n.rc")
+add_dependencies(test_theme ${PROJECT_NAME}_generate_i18n_rc)
+# The picker draws with the palette and the geometry of the program, so the theme comes along;
+# the windows it makes carry the common controls the manifest asks for.
+adc_add_unit_test(
+  ui_device_picker SOURCES theme.c theme_button.c theme_combo.c theme_header.c test_suppress.c
+  LIBS "adc_core;comctl32;user32;gdi32;uxtheme;dwmapi" DEFINES ADC_DEBUG_TOKEN)
+target_sources(test_ui_device_picker PRIVATE app.rc "${CMAKE_CURRENT_BINARY_DIR}/i18n.rc")
+add_dependencies(test_ui_device_picker ${PROJECT_NAME}_generate_i18n_rc)
+# The progress window draws with the palette, so the theme comes along; the windows it makes
+# carry the common controls the manifest asks for.
+adc_add_unit_test(
+  ui_progress_window SOURCES theme.c theme_button.c theme_combo.c theme_header.c test_suppress.c
+  LIBS "adc_core;comctl32;user32;gdi32;uxtheme;dwmapi" DEFINES ADC_DEBUG_TOKEN)
+target_sources(test_ui_progress_window PRIVATE app.rc "${CMAKE_CURRENT_BINARY_DIR}/i18n.rc")
+add_dependencies(test_ui_progress_window ${PROJECT_NAME}_generate_i18n_rc)
+# The blockers window is a window of its own -- its geometry, its columns and its theme live
+# in it -- so the test makes one against a window of its own; the windows carry the common
+# controls the manifest asks for.
+adc_add_unit_test(
+  ui_blockers_window SOURCES theme.c theme_button.c theme_combo.c theme_header.c test_suppress.c
+  LIBS "adc_core;comctl32;user32;gdi32;uxtheme;dwmapi" DEFINES ADC_DEBUG_TOKEN)
+target_sources(test_ui_blockers_window PRIVATE app.rc "${CMAKE_CURRENT_BINARY_DIR}/i18n.rc")
+add_dependencies(test_ui_blockers_window ${PROJECT_NAME}_generate_i18n_rc)
+adc_add_unit_test(loggate)
+adc_add_unit_test(paths)
+adc_add_unit_test(instance)

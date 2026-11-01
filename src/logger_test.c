@@ -8,6 +8,8 @@
 
 #include <windows.h>
 
+#include <shlobj.h>
+
 #include <stdio.h>
 #include <string.h>
 
@@ -27,7 +29,7 @@ static void test_format_line(void) {
   char const *fields[4];
   size_t field_count = 0;
 
-  len = logger_format_line(line, sizeof(line), 1786000138123LL, ov_error_severity_error, "repair", "the removal was vetoed");
+  len = format_line(line, sizeof(line), 1786000138123LL, ov_error_severity_error, "repair", "the removal was vetoed");
   TEST_CHECK(len > 0);
   TEST_CHECK(len == strlen(line));
 
@@ -54,10 +56,10 @@ static void test_format_line(void) {
   TEST_CHECK(strcmp(fields[2], "repair") == 0);
   TEST_CHECK(strcmp(fields[3], "the removal was vetoed") == 0);
 
-  TEST_CHECK(strcmp(logger_level_name(ov_error_severity_error), "error") == 0);
-  TEST_CHECK(strcmp(logger_level_name(ov_error_severity_warn), "warn") == 0);
-  TEST_CHECK(strcmp(logger_level_name(ov_error_severity_info), "info") == 0);
-  TEST_CHECK(strcmp(logger_level_name(ov_error_severity_verbose), "verbose") == 0);
+  TEST_CHECK(strcmp(level_name(ov_error_severity_error), "error") == 0);
+  TEST_CHECK(strcmp(level_name(ov_error_severity_warn), "warn") == 0);
+  TEST_CHECK(strcmp(level_name(ov_error_severity_info), "info") == 0);
+  TEST_CHECK(strcmp(level_name(ov_error_severity_verbose), "verbose") == 0);
 }
 
 /**
@@ -67,7 +69,7 @@ static void test_format_line_escapes(void) {
   char line[512];
   static char const *const message = "first\tsecond\nthird";
 
-  TEST_CHECK(logger_format_line(line, sizeof(line), 0, ov_error_severity_info, "tag\twith\ttabs", message) > 0);
+  TEST_CHECK(format_line(line, sizeof(line), 0, ov_error_severity_info, "tag\twith\ttabs", message) > 0);
   TEST_CHECK(strchr(line, '\n') == NULL);
   TEST_CHECK(strstr(line, "tag\\twith\\ttabs") != NULL);
   TEST_CHECK(strstr(line, "first\\tsecond\\nthird") != NULL);
@@ -90,13 +92,13 @@ static void test_format_line_bounds(void) {
   char one[2];
   char big[4096];
 
-  TEST_CHECK(logger_format_line(NULL, 64, 0, ov_error_severity_info, "t", "m") == 0);
-  TEST_CHECK(logger_format_line(small, 0, 0, ov_error_severity_info, "t", "m") == 0);
-  TEST_CHECK(logger_format_line(one, sizeof(one), 0, ov_error_severity_info, "t", "m") == 0);
-  TEST_CHECK(logger_format_line(small, sizeof(small), 0, ov_error_severity_info, "t", "m") == 0);
-  TEST_CHECK(logger_format_line(small, 8, 0, ov_error_severity_info, "tag", "message") == 0);
-  TEST_CHECK(logger_format_line(big, sizeof(big), 0, ov_error_severity_info, NULL, "m") == 0);
-  TEST_CHECK(logger_format_line(big, sizeof(big), 0, ov_error_severity_info, "t", NULL) == 0);
+  TEST_CHECK(format_line(NULL, 64, 0, ov_error_severity_info, "t", "m") == 0);
+  TEST_CHECK(format_line(small, 0, 0, ov_error_severity_info, "t", "m") == 0);
+  TEST_CHECK(format_line(one, sizeof(one), 0, ov_error_severity_info, "t", "m") == 0);
+  TEST_CHECK(format_line(small, sizeof(small), 0, ov_error_severity_info, "t", "m") == 0);
+  TEST_CHECK(format_line(small, 8, 0, ov_error_severity_info, "tag", "message") == 0);
+  TEST_CHECK(format_line(big, sizeof(big), 0, ov_error_severity_info, NULL, "m") == 0);
+  TEST_CHECK(format_line(big, sizeof(big), 0, ov_error_severity_info, "t", NULL) == 0);
 }
 
 /**
@@ -128,12 +130,12 @@ static void test_sizes(void) {
  * size the file is cut down to, so the newest records survive a compaction.
  */
 static void test_trim_size(void) {
-  TEST_CHECK(logger_trim_size(0, 10) == 0);                                     // nothing on disk
-  TEST_CHECK(logger_trim_size(LOGGER_MAX_BYTES - 10, 10) == 0);                 // exactly full
-  TEST_CHECK(logger_trim_size(LOGGER_MAX_BYTES - 10, 11) == LOGGER_KEEP_BYTES); // one byte too much
-  TEST_CHECK(logger_trim_size(LOGGER_MAX_BYTES * 2, 10) == LOGGER_KEEP_BYTES);  // already over
-  TEST_CHECK(logger_trim_size(100, LOGGER_MAX_BYTES) == -1);                    // the record alone is too big
-  TEST_CHECK(logger_trim_size(-5, 10) == 0);                                    // a size that cannot be real
+  TEST_CHECK(trim_size(0, 10) == 0);                                     // nothing on disk
+  TEST_CHECK(trim_size(LOGGER_MAX_BYTES - 10, 10) == 0);                 // exactly full
+  TEST_CHECK(trim_size(LOGGER_MAX_BYTES - 10, 11) == LOGGER_KEEP_BYTES); // one byte too much
+  TEST_CHECK(trim_size(LOGGER_MAX_BYTES * 2, 10) == LOGGER_KEEP_BYTES);  // already over
+  TEST_CHECK(trim_size(100, LOGGER_MAX_BYTES) == -1);                    // the record alone is too big
+  TEST_CHECK(trim_size(-5, 10) == 0);                                    // a size that cannot be real
 }
 
 /**
@@ -145,61 +147,65 @@ static void test_trim_size(void) {
  */
 static void test_path_for_exe(void) {
   struct ov_error err = {0};
-  char const *const installed_leaf = "\\AudientDeviceCloser\\audient-device-closer.log";
-  size_t const installed_leaf_len = strlen(installed_leaf);
-  char *p = NULL;
+  wchar_t const *const installed_leaf = L"\\AudientDeviceCloser\\audient-device-closer.log";
+  size_t const installed_leaf_len = wcslen(installed_leaf);
+  wchar_t *program_files = NULL;
+  wchar_t *installed_exe = NULL;
+  wchar_t *p = NULL;
 
   TEST_CASE("a portable copy keeps its log next to itself");
-  p = logger_path_for_exe("C:\\dir\\audient-device-closer.exe", &err);
+  p = path_for_exe(L"C:\\dir\\audient-device-closer.exe", &err);
   if (TEST_CHECK(p != NULL)) {
-    TEST_CHECK(strcmp(p, "C:\\dir\\audient-device-closer.log") == 0);
-    logger_string_free(&p);
+    TEST_CHECK(wcscmp(p, L"C:\\dir\\audient-device-closer.log") == 0);
+    OV_ARRAY_DESTROY(&p);
   }
-  p = logger_path_for_exe("C:\\dir\\my.tool\\app", &err);
+  p = path_for_exe(L"C:\\dir\\my.tool\\app", &err);
   if (TEST_CHECK(p != NULL)) {
-    TEST_CHECK(strcmp(p, "C:\\dir\\my.tool\\app.log") == 0);
-    logger_string_free(&p);
+    TEST_CHECK(wcscmp(p, L"C:\\dir\\my.tool\\app.log") == 0);
+    OV_ARRAY_DESTROY(&p);
   }
-  p = logger_path_for_exe("C:\\a.b.c\\d.e.exe", &err);
+  p = path_for_exe(L"C:\\a.b.c\\d.e.exe", &err);
   if (TEST_CHECK(p != NULL)) {
-    TEST_CHECK(strcmp(p, "C:\\a.b.c\\d.e.log") == 0);
-    logger_string_free(&p);
+    TEST_CHECK(wcscmp(p, L"C:\\a.b.c\\d.e.log") == 0);
+    OV_ARRAY_DESTROY(&p);
   }
-  p = logger_path_for_exe("relative.exe", &err);
+  p = path_for_exe(L"relative.exe", &err);
   if (TEST_CHECK(p != NULL)) {
-    TEST_CHECK(strcmp(p, "relative.log") == 0);
-    logger_string_free(&p);
+    TEST_CHECK(wcscmp(p, L"relative.log") == 0);
+    OV_ARRAY_DESTROY(&p);
   }
 
   TEST_CASE("an installed copy writes into the machine-wide application data");
-  p = logger_path_for_exe("C:\\Program Files\\audient-device-closer\\audient-device-closer.exe", &err);
+  if (FAILED(SHGetKnownFolderPath(&FOLDERID_ProgramFiles, 0, NULL, &program_files)) || (program_files == NULL)) {
+    TEST_SKIP("want the Program Files folder of this machine");
+    goto cleanup;
+  }
+  if (!TEST_SUCCEEDED(ov_sprintf_wchar(&installed_exe, &err, NULL, L"%ls\\AudientDeviceCloser\\audient-device-closer.exe", program_files),
+                      &err)) {
+    goto cleanup;
+  }
+  p = path_for_exe(installed_exe, &err);
   if (!TEST_SUCCEEDED(p != NULL, &err)) {
     TEST_MSG("want a path, got NULL");
     goto cleanup;
   }
   {
-    size_t const n = strlen(p);
+    size_t const n = wcslen(p);
     TEST_CHECK(n > installed_leaf_len);
-    TEST_CHECK(strcmp(&p[n - installed_leaf_len], installed_leaf) == 0);
-    logger_string_free(&p);
-  }
-  p = logger_path_for_exe("C:\\PROGRAM FILES (X86)\\audient\\adc.exe", &err);
-  if (TEST_CHECK(p != NULL)) {
-    size_t const n = strlen(p);
-    TEST_CHECK(strcmp(&p[n - installed_leaf_len], installed_leaf) == 0);
-    logger_string_free(&p);
-  }
-  p = logger_path_for_exe("D:\\Program Files\\adc\\app.exe", &err);
-  if (TEST_CHECK(p != NULL)) {
-    size_t const n = strlen(p);
-    TEST_CHECK(strcmp(&p[n - installed_leaf_len], installed_leaf) == 0);
-    logger_string_free(&p);
+    TEST_CHECK(wcscmp(&p[n - installed_leaf_len], installed_leaf) == 0);
+    OV_ARRAY_DESTROY(&p);
   }
 
   TEST_CASE("the arguments may be absent");
-  TEST_FAILED_WITH(logger_path_for_exe(NULL, &err), &err, ov_error_type_generic, ov_error_generic_invalid_argument);
+  TEST_FAILED_WITH(path_for_exe(NULL, &err), &err, ov_error_type_generic, ov_error_generic_invalid_argument);
 cleanup:
-  logger_string_free(&p);
+  CoTaskMemFree(program_files);
+  if (installed_exe != NULL) {
+    OV_ARRAY_DESTROY(&installed_exe);
+  }
+  if (p != NULL) {
+    OV_ARRAY_DESTROY(&p);
+  }
 }
 
 /**
@@ -207,16 +213,15 @@ cleanup:
  */
 static void test_write_to_file(void) {
   struct ov_error err = {0};
-  char *exe = NULL;
-  char *path = NULL;
-  wchar_t *wide = NULL;
+  wchar_t *exe = NULL;
+  wchar_t *path = NULL;
   HANDLE h = INVALID_HANDLE_VALUE;
   LARGE_INTEGER size;
   char *text = NULL;
   DWORD got = 0;
 
   if (logger_is_open()) {
-    logger_close();
+    TEST_SUCCEEDED(logger_close(&err), &err);
   }
   if (!TEST_SUCCEEDED(logger_open(&err), &err)) {
     goto cleanup;
@@ -229,22 +234,19 @@ static void test_write_to_file(void) {
     bool const second = logger_open(&err);
     TEST_FAILED_WITH(second, &err, ov_error_type_generic, ov_error_generic_invalid_argument);
   }
-  logger_close();
+  TEST_SUCCEEDED(logger_close(&err), &err);
   TEST_CHECK(logger_is_open() == false);
-  TEST_CHECK(logger_write("paths", "after close", &err) == true);
+  TEST_SUCCEEDED(logger_write("paths", "after close", &err), &err);
 
   exe = paths_executable(&err);
   if (!TEST_SUCCEEDED(exe != NULL, &err)) {
     goto cleanup;
   }
-  path = logger_path_for_exe(exe, &err);
+  path = path_for_exe(exe, &err);
   if (!TEST_SUCCEEDED(path != NULL, &err)) {
     goto cleanup;
   }
-  if (!TEST_SUCCEEDED(ov_sprintf_wchar(&wide, &err, NULL, L"%s", path), &err)) {
-    goto cleanup;
-  }
-  h = CreateFileW(wide, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+  h = CreateFileW(path, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
   if (!TEST_CHECK(h != INVALID_HANDLE_VALUE)) {
     goto cleanup;
   }
@@ -260,21 +262,22 @@ static void test_write_to_file(void) {
   text[got] = '\0';
   TEST_CHECK(strstr(text, "\tpaths\thello\\tworld\n") != NULL);
   TEST_CHECK(strstr(text, "after close") == NULL); // the closed log took nothing
-  TEST_CHECK(strstr(path, "test_logger.log") != NULL);
+  TEST_CHECK(wcsstr(path, L"test_logger.log") != NULL);
 
 cleanup:
   if (h != INVALID_HANDLE_VALUE) {
     CloseHandle(h);
   }
-  logger_close();
+  TEST_SUCCEEDED(logger_close(&err), &err);
   if (text != NULL) {
     OV_FREE(&text);
   }
-  if (wide != NULL) {
-    OV_ARRAY_DESTROY(&wide);
+  if (exe != NULL) {
+    OV_ARRAY_DESTROY(&exe);
   }
-  paths_string_free(&exe);
-  logger_string_free(&path);
+  if (path != NULL) {
+    OV_ARRAY_DESTROY(&path);
+  }
 }
 
 /**
@@ -287,11 +290,10 @@ cleanup:
  * @return false when the file could not be read
  * @note Release the text with OV_FREE.
  */
-static bool read_log_file(char **const out_text, struct ov_error *const err) {
+static NODISCARD bool read_log_file(char **const out_text, struct ov_error *const err) {
   bool ok = false;
-  char *exe = NULL;
-  char *path = NULL;
-  wchar_t *wide = NULL;
+  wchar_t *exe = NULL;
+  wchar_t *path = NULL;
   HANDLE h = INVALID_HANDLE_VALUE;
   LARGE_INTEGER size;
   char *text = NULL;
@@ -301,14 +303,11 @@ static bool read_log_file(char **const out_text, struct ov_error *const err) {
   if (!TEST_CHECK(exe != NULL)) {
     goto cleanup;
   }
-  path = logger_path_for_exe(exe, err);
+  path = path_for_exe(exe, err);
   if (!TEST_CHECK(path != NULL)) {
     goto cleanup;
   }
-  if (!TEST_CHECK(ov_sprintf_wchar(&wide, err, NULL, L"%s", path) == true)) {
-    goto cleanup;
-  }
-  h = CreateFileW(wide, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+  h = CreateFileW(path, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
   if (!TEST_CHECK(h != INVALID_HANDLE_VALUE)) {
     goto cleanup;
   }
@@ -333,11 +332,12 @@ cleanup:
   if (text != NULL) {
     OV_FREE(&text);
   }
-  if (wide != NULL) {
-    OV_ARRAY_DESTROY(&wide);
+  if (exe != NULL) {
+    OV_ARRAY_DESTROY(&exe);
   }
-  paths_string_free(&exe);
-  logger_string_free(&path);
+  if (path != NULL) {
+    OV_ARRAY_DESTROY(&path);
+  }
   return ok;
 }
 
@@ -356,7 +356,7 @@ static void test_run_records(void) {
   static char const want_close[] = "\trun\t=== end ===\n";
 
   if (logger_is_open()) {
-    logger_close();
+    TEST_SUCCEEDED(logger_close(&err), &err);
   }
   if (!TEST_SUCCEEDED(logger_open(&err), &err)) {
     goto cleanup;
@@ -365,9 +365,9 @@ static void test_run_records(void) {
   logger_log_run_end(NULL);
   logger_log_run_end("No Audient device was found.");
   logger_log_run_end("The device could not be released.");
-  logger_close();
+  TEST_SUCCEEDED(logger_close(&err), &err);
 
-  if (!TEST_CHECK(read_log_file(&text, &err))) {
+  if (!TEST_SUCCEEDED(read_log_file(&text, &err), &err)) {
     goto cleanup;
   }
   TEST_CASE("the records that frame the run always say the same");
@@ -414,7 +414,7 @@ static void test_run_records(void) {
   TEST_CASE_(NULL);
 
 cleanup:
-  logger_close();
+  TEST_SUCCEEDED(logger_close(&err), &err);
   if (text != NULL) {
     OV_FREE(&text);
   }
@@ -453,7 +453,7 @@ static void test_repeated_report_is_written_once(void) {
   char *text = NULL;
 
   if (logger_is_open()) {
-    logger_close();
+    TEST_SUCCEEDED(logger_close(&err), &err);
   }
   if (!TEST_SUCCEEDED(logger_open(&err), &err)) {
     goto cleanup;
@@ -461,7 +461,7 @@ static void test_repeated_report_is_written_once(void) {
   logger_output(ov_error_severity_error, "[01:0x00000001] adc-repeated: the same failure");
   logger_output(ov_error_severity_error, "[01:0x00000001] adc-repeated: the same failure");
   logger_output(ov_error_severity_error, "[01:0x00000002] adc-repeated: a different failure");
-  logger_close();
+  TEST_SUCCEEDED(logger_close(&err), &err);
 
   if (!TEST_SUCCEEDED(read_log_file(&text, &err), &err)) {
     goto cleanup;
@@ -475,7 +475,7 @@ static void test_repeated_report_is_written_once(void) {
   TEST_CASE_(NULL);
 
 cleanup:
-  logger_close();
+  TEST_SUCCEEDED(logger_close(&err), &err);
   if (text != NULL) {
     OV_FREE(&text);
   }
@@ -486,9 +486,8 @@ cleanup:
  */
 static void test_trim_on_write(void) {
   struct ov_error err = {0};
-  char *exe = NULL;
-  char *path = NULL;
-  wchar_t *wide = NULL;
+  wchar_t *exe = NULL;
+  wchar_t *path = NULL;
   HANDLE h = INVALID_HANDLE_VALUE;
   LARGE_INTEGER size;
   LARGE_INTEGER offset;
@@ -499,14 +498,14 @@ static void test_trim_on_write(void) {
   static size_t const blob_size = (size_t)LOGGER_MAX_BYTES + 4096;
 
   if (logger_is_open()) {
-    logger_close();
+    TEST_SUCCEEDED(logger_close(&err), &err);
   }
   exe = paths_executable(&err);
-  path = (exe != NULL) ? logger_path_for_exe(exe, &err) : NULL;
-  if (!TEST_CHECK((path != NULL) && ov_sprintf_wchar(&wide, &err, NULL, L"%s", path))) {
+  path = (exe != NULL) ? path_for_exe(exe, &err) : NULL;
+  if (!TEST_CHECK(path != NULL)) {
     goto cleanup;
   }
-  h = CreateFileW(wide, GENERIC_WRITE | GENERIC_READ, FILE_SHARE_READ, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+  h = CreateFileW(path, GENERIC_WRITE | GENERIC_READ, FILE_SHARE_READ, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
   if (!TEST_CHECK(h != INVALID_HANDLE_VALUE)) {
     goto cleanup;
   }
@@ -529,9 +528,9 @@ static void test_trim_on_write(void) {
   if (!TEST_SUCCEEDED(logger_write("trim", "the newest record", &err), &err)) {
     goto cleanup;
   }
-  logger_close();
+  TEST_SUCCEEDED(logger_close(&err), &err);
 
-  h = CreateFileW(wide, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+  h = CreateFileW(path, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
   if (!TEST_CHECK(h != INVALID_HANDLE_VALUE)) {
     goto cleanup;
   }
@@ -556,23 +555,28 @@ cleanup:
   if (h != INVALID_HANDLE_VALUE) {
     CloseHandle(h);
   }
-  logger_close();
-  if (wide != NULL) {
-    DeleteFileW(wide);
-    OV_ARRAY_DESTROY(&wide);
+  TEST_SUCCEEDED(logger_close(&err), &err);
+  if (path != NULL) {
+    DeleteFileW(path);
   }
   OV_FREE(&blob);
   OV_FREE(&text);
-  paths_string_free(&exe);
-  logger_string_free(&path);
+  if (exe != NULL) {
+    OV_ARRAY_DESTROY(&exe);
+  }
+  if (path != NULL) {
+    OV_ARRAY_DESTROY(&path);
+  }
 }
 
 /**
  * @brief Closing a log that was never opened is not a failure
  */
 static void test_close_without_open(void) {
-  logger_close();
-  logger_close(); // twice must be fine as well
+  struct ov_error err = {0};
+
+  TEST_SUCCEEDED(logger_close(&err), &err);
+  TEST_SUCCEEDED(logger_close(&err), &err); // twice must be fine as well
   logger_init();
   logger_init(); // and so must a second init
   TEST_CHECK(logger_is_open() == false);
@@ -592,35 +596,35 @@ static void test_error_fields(void) {
   char msg[512];
 
   TEST_CASE("the level marker is dropped, the error code stays");
-  logger_error_fields("[01:0x00000001] the removal failed (at ui.c:617 report_note())", tag, sizeof(tag), msg, sizeof(msg));
+  error_fields("[01:0x00000001] the removal failed (at ui.c:617 report_note())", tag, sizeof(tag), msg, sizeof(msg));
   TEST_CHECK(strcmp(msg, "[01:0x00000001] the removal failed (at ui.c:617 report_note())") == 0);
   TEST_CHECK(strcmp(tag, "ui") == 0);
 
   TEST_CASE("the module the line names is the tag");
-  logger_error_fields("  removal.c:15 set_configret_error() [01:0x00000001] CM_Query_And_Remove_SubTreeW failed: CONFIGRET=51",
-                      tag,
-                      sizeof(tag),
-                      msg,
-                      sizeof(msg));
+  error_fields("  removal.c:15 set_configret_error() [01:0x00000001] CM_Query_And_Remove_SubTreeW failed: CONFIGRET=51",
+               tag,
+               sizeof(tag),
+               msg,
+               sizeof(msg));
   TEST_CHECK(strcmp(tag, "removal") == 0);
   TEST_CHECK(strcmp(msg, "removal.c:15 set_configret_error() [01:0x00000001] CM_Query_And_Remove_SubTreeW failed: CONFIGRET=51") == 0);
 
   TEST_CASE("the report position");
-  logger_error_fields("         reported at ui.c:563 report_once()", tag, sizeof(tag), msg, sizeof(msg));
+  error_fields("         reported at ui.c:563 report_once()", tag, sizeof(tag), msg, sizeof(msg));
   TEST_CHECK(strcmp(tag, "ui") == 0);
   TEST_CHECK(strcmp(msg, "reported at ui.c:563 report_once()") == 0);
 
   TEST_CASE("a line that names no source");
-  logger_error_fields("[WARN] something went wrong", tag, sizeof(tag), msg, sizeof(msg));
+  error_fields("[WARN] something went wrong", tag, sizeof(tag), msg, sizeof(msg));
   TEST_CHECK(strcmp(tag, "error") == 0);
   TEST_CHECK(strcmp(msg, "something went wrong") == 0);
 
   TEST_CASE("a line with nothing left to say is empty");
-  logger_error_fields("[ERROR] ", tag, sizeof(tag), msg, sizeof(msg));
+  error_fields("[ERROR] ", tag, sizeof(tag), msg, sizeof(msg));
   TEST_CHECK(msg[0] == '\0');
 
   TEST_CASE("the empty line is tolerated");
-  logger_error_fields("", tag, sizeof(tag), msg, sizeof(msg));
+  error_fields("", tag, sizeof(tag), msg, sizeof(msg));
   TEST_CHECK(msg[0] == '\0');
   TEST_CHECK(tag[0] != '\0');
 

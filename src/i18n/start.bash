@@ -22,7 +22,7 @@ xgettext \
   --package-name="${APP_NAME}" \
   --package-version="$(git tag --points-at HEAD | grep . || echo "vX.X.X") ( $(git rev-parse --short HEAD | grep . || echo "unknown") ) " \
   --copyright-holder="${APP_NAME} Developers" \
-  --no-wrap --sort-by-file --output - ../*.c > "${POTFILE}"
+  --no-wrap --sort-by-file --output - ../*.c ../*/*.c > "${POTFILE}"
 if [ $? -ne 0 ]; then
   echo "failed to generate pot."
   exit 1

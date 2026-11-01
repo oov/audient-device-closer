@@ -7,14 +7,26 @@
  * harness that had to ask for the administrator on every run would not be run often, and
  * a check nobody runs is not a check.
  */
+#include <windows.h>
+
+#include "test_suppress.h"
+
+/**
+ * @brief Put the hooks in place that keep the windows of this test out of the reader's way
+ *
+ * ovtest.h calls this before anything of the test runs, which is early enough for the hook
+ * to catch the first window.
+ */
+static void adc_test_init(void) { test_suppress_install_quiet(); }
+
+#define TEST_MY_INIT adc_test_init()
+#define TEST_MY_FINI test_suppress_release()
+
+#include "ui.c"
+
 #include <ovtest.h>
 
-#include "layout.c"
-#include "ui_device_picker.c"
-
 #include <string.h>
-
-#include <windows.h>
 
 #include <commctrl.h>
 
@@ -23,40 +35,21 @@
 #include <ovprintf_ex.h>
 #include <ovthreads.h>
 
-#include "device.h"
+#include "device_probe.h"
 #include "layout.h"
 #include "options.h"
-#include "removal.h"
+#include "removal_manager.h"
 #include "repair.h"
 #include "settings.h"
-#include "theme.h"
-#include "theme_internal.h"
 #include "ui.h"
-#include "ui_blockers_window.h"
-#include "ui_progress_window.h"
-#include "veto_event.h"
 #include <uxtheme.h>
-
-#define IDC_PROGRESS_CANCEL 14 // the cancel button of the progress window, from ui_progress_window.c
-#define IDC_BLOCKERS_OK 15     // the OK button of the blockers window, from ui_blockers_window.c
 
 enum {
   ADC_UI_TEST_TIMEOUT_MS = 20000,
-  ADC_UI_TEST_POLL_MS = 50,
-  ADC_BLOCKERS_TEST_TIMER_ID = 1,
-  ADC_BLOCKERS_TEST_TIMER_MS = 100,
-  ADC_PICKER_TEST_TIMER_ID = 2,
-  ADC_PICKER_TEST_TIMER_MS = 100,
-  ADC_TEST_PROGRESS_SUGGEST_LEFT = 240, /* where the window goes when a monitor suggests it */
-  ADC_TEST_PROGRESS_SUGGEST_TOP = 200,
-  ADC_TEST_PROGRESS_SUGGEST_RIGHT = 900, /* a size the layout of the window does not ask for */
-  ADC_TEST_PROGRESS_SUGGEST_BOTTOM = 700,
 };
 
 struct adc_ui_result {
-  bool ok;
   bool opened;
-  bool timed_out;
   struct ov_error err;
   size_t fontless;
   HWND fontless_first;
@@ -67,6 +60,8 @@ struct adc_ui_thread {
   struct options const *options;
   struct settings const *settings;
   struct adc_ui_result *out;
+  HANDLE ready; //!< set by the thread once the window of the run is up
+  HWND window;  //!< the window of the run, NULL until it is up and after it is gone
   struct cndvar done;
 };
 
@@ -148,26 +143,96 @@ static HWND find_child_with_text(HWND const parent, wchar_t const *const want) {
 }
 
 /**
- * @brief The window of this process that carries the class, the first one it finds
+ * @brief A class name that belongs to this run of the test alone
  *
- * The desktop is shared with the living program and with windows of runs that outlived
- * their deadline: the class name alone does not say whose window it is, the process id does.
- *
- * @param class_name the class the window has to carry
- * @return the first window of this process with that class, NULL when there is none
+ * @param out receives the class name
+ * @param out_size room of out, in characters
+ * @param err receives the failure of the formatting
+ * @return false when the name does not fit
  */
-static HWND find_own_window(wchar_t const *const class_name) {
-  HWND hwnd = NULL;
-
-  while ((hwnd = FindWindowExW(NULL, hwnd, class_name, NULL)) != NULL) {
-    DWORD pid = 0;
-
-    GetWindowThreadProcessId(hwnd, &pid);
-    if (pid == GetCurrentProcessId()) {
-      return hwnd;
-    }
+static NODISCARD bool test_window_class_name(wchar_t *const out, size_t const out_size, struct ov_error *const err) {
+  int const written = ov_snprintf_wchar(out,
+                                        out_size,
+                                        L"adc-ui-test-%1$lu-%2$lu",
+                                        L"adc-ui-test-%1$lu-%2$lu",
+                                        (unsigned long)GetCurrentProcessId(),
+                                        (unsigned long)GetTickCount());
+  if (written < 0 || (size_t)written >= out_size) {
+    OV_ERROR_SETF(err,
+                  ov_error_type_generic,
+                  ov_error_generic_fail,
+                  "the class name could not be made (ov_snprintf_wchar returned %1$d)",
+                  "the class name could not be made (ov_snprintf_wchar returned %1$d)",
+                  written);
+    return false;
   }
-  return NULL;
+  return true;
+}
+
+/**
+ * @brief A window of the test, of a class of its own
+ */
+struct test_window {
+  wchar_t class_name[64];
+  ATOM atom;
+  HWND hwnd;
+};
+
+/**
+ * @brief Take the window of the test down
+ *
+ * @param w the window to close, safe to call on one that is not open
+ */
+static void test_window_close(struct test_window *const w) {
+  if (w->hwnd != NULL) {
+    DestroyWindow(w->hwnd);
+    w->hwnd = NULL;
+  }
+  if (w->atom != 0) {
+    UnregisterClassW(w->class_name, GetModuleHandleW(NULL));
+    w->atom = 0;
+  }
+}
+
+/**
+ * @brief Make the window of the test under the class name
+ *
+ * @param w receives the window, opened on success
+ * @param class_name the class to register and make the window under
+ * @param err receives the failure of the class or the window
+ * @return false when the class or the window could not be made
+ */
+static NODISCARD bool test_window_open(struct test_window *const w, wchar_t const *const class_name, struct ov_error *const err) {
+  bool success = false;
+  WNDCLASSEXW wc;
+
+  memset(w, 0, sizeof(*w));
+  lstrcpynW(w->class_name, class_name, (int)(sizeof(w->class_name) / sizeof(w->class_name[0])));
+  memset(&wc, 0, sizeof(wc));
+  wc.cbSize = sizeof(wc);
+  wc.lpfnWndProc = DefWindowProcW;
+  wc.hInstance = GetModuleHandleW(NULL);
+  wc.hCursor = LoadCursorW(NULL, (LPCWSTR)IDC_ARROW);
+  wc.lpszClassName = w->class_name;
+  w->atom = RegisterClassExW(&wc);
+  if (w->atom == 0) {
+    OV_ERROR_SET_HRESULT(err, HRESULT_FROM_WIN32(GetLastError()));
+    goto cleanup;
+  }
+  w->hwnd = CreateWindowExW(0, w->class_name, L"adc ui test", WS_OVERLAPPEDWINDOW, 0, 0, 200, 100, NULL, NULL, wc.hInstance, NULL);
+  if (w->hwnd == NULL) {
+    OV_ERROR_SET_HRESULT(err, HRESULT_FROM_WIN32(GetLastError()));
+    goto cleanup;
+  }
+  ShowWindow(w->hwnd, SW_SHOW);
+  UpdateWindow(w->hwnd);
+  success = true;
+
+cleanup:
+  if (!success) {
+    test_window_close(w);
+  }
+  return success;
 }
 
 /**
@@ -178,10 +243,54 @@ static HWND find_own_window(wchar_t const *const class_name) {
  */
 static int run_ui(void *const param) {
   struct adc_ui_thread *const job = (struct adc_ui_thread *)(void *)param;
+  struct ui_state *st = NULL;
 
-  job->out->opened = ui_run(job->options, job->settings, &job->out->err);
+  // the hook of the test is for the thread that installed it, and this window is made on
+  // this thread, so the hook has to be put in place here as well
+  test_suppress_install_quiet();
+  job->window = NULL;
+  job->out->opened = false;
+  st = ui_main_window_create(job->options, job->settings, &job->out->err);
+  if (st != NULL) {
+    MSG msg;
+
+    job->window = st->window;
+    SetEvent(job->ready);
+    while (GetMessageW(&msg, NULL, 0, 0) > 0) {
+      if (!IsDialogMessageW(st->window, &msg)) {
+        TranslateMessage(&msg);
+        DispatchMessageW(&msg);
+      }
+    }
+    TEST_SUCCEEDED(ui_main_window_destroy(&st, &job->out->err), &job->out->err);
+    job->window = NULL;
+    job->out->opened = true;
+  } else {
+    SetEvent(job->ready); // the test asks for the window and finds that there is none
+  }
+  test_suppress_release();
   cndvar_broadcast(&job->done, 1);
   return 0;
+}
+
+/**
+ * @brief Wait until the window of the run is up
+ *
+ * The window is made on the thread of the run, so that thread tells the test when it is
+ * there instead of the test looking over the desktop for it.  A window that does not come
+ * up in time is a failure of the run, and the test reports what the run said about it.
+ *
+ * @param job the run to wait for
+ * @return false when the window did not come up in time
+ */
+static bool wait_until_ready(struct adc_ui_thread *const job) {
+  DWORD const waited = WaitForSingleObject(job->ready, ADC_UI_TEST_TIMEOUT_MS);
+
+  if (job->ready != NULL) {
+    CloseHandle(job->ready);
+    job->ready = NULL;
+  }
+  return waited == WAIT_OBJECT_0;
 }
 
 /**
@@ -225,10 +334,20 @@ static bool join_ui(thrd_t *const thread, struct cndvar *const done) {
  * @return false when the thread could not be started
  */
 static bool start_ui(thrd_t *const thread, struct adc_ui_thread *const job) {
+  job->window = NULL;
+  job->ready = CreateEventW(NULL, TRUE, FALSE, NULL);
+  if (job->ready == NULL) {
+    return false;
+  }
   cndvar_lock(&job->done);
   cndvar_signal(&job->done, 0);
   cndvar_unlock(&job->done);
-  return thrd_create(thread, run_ui, job) == thrd_success;
+  if (thrd_create(thread, run_ui, job) != thrd_success) {
+    CloseHandle(job->ready);
+    job->ready = NULL;
+    return false;
+  }
+  return true;
 }
 
 /**
@@ -238,7 +357,7 @@ static bool start_ui(thrd_t *const thread, struct adc_ui_thread *const job) {
  * it.
  */
 static void test_every_control_carries_the_font_of_the_window(void) {
-  char service_name[] = "adc-ui-test-no-such-service";
+  wchar_t service_name[] = L"adc-ui-test-no-such-service";
   struct settings settings;
   struct options options;
   struct adc_ui_result result;
@@ -247,7 +366,6 @@ static void test_every_control_carries_the_font_of_the_window(void) {
   thrd_t thread = {0};
   bool started = false;
   HWND top = NULL;
-  DWORD const start = GetTickCount();
 
   memset(&settings, 0, sizeof(settings));
   memset(&result, 0, sizeof(result));
@@ -265,15 +383,11 @@ static void test_every_control_carries_the_font_of_the_window(void) {
     goto cleanup;
   }
   started = true;
-  while ((GetTickCount() - start) < ADC_UI_TEST_TIMEOUT_MS) {
-    top = find_own_window(L"audient_device_closer_main");
-    if (top != NULL) {
-      break;
-    }
-    Sleep(ADC_UI_TEST_POLL_MS);
+  if (!TEST_CHECK(wait_until_ready(&job))) {
+    goto cleanup;
   }
+  top = job.window;
   if (!TEST_CHECK(top != NULL)) {
-    result.timed_out = true;
     goto cleanup;
   }
   /* the barrier is the whole settling the window needs: what WM_CREATE made is final when
@@ -324,8 +438,8 @@ static void test_every_control_carries_the_font_of_the_window(void) {
   TEST_CASE("the window is the size its layout asks for");
   {
     UINT const dpi = GetDpiForWindow(top);
-    int const least_w = layout_scale(ADC_LAYOUT_WINDOW_W, dpi);
-    int const want_h = layout_scale(ADC_LAYOUT_WINDOW_H, dpi);
+    int const least_w = layout_scale(ADC_MAIN_WINDOW_W, dpi);
+    int const want_h = layout_scale(ADC_MAIN_WINDOW_H, dpi);
     RECT client;
     RECT outer;
     RECT want;
@@ -402,20 +516,14 @@ static void test_every_control_carries_the_font_of_the_window(void) {
 
   TEST_CASE("the window can be opened a second time");
   {
-    DWORD const second_start = GetTickCount();
-
     job.out = &second;
     if (!TEST_CHECK(start_ui(&thread, &job))) {
       goto cleanup;
     }
     started = true;
     top = NULL;
-    while ((GetTickCount() - second_start) < ADC_UI_TEST_TIMEOUT_MS) {
-      top = find_own_window(L"audient_device_closer_main");
-      if (top != NULL) {
-        break;
-      }
-      Sleep(ADC_UI_TEST_POLL_MS);
+    if (TEST_CHECK(wait_until_ready(&job))) {
+      top = job.window;
     }
     if (TEST_CHECK(top != NULL)) {
       PostMessageW(top, WM_CLOSE, 0, 0);
@@ -449,7 +557,7 @@ cleanup:
  * sit under the controls they hold.
  */
 static void test_window_without_the_theme_is_traditional(void) {
-  char service_name[] = "adc-ui-test-no-such-service";
+  wchar_t service_name[] = L"adc-ui-test-no-such-service";
   struct settings settings;
   struct options options;
   struct adc_ui_result result;
@@ -457,7 +565,6 @@ static void test_window_without_the_theme_is_traditional(void) {
   thrd_t thread = {0};
   bool started = false;
   HWND top = NULL;
-  DWORD const start = GetTickCount();
 
   memset(&settings, 0, sizeof(settings));
   memset(&result, 0, sizeof(result));
@@ -474,15 +581,11 @@ static void test_window_without_the_theme_is_traditional(void) {
     goto cleanup;
   }
   started = true;
-  while ((GetTickCount() - start) < ADC_UI_TEST_TIMEOUT_MS) {
-    top = find_own_window(L"audient_device_closer_main");
-    if (top != NULL) {
-      break;
-    }
-    Sleep(ADC_UI_TEST_POLL_MS);
+  if (!TEST_CHECK(wait_until_ready(&job))) {
+    goto cleanup;
   }
+  top = job.window;
   if (!TEST_CHECK(top != NULL)) {
-    result.timed_out = true;
     goto cleanup;
   }
   /* the barrier is the whole settling the window needs: what WM_CREATE made is final when
@@ -558,7 +661,7 @@ static void test_window_without_the_theme_is_traditional(void) {
   TEST_CASE("the surface of the window is the one a dialog of the system is drawn on");
   {
     ULONG_PTR const brush_value = GetClassLongPtrW(top, GCLP_HBRBACKGROUND);
-    HBRUSH const brush = (HBRUSH)(void *)brush_value;
+    HBRUSH const brush = (HBRUSH)brush_value;
     LOGBRUSH lb;
 
     if (TEST_CHECK(brush != NULL)) {
@@ -600,7 +703,7 @@ cleanup:
  * the asks of the abort and of the close are messages, which answer before they return.
  */
 static void test_window_tells_that_it_waits(void) {
-  char service_name[] = "adc-ui-test-no-such-service";
+  wchar_t service_name[] = L"adc-ui-test-no-such-service";
   struct settings settings;
   struct options options;
   struct adc_ui_result result;
@@ -608,7 +711,6 @@ static void test_window_tells_that_it_waits(void) {
   thrd_t thread = {0};
   bool started = false;
   HWND top = NULL;
-  DWORD const start = GetTickCount();
 
   memset(&settings, 0, sizeof(settings));
   memset(&result, 0, sizeof(result));
@@ -627,30 +729,17 @@ static void test_window_tells_that_it_waits(void) {
     goto cleanup;
   }
   started = true;
-  while ((GetTickCount() - start) < ADC_UI_TEST_TIMEOUT_MS) {
-    top = find_own_window(L"audient_device_closer_main");
-    if (top != NULL) {
-      break;
-    }
-    Sleep(ADC_UI_TEST_POLL_MS);
+  if (!TEST_CHECK(wait_until_ready(&job))) {
+    goto cleanup;
   }
+  top = job.window;
   if (!TEST_CHECK(top != NULL)) {
     goto cleanup;
   }
   SendMessageW(top, WM_NULL, 0, 0);
 
-  TEST_CASE("the start-up of the run has its own screen, made before the first answer");
+  TEST_CASE("the window is held while the run is going");
   {
-    HWND progress = find_own_window(L"audient_device_closer_progress");
-    HWND bar = NULL;
-
-    if (TEST_CHECK(progress != NULL)) {
-      bar = FindWindowExW(progress, NULL, PROGRESS_CLASSW, NULL);
-    }
-    if (TEST_CHECK(bar != NULL)) {
-      LRESULT const range = SendMessageW(bar, PBM_GETRANGE, FALSE, 0);
-      TEST_CHECK_(range == 8, "want a bar over the 8 steps of the run, got %ld", (long)range);
-    }
     TEST_CHECK(IsWindowEnabled(top) == FALSE);
     TEST_MSG("want a locked main window while the run is going");
     {
@@ -663,67 +752,9 @@ static void test_window_tells_that_it_waits(void) {
   }
   TEST_CASE_(NULL);
 
-  TEST_CASE("the wait is told as the first step, and the asks do not end the run's window");
-  {
-    bool wait_step = false;
-    bool pressed = false;
-    bool alive_after_close = false;
-    bool run_over = false;
-    DWORD const sample_start = GetTickCount();
-
-    while (!run_over && ((GetTickCount() - sample_start) < ADC_UI_TEST_TIMEOUT_MS)) {
-      struct timespec next;
-      HWND progress = NULL;
-
-      timespec_get(&next, TIME_UTC);
-      next.tv_nsec += (long)ADC_UI_TEST_POLL_MS * 1000000L;
-      if (next.tv_nsec >= 1000000000L) {
-        next.tv_sec += 1;
-        next.tv_nsec -= 1000000000L;
-      }
-      cndvar_lock(&job.done);
-      run_over = (cndvar_timedwait_while(&job.done, 0, &next) == thrd_success);
-      cndvar_unlock(&job.done);
-      if (run_over) {
-        break; // the run took its window down before it announced itself: there is nothing left to see
-      }
-      progress = find_own_window(L"audient_device_closer_progress");
-      if (progress == NULL) {
-        continue;
-      }
-      if (!wait_step) {
-        wait_step = (find_child_with_text(progress, L"Waiting... (1/8)") != NULL);
-        continue;
-      }
-      if (!pressed) {
-        HWND const cancel_btn = find_child_with_text(progress, L"Abort");
-        if (TEST_CHECK(cancel_btn != NULL)) {
-          SendMessageW(progress, WM_COMMAND, MAKEWPARAM(IDC_PROGRESS_CANCEL, BN_CLICKED), (LPARAM)cancel_btn);
-          TEST_CHECK(IsWindowEnabled(cancel_btn) == FALSE);
-          TEST_MSG("want a greyed cancel button after the press");
-          SendMessageW(progress, WM_COMMAND, MAKEWPARAM(IDC_PROGRESS_CANCEL, BN_CLICKED), (LPARAM)cancel_btn);
-          TEST_CHECK(IsWindowEnabled(cancel_btn) == FALSE);
-        }
-        PostMessageW(progress, WM_CLOSE, 0, 0);
-        pressed = true;
-        continue;
-      }
-      alive_after_close = alive_after_close || (IsWindow(progress) != 0);
-    }
-    TEST_CHECK(wait_step);
-    TEST_MSG("want the wait shown as step (1/8) of the run, got a different status line");
-    TEST_CHECK(pressed);
-    TEST_MSG("want the wait told before the run was over");
-    TEST_CHECK(alive_after_close);
-    TEST_MSG("want the progress window to stay until the run is done");
-  }
-  TEST_CASE_(NULL);
-
   started = false;
   TEST_CHECK(join_ui(&thread, &job.done));
   TEST_SUCCEEDED(result.opened, &result.err);
-  TEST_CHECK(find_own_window(L"audient_device_closer_progress") == NULL);
-  TEST_MSG("want the progress window to be gone when the run is over");
 
 cleanup:
   if (started) {
@@ -746,23 +777,27 @@ static void test_result_headline(void) {
   char body[512];
 
   TEST_CASE("a closed device");
-  ui_result_dialog_text(REPAIR_OUTCOME_CLOSED, removal_error_none, headline, sizeof(headline), body, sizeof(body));
+  ui_result_dialog_text(
+      REPAIR_OUTCOME_CLOSED, removal_error_none, repair_failure_none, NULL, headline, sizeof(headline), body, sizeof(body));
   TEST_CHECK(strcmp(headline, "Audient Device Closer") != 0);
   TEST_CHECK(strstr(headline, "could not") == NULL);
   TEST_CHECK(body[0] != '\0');
 
   TEST_CASE("a device that is not there");
-  ui_result_dialog_text(REPAIR_OUTCOME_ABSENT, removal_error_none, headline, sizeof(headline), body, sizeof(body));
+  ui_result_dialog_text(
+      REPAIR_OUTCOME_ABSENT, removal_error_none, repair_failure_none, NULL, headline, sizeof(headline), body, sizeof(body));
   TEST_CHECK(strcmp(headline, "Audient Device Closer") != 0);
   TEST_CHECK(strstr(body, "No Audient device was found") != NULL);
   TEST_CHECK(strstr(body, "try again") == NULL);
 
   TEST_CASE("a device with a problem the removal does not cure");
-  ui_result_dialog_text(REPAIR_OUTCOME_OTHER_PROBLEM, removal_error_none, headline, sizeof(headline), body, sizeof(body));
+  ui_result_dialog_text(
+      REPAIR_OUTCOME_OTHER_PROBLEM, removal_error_none, repair_failure_none, NULL, headline, sizeof(headline), body, sizeof(body));
   TEST_CHECK(strcmp(headline, "Audient Device Closer") != 0);
 
   TEST_CASE("a removal the program was not allowed to ask for");
-  ui_result_dialog_text(REPAIR_OUTCOME_FAILED, removal_error_access_denied, headline, sizeof(headline), body, sizeof(body));
+  ui_result_dialog_text(
+      REPAIR_OUTCOME_FAILED, removal_error_access_denied, repair_failure_none, NULL, headline, sizeof(headline), body, sizeof(body));
   TEST_CHECK(strcmp(headline, "Failed.") == 0);
   TEST_MSG("want the verdict in the headline of a failed run");
   TEST_CHECK(strstr(body, "administrator") != NULL);
@@ -773,8 +808,30 @@ static void test_result_headline(void) {
   TEST_CASE("the headline and the body are different sentences");
   TEST_CHECK(strcmp(headline, body) != 0);
 
+  TEST_CASE("a process that could not be closed is named");
+  ui_result_dialog_text(
+      REPAIR_OUTCOME_FAILED, removal_error_none, repair_failure_process_close, L"iD.exe", headline, sizeof(headline), body, sizeof(body));
+  TEST_CHECK(strstr(body, "iD.exe") != NULL);
+  TEST_MSG("want the process that could not be closed named");
+  TEST_CHECK(strstr(body, "could not be closed") != NULL);
+
+  TEST_CASE("the service that could not come back is named");
+  ui_result_dialog_text(
+      REPAIR_OUTCOME_FAILED, removal_error_none, repair_failure_audio_service_start, NULL, headline, sizeof(headline), body, sizeof(body));
+  TEST_CHECK(strstr(body, "Windows Audio") != NULL);
+  TEST_MSG("want the service that would not start named");
+
+  TEST_CASE("the devices that could not be read at all are answered");
+  ui_result_dialog_text(
+      REPAIR_OUTCOME_FAILED, removal_error_none, repair_failure_device_state, NULL, headline, sizeof(headline), body, sizeof(body));
+  TEST_CHECK(strcmp(headline, "Failed.") == 0);
+  TEST_MSG("want the verdict in the headline of a run that could not look");
+  TEST_CHECK(strstr(body, "could not be determined") != NULL);
+  TEST_MSG("want the reader told that the state was never read");
+
   TEST_CASE("a veto names no process here");
-  ui_result_dialog_text(REPAIR_OUTCOME_VETOED, removal_error_none, headline, sizeof(headline), body, sizeof(body));
+  ui_result_dialog_text(
+      REPAIR_OUTCOME_VETOED, removal_error_none, repair_failure_none, NULL, headline, sizeof(headline), body, sizeof(body));
   TEST_CHECK(strstr(body, "A process is still using the device") != NULL);
   TEST_CHECK(strstr(body, ".exe") == NULL);
   TEST_MSG("the names of the blockers belong to the blockers window");
@@ -812,7 +869,7 @@ static void test_result_dialog_lines_differ(void) {
       char body[512];
 
       TEST_CASE_("outcome %d with removal error %d", (int)outcomes[i], (int)removal_errors[k]);
-      ui_result_dialog_text(outcomes[i], removal_errors[k], headline, sizeof(headline), body, sizeof(body));
+      ui_result_dialog_text(outcomes[i], removal_errors[k], repair_failure_none, NULL, headline, sizeof(headline), body, sizeof(body));
       TEST_CHECK(headline[0] != '\0');
       TEST_CHECK(body[0] != '\0');
       if (!TEST_CHECK_(strcmp(headline, body) != 0, "both lines read [%hs]", headline)) {
@@ -864,18 +921,22 @@ static void test_auto_run_says_the_state_it_found(void) {
  * @brief A list of targets with the states named, the way probe_all hands them out
  */
 static struct device_target *make_press_targets(enum device_state const *const states, size_t const count) {
-  char const *const devnodes[] = {
-      "TUSBAUDIO_ENUM\\VID_2708&PID_0001&KS\\6&deadbee&0&2",
-      "TUSBAUDIO_ENUM\\VID_2708&PID_0002&KS\\6&deadbee&0&2",
-      "TUSBAUDIO_ENUM\\VID_2708&PID_0003&KS\\6&deadbee&0&2",
+  wchar_t const *const devnodes[] = {
+      L"TUSBAUDIO_ENUM\\VID_2708&PID_0001&KS\\6&deadbee&0&2",
+      L"TUSBAUDIO_ENUM\\VID_2708&PID_0002&KS\\6&deadbee&0&2",
+      L"TUSBAUDIO_ENUM\\VID_2708&PID_0003&KS\\6&deadbee&0&2",
   };
   struct device_target *targets = NULL;
 
   for (size_t i = 0; i < count; i++) {
     struct device_target t = {0};
-    if (!ov_sprintf_char(&t.devnode, NULL, NULL, "%s", devnodes[i])) {
+    size_t const chars = wcslen(devnodes[i]) + 1;
+
+    if (!OV_ARRAY_GROW(&t.devnode, chars)) {
       return NULL;
     }
+    OV_ARRAY_SET_LENGTH(t.devnode, chars - 1);
+    wcscpy(t.devnode, devnodes[i]);
     t.state = states[i];
     if (!OV_ARRAY_PUSH(&targets, t)) {
       OV_ARRAY_DESTROY(&t.devnode);
@@ -987,1514 +1048,534 @@ static void test_result_dialog_only_for_a_window_that_stays(void) {
 }
 
 /**
- * @brief The line of the combo names the device and the unit of it
- *
- * The driver package lists one name for more than one device,
- * and the same device can be connected more than once, so the
- * line carries the devnode of the unit.  Only a unit an entry
- * names reaches here, so the name is always there.
- */
-static void test_device_picker_label(void) {
-  struct device_entry const entry = {.id = "TUSBAUDIO_ENUM\\VID_2708&PID_0008&KS", .name = "iD14"};
-  char line[256];
-  char const unit[] = "TUSBAUDIO_ENUM\\VID_2708&PID_0008&KS\\6&D6CB2A&0&2";
-
-  TEST_CHECK(ui_device_picker_label(&entry, unit, line, sizeof(line)) == true);
-  TEST_CHECK(strcmp(line, "iD14 (TUSBAUDIO_ENUM\\VID_2708&PID_0008&KS\\6&D6CB2A&0&2)") == 0);
-  TEST_CHECK(ui_device_picker_label(NULL, unit, line, sizeof(line)) == false);
-  TEST_CHECK(ui_device_picker_label(&entry, NULL, line, sizeof(line)) == false);
-  TEST_CHECK(ui_device_picker_label(&entry, unit, NULL, sizeof(line)) == false);
-  TEST_CHECK(ui_device_picker_label(&entry, unit, line, 0) == false);
-  TEST_CHECK(ui_device_picker_label(&entry, "", line, sizeof(line)) == false);
-}
-
-/**
- * @brief Does one control draw with a font of the given dpi
- *
- * @param control the control to read the font of
- * @param dpi the dpi the font has to be made for
- * @return false when the control has no font, or a font that is not there any more
- */
-static bool font_of_dpi(HWND const control, int const dpi) {
-  HFONT const font = (HFONT)(INT_PTR)SendMessageW(control, WM_GETFONT, 0, 0);
-  LOGFONTW lf;
-
-  memset(&lf, 0, sizeof(lf));
-  if (font == NULL) {
-    return false;
-  }
-  if (GetObjectW(font, sizeof(lf), &lf) == 0) {
-    return false;
-  }
-  return lf.lfHeight == layout_font_height((UINT)dpi);
-}
-
-/**
- * @brief Does every line of the text of one control fit the room it is given
- *
- * The lines of the text are the parts its line
- * breaks separate, and each of them has to fit
- * the room of the control on its own.
- *
- * @param control the control to read
- * @return false when a line is cut off, or nothing could be measured
- */
-static bool control_lines_fit(HWND const control) {
-  wchar_t text[512];
-  HFONT const font = (HFONT)(INT_PTR)SendMessageW(control, WM_GETFONT, 0, 0);
-  HDC dc = GetDC(control);
-  HFONT old = NULL;
-  RECT rc;
-  bool fits = true;
-
-  if (dc == NULL) {
-    return false;
-  }
-  memset(text, 0, sizeof(text));
-  GetWindowTextW(control, text, (int)(sizeof(text) / sizeof(text[0])) - 1);
-  old = (HFONT)SelectObject(dc, font);
-  GetClientRect(control, &rc);
-  for (wchar_t const *line = text; (line != NULL) && fits;) {
-    wchar_t const *const end = wcschr(line, L'\n');
-    int const len = (int)((end != NULL) ? (size_t)(end - line) : wcslen(line));
-    SIZE size = {0, 0};
-
-    if ((len > 0) && ((GetTextExtentPoint32W(dc, line, len, &size) == 0) || (size.cx > (rc.right - rc.left)))) {
-      fits = false;
-    }
-    line = (end != NULL) ? (end + 1) : NULL;
-  }
-  if (old != NULL) {
-    SelectObject(dc, old);
-  }
-  ReleaseDC(control, dc);
-  return fits;
-}
-
-/**
- * @brief Does the line the combo shows fit the room the combo keeps for it
- *
- * The button that opens the list, the frame
- * around the line and the padding the line is
- * drawn away from take room of the combo, so
- * the line has to fit in the room that is left.
- *
- * @param combo the combo to read
- * @return false when the line is cut off, or nothing could be measured
- */
-static bool combo_line_fits(HWND const combo) {
-  wchar_t text[512];
-  HFONT const font = (HFONT)(INT_PTR)SendMessageW(combo, WM_GETFONT, 0, 0);
-  HDC dc = GetDC(combo);
-  HFONT old = NULL;
-  SIZE size = {0, 0};
-  RECT rc;
-  COMBOBOXINFO info = {0};
-  int button = 0;
-  bool measured = false;
-
-  if (dc == NULL) {
-    return false;
-  }
-  memset(text, 0, sizeof(text));
-  SendMessageW(combo, WM_GETTEXT, (WPARAM)(sizeof(text) / sizeof(text[0])), (LPARAM)text);
-  old = (HFONT)SelectObject(dc, font);
-  measured = GetTextExtentPoint32W(dc, text, (int)wcslen(text), &size) != FALSE;
-  if (old != NULL) {
-    SelectObject(dc, old);
-  }
-  ReleaseDC(combo, dc);
-  if (!measured) {
-    return false;
-  }
-  info.cbSize = sizeof(info);
-  if (GetComboBoxInfo(combo, &info) && ((info.rcButton.right - info.rcButton.left) > 0)) {
-    button = info.rcButton.right - info.rcButton.left;
-  } else {
-    button = GetSystemMetrics(SM_CXVSCROLL);
-  }
-  GetClientRect(combo, &rc);
-  return (size.cx + button + (2 * GetSystemMetrics(SM_CXEDGE)) + layout_scale(ADC_LAYOUT_PICKER_COMBO_INSET, GetDpiForWindow(combo))) <=
-         (rc.right - rc.left);
-}
-
-static bool field_name_drawn_whole(HWND const combo, HDC const field, HDC const screen);
-
-/**
- * @brief Read the picker window while it is up, then answer it
- *
- * The units the combo holds are the two
- * the timer was made for, so each line has
- * to name its unit, and the window has to
- * be wide enough for the widest one to be
- * read whole.  The answer is the press of
- * the button that repairs.
- *
- * @param hwnd the owner the timer was made for
- * @param msg the message of the timer
- * @param id the identifier of the timer
- * @param tickcount the tick count when the timer fired
- */
-static void CALLBACK picker_test_timer(HWND const hwnd, UINT const msg, UINT_PTR const id, DWORD const tickcount) {
-  static wchar_t const first_unit[] = L"iD14 (TUSBAUDIO_ENUM\\VID_2708&PID_0002&KS\\6&deadbee&0&2)";
-  static wchar_t const second_unit[] = L"iD14 (TUSBAUDIO_ENUM\\VID_2708&PID_0008&KS\\6&feedface&0&3)";
-  HWND picker = NULL;
-  HWND combo = NULL;
-  HWND label = NULL;
-  HWND ok_btn = NULL;
-  int lines = 0;
-  int i = 0;
-
-  (void)msg;
-  (void)id;
-  (void)tickcount;
-  KillTimer(hwnd, ADC_PICKER_TEST_TIMER_ID);
-  picker = GetLastActivePopup(hwnd);
-  if (!TEST_CHECK((picker != NULL) && (picker != hwnd))) {
-    return;
-  }
-  TEST_CHECK(IsWindowEnabled(hwnd) == FALSE);
-  TEST_MSG("want a locked owner while the picker is up");
-  combo = FindWindowExW(picker, NULL, WC_COMBOBOXW, NULL);
-  if (TEST_CHECK(combo != NULL)) {
-    lines = (int)SendMessageW(combo, CB_GETCOUNT, 0, 0);
-    TEST_CHECK_(lines == 2, "want the two units of the device, got %d", lines);
-    for (i = 0; i < lines; i++) {
-      wchar_t line[512];
-      wchar_t const *const want = (i == 0) ? first_unit : second_unit;
-
-      memset(line, 0, sizeof(line));
-      SendMessageW(combo, CB_GETLBTEXT, (WPARAM)i, (LPARAM)line);
-      TEST_CHECK_(lstrcmpW(line, want) == 0, "unit %d: want [%ls], got [%ls]", i, want, line);
-    }
-    TEST_CHECK(combo_line_fits(combo));
-    TEST_MSG("want the widest unit readable whole in the room the combo keeps");
-    if (theme_dark()) {
-      // the list of the drop down is a window of the system the control makes for itself:
-      // the theme class of the palette gives it its dark look, and this component paints
-      // the frame the theme of the system leaves in the light border of the classic
-      // frame.  The check reads the frame back through WM_PRINT, which paints into a
-      // context the test holds, so the reader never depends on the list being on the
-      // screen, and the list never has to be dropped to be read
-      COMBOBOXINFO info = {0};
-
-      info.cbSize = sizeof(info);
-      if (TEST_CHECK(GetComboBoxInfo(combo, &info) && (info.hwndList != NULL))) {
-        HDC dc = GetDC(info.hwndList);
-        HDC mem = CreateCompatibleDC(dc);
-        RECT rc = {0, 0, 0, 0};
-        HBITMAP bmp = NULL;
-        HBITMAP old = NULL;
-        COLORREF frame_pixel = 0;
-
-        GetWindowRect(info.hwndList, &rc);
-        bmp = CreateCompatibleBitmap(dc, rc.right - rc.left, rc.bottom - rc.top);
-        if (TEST_CHECK((dc != NULL) && (mem != NULL) && (bmp != NULL))) {
-          old = (HBITMAP)SelectObject(mem, bmp);
-          SendMessageW(info.hwndList, WM_PRINT, (WPARAM)mem, PRF_NONCLIENT);
-          frame_pixel = GetPixel(mem, 0, (rc.bottom - rc.top) / 2);
-          SelectObject(mem, old);
-          old = NULL;
-        }
-        if (bmp != NULL) {
-          DeleteObject(bmp);
-          bmp = NULL;
-        }
-        if (mem != NULL) {
-          DeleteDC(mem);
-          mem = NULL;
-        }
-        if (dc != NULL) {
-          ReleaseDC(info.hwndList, dc);
-          dc = NULL;
-        }
-        TEST_CHECK_(
-            frame_pixel == RGB(0x39, 0x39, 0x39), "want the frame of the list in the colour of the dark palette, got %08lx", frame_pixel);
-        // the rows of the list are painted here, and the reader reads them back
-        // through WM_PRINTCLIENT, which paints into a context the test holds
-        {
-          HDC row_dc = GetDC(NULL);
-          HDC row_mem = CreateCompatibleDC(row_dc);
-          HBITMAP row_bmp = NULL;
-          HBITMAP row_old = NULL;
-          COLORREF row = 0;
-          COLORREF chosen_row = 0;
-          RECT cr = {0, 0, 0, 0};
-          LONG const item_height = (LONG)SendMessageW(combo, CB_GETITEMHEIGHT, 0, 0);
-
-          GetClientRect(info.hwndList, &cr);
-          row_bmp = CreateCompatibleBitmap(row_dc, cr.right - cr.left, cr.bottom - cr.top);
-          if (TEST_CHECK((row_mem != NULL) && (row_bmp != NULL))) {
-            row_old = (HBITMAP)SelectObject(row_mem, row_bmp);
-            SendMessageW(info.hwndList, WM_PRINTCLIENT, (WPARAM)row_mem, PRF_CLIENT);
-            // the first row is the one the reader chose, the second one is not,
-            // and the name of a unit starts a little into the row, so the edge
-            // of the row is the face of the row
-            row = GetPixel(row_mem, 0, item_height + 3);
-            chosen_row = GetPixel(row_mem, 0, 3);
-            SelectObject(row_mem, row_old);
-            row_old = NULL;
-          }
-          if (row_bmp != NULL) {
-            DeleteObject(row_bmp);
-            row_bmp = NULL;
-          }
-          if (row_mem != NULL) {
-            DeleteDC(row_mem);
-            row_mem = NULL;
-          }
-          if (row_dc != NULL) {
-            ReleaseDC(NULL, row_dc);
-            row_dc = NULL;
-          }
-          TEST_CHECK_(row == RGB(0x2B, 0x2B, 0x2B), "want the face of a row of the list in the colour of the dark palette, got %08lx", row);
-          TEST_CHECK_(chosen_row == GetSysColor(COLOR_HIGHLIGHT),
-                      "want the chosen row in the colour of the selection of Windows, got %08lx",
-                      chosen_row);
-        }
-      }
-    }
-    if (theme_dark()) {
-      // the rows the reader sees are the ones the screen shows once the list is dropped, so
-      // the check drops the list, has it painted now, and reads the screen where the rows are
-      COMBOBOXINFO dd_info;
-      LONG const item_height = (LONG)SendMessageW(combo, CB_GETITEMHEIGHT, 0, 0);
-      HDC screen = GetDC(NULL);
-      POINT plain = {0, item_height + 3};
-      POINT chosen = {0, 3};
-      COLORREF plain_px = 0;
-      COLORREF chosen_px = 0;
-
-      memset(&dd_info, 0, sizeof(dd_info));
-      dd_info.cbSize = sizeof(dd_info);
-      GetComboBoxInfo(combo, &dd_info);
-      {
-        // the reader opens the list the way a click on the arrow does
-        LONG const arrow_x = (dd_info.rcButton.left + dd_info.rcButton.right) / 2;
-        LONG const arrow_y = (dd_info.rcButton.top + dd_info.rcButton.bottom) / 2;
-        SendMessageW(combo, WM_LBUTTONDOWN, MK_LBUTTON, MAKELPARAM(arrow_x, arrow_y));
-        SendMessageW(combo, WM_LBUTTONUP, 0, MAKELPARAM(arrow_x, arrow_y));
-      }
-      RedrawWindow(dd_info.hwndList, NULL, NULL, RDW_UPDATENOW);
-      ClientToScreen(dd_info.hwndList, &plain);
-      ClientToScreen(dd_info.hwndList, &chosen);
-      if (screen != NULL) {
-        plain_px = GetPixel(screen, plain.x, plain.y);
-        chosen_px = GetPixel(screen, chosen.x, chosen.y);
-        ReleaseDC(NULL, screen);
-      }
-      SendMessageW(combo, CB_SHOWDROPDOWN, FALSE, 0);
-      TEST_CHECK_(plain_px == RGB(0x2B, 0x2B, 0x2B),
-                  "want the unchosen row of the open list in the colour of the dark palette, got %08lx",
-                  plain_px);
-      TEST_CHECK_(chosen_px == GetSysColor(COLOR_HIGHLIGHT),
-                  "want the chosen row of the open list in the colour of the selection, got %08lx",
-                  chosen_px);
-    }
-    if (theme_dark()) {
-      // the list is erased before it is painted, and an animation of the drop shows the area
-      // the erase covers first, so the erase has to fill it in the palette too
-      HDC erase_dc = GetDC(NULL);
-      HDC erase_mem = CreateCompatibleDC(erase_dc);
-      HBITMAP erase_bmp = CreateCompatibleBitmap(erase_dc, 64, 64);
-      HBITMAP erase_old = NULL;
-      RECT erase_rc = {0, 0, 64, 64};
-      COLORREF erased = 0;
-      COMBOBOXINFO erase_info;
-
-      memset(&erase_info, 0, sizeof(erase_info));
-      erase_info.cbSize = sizeof(erase_info);
-      GetComboBoxInfo(combo, &erase_info);
-      if ((erase_mem != NULL) && (erase_bmp != NULL)) {
-        erase_old = (HBITMAP)SelectObject(erase_mem, erase_bmp);
-        FillRect(erase_mem, &erase_rc, (HBRUSH)GetStockObject(WHITE_BRUSH));
-        SendMessageW(erase_info.hwndList, WM_ERASEBKGND, (WPARAM)erase_mem, 0);
-        erased = GetPixel(erase_mem, 5, 5);
-        SelectObject(erase_mem, erase_old);
-      }
-      if (erase_bmp != NULL) {
-        DeleteObject(erase_bmp);
-      }
-      if (erase_mem != NULL) {
-        DeleteDC(erase_mem);
-      }
-      ReleaseDC(NULL, erase_dc);
-      TEST_CHECK_(erased == RGB(0x2B, 0x2B, 0x2B), "want the erase of the list in the colour of the dark palette, got %08lx", erased);
-    }
-    if (theme_dark()) {
-      // the selection is moved with the arrow keys while the list is open, and the rows the
-      // screen shows then have to follow the selection, so the check opens the list, moves
-      // the selection down, has the list painted now and reads the screen where the rows are
-      COMBOBOXINFO key_info;
-      LONG const item_height = (LONG)SendMessageW(combo, CB_GETITEMHEIGHT, 0, 0);
-      HDC screen = NULL;
-      POINT first = {0, 3};
-      POINT second = {0, item_height + 3};
-      COLORREF first_px = 0;
-      COLORREF second_px = 0;
-      LRESULT moved = 0;
-
-      memset(&key_info, 0, sizeof(key_info));
-      key_info.cbSize = sizeof(key_info);
-      GetComboBoxInfo(combo, &key_info);
-      {
-        LONG const arrow_x = (key_info.rcButton.left + key_info.rcButton.right) / 2;
-        LONG const arrow_y = (key_info.rcButton.top + key_info.rcButton.bottom) / 2;
-        SendMessageW(combo, WM_LBUTTONDOWN, MK_LBUTTON, MAKELPARAM(arrow_x, arrow_y));
-        SendMessageW(combo, WM_LBUTTONUP, 0, MAKELPARAM(arrow_x, arrow_y));
-      }
-      SendMessageW(key_info.hwndList, WM_KEYDOWN, VK_DOWN, 0);
-      SendMessageW(key_info.hwndList, WM_KEYUP, VK_DOWN, 0);
-      moved = SendMessageW(key_info.hwndList, LB_GETCURSEL, 0, 0);
-      RedrawWindow(key_info.hwndList, NULL, NULL, RDW_UPDATENOW);
-      ClientToScreen(key_info.hwndList, &first);
-      ClientToScreen(key_info.hwndList, &second);
-      screen = GetDC(NULL);
-      if (screen != NULL) {
-        first_px = GetPixel(screen, first.x, first.y);
-        second_px = GetPixel(screen, second.x, second.y);
-        ReleaseDC(NULL, screen);
-      }
-      // the choice is put back to the first unit, the window answers with the chosen one
-      SendMessageW(key_info.hwndList, WM_KEYDOWN, VK_UP, 0);
-      SendMessageW(key_info.hwndList, WM_KEYUP, VK_UP, 0);
-      SendMessageW(combo, CB_SHOWDROPDOWN, FALSE, 0);
-      TEST_CHECK_(moved == 1, "want the arrow key to choose the second unit of the open list, got %ld", (long)moved);
-      TEST_CHECK_(first_px == RGB(0x2B, 0x2B, 0x2B),
-                  "want the first row, now unchosen, in the colour of the dark palette after the arrow key, got %08lx",
-                  first_px);
-      TEST_CHECK_(second_px == GetSysColor(COLOR_HIGHLIGHT),
-                  "want the second row, now chosen, in the colour of the selection after the arrow key, got %08lx",
-                  second_px);
-    }
-    if (theme_dark()) {
-      // the field of a drop down list is painted from the theme, which is light in every
-      // state, so the component paints it: the check reads the field back through
-      // WM_PRINTCLIENT, which paints without the window and never races a repaint
-      HDC screen = GetDC(combo);
-      HDC mem = CreateCompatibleDC(screen);
-      HBITMAP bmp = NULL;
-      HBITMAP old = NULL;
-      RECT rc;
-      COLORREF frame_pixel = 0;
-      COLORREF face_pixel = 0;
-      bool name_whole = false;
-
-      GetClientRect(combo, &rc);
-      bmp = CreateCompatibleBitmap(screen, rc.right - rc.left, rc.bottom - rc.top);
-      if ((screen != NULL) && (mem != NULL) && (bmp != NULL)) {
-        old = (HBITMAP)SelectObject(mem, bmp);
-        SendMessageW(combo, WM_PRINTCLIENT, (WPARAM)mem, PRF_CLIENT);
-        frame_pixel = GetPixel(mem, 0, (rc.bottom - rc.top) / 2);
-        face_pixel = GetPixel(mem, 1, 1);
-        name_whole = field_name_drawn_whole(combo, mem, screen);
-        SelectObject(mem, old);
-        old = NULL;
-      }
-      if (bmp != NULL) {
-        DeleteObject(bmp);
-        bmp = NULL;
-      }
-      if (mem != NULL) {
-        DeleteDC(mem);
-        mem = NULL;
-      }
-      if (screen != NULL) {
-        ReleaseDC(combo, screen);
-        screen = NULL;
-      }
-      TEST_CHECK_(
-          frame_pixel == RGB(0x39, 0x39, 0x39), "want the frame of the field in the colour of the dark palette, got %08lx", frame_pixel);
-      TEST_CHECK_(
-          face_pixel == RGB(0x2D, 0x2D, 0x2D), "want the face of the field in the colour of the dark palette, got %08lx", face_pixel);
-      TEST_CHECK_(name_whole, "want the chosen name drawn whole in the field, the sign of an accelerator must not be eaten");
-    }
-  }
-  label = FindWindowExW(picker, NULL, L"STATIC", NULL);
-  if (TEST_CHECK(label != NULL)) {
-    TEST_CHECK(control_lines_fit(label));
-    TEST_MSG("want every sentence of the question readable whole in the room it is given");
-  }
-  ok_btn = FindWindowExW(picker, NULL, L"Button", NULL);
-  if (!TEST_CHECK(ok_btn != NULL)) {
-    return;
-  }
-  TEST_CHECK(font_of_dpi(ok_btn, (int)GetDpiForWindow(picker)));
-  TEST_MSG("want the button drawn with a font of the window");
-  SendMessageW(picker, WM_COMMAND, MAKEWPARAM(IDC_PICKER_OK, BN_CLICKED), (LPARAM)ok_btn);
-  TEST_CHECK(!IsWindow(picker));
-  TEST_MSG("want the picker window gone after the press of its repair button");
-}
-
-/**
- * @brief Does the field of a drop down list draw the chosen name whole
- *
- * A name carries the sign of an accelerator.  A field that draws the name as a prefix eats
- * the sign and underlines the letter after it.  The check draws the same name, with the
- * sign kept, in the palette of the field, and compares the band the name fills with the
- * field.  The edges of the field are left out, the focus cue is drawn there.
- *
- * @param combo the combo box whose field was read
- * @param field the context the field was printed into
- * @param screen a context of the screen, the reference is made in a context like it
- * @return true when the name is drawn whole in the field
- */
-static bool field_name_drawn_whole(HWND const combo, HDC const field, HDC const screen) {
-  enum { field_text_inset = 2, edge_skip = 1 };
-  wchar_t name[256];
-  int const cur = (int)SendMessageW(combo, CB_GETCURSEL, 0, 0);
-  LRESULT const font_value = SendMessageW(combo, WM_GETFONT, 0, 0);
-  HFONT const font = (HFONT)(void *)font_value;
-  COMBOBOXINFO info;
-  RECT box = {0, 0, 0, 0};
-  RECT client = {0, 0, 0, 0};
-  RECT measure = {0, 0, 0, 0};
-  HDC ref = NULL;
-  HBITMAP ref_bmp = NULL;
-  HBITMAP ref_old = NULL;
-  HFONT ref_font = NULL;
-  HBRUSH face = NULL;
-  LONG end = 0;
-  LONG x = 0;
-  LONG y = 0;
-  bool made = false;
-  bool differs = false;
-
-  memset(name, 0, sizeof(name));
-  if ((cur == CB_ERR) || (font == NULL) || (SendMessageW(combo, CB_GETLBTEXT, (WPARAM)cur, (LPARAM)name) == CB_ERR)) {
-    return false;
-  }
-  memset(&info, 0, sizeof(info));
-  info.cbSize = sizeof(info);
-  if (!GetComboBoxInfo(combo, &info)) {
-    return false;
-  }
-  box = info.rcItem;
-  InflateRect(&box, -layout_scale(field_text_inset, (UINT)GetDpiForWindow(combo)), 0);
-  GetClientRect(combo, &client);
-  ref = CreateCompatibleDC(screen);
-  ref_bmp = CreateCompatibleBitmap(screen, client.right - client.left, client.bottom - client.top);
-  face = CreateSolidBrush(RGB(0x2D, 0x2D, 0x2D));
-  if ((ref == NULL) || (ref_bmp == NULL) || (face == NULL)) {
-    goto cleanup;
-  }
-  made = true;
-  ref_old = (HBITMAP)SelectObject(ref, ref_bmp);
-  ref_font = (HFONT)SelectObject(ref, font);
-  FillRect(ref, &client, face);
-  SetBkMode(ref, TRANSPARENT);
-  SetTextColor(ref, theme_palette_text());
-  DrawTextW(ref, name, -1, &measure, DT_LEFT | DT_SINGLELINE | DT_NOPREFIX | DT_CALCRECT);
-  DrawTextW(ref, name, -1, &box, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
-  end = box.left + measure.right;
-  if (end > box.right - edge_skip) {
-    end = box.right - edge_skip;
-  }
-  for (y = box.top + edge_skip; (y < box.bottom - edge_skip) && !differs; y++) {
-    for (x = box.left + edge_skip; (x < end) && !differs; x++) {
-      if (GetPixel(field, x, y) != GetPixel(ref, x, y)) {
-        differs = true;
-      }
-    }
-  }
-
-cleanup:
-  if (ref_font != NULL) {
-    SelectObject(ref, ref_font);
-  }
-  if (ref_old != NULL) {
-    SelectObject(ref, ref_old);
-  }
-  if (face != NULL) {
-    DeleteObject(face);
-  }
-  if (ref_bmp != NULL) {
-    DeleteObject(ref_bmp);
-  }
-  if (ref != NULL) {
-    DeleteDC(ref);
-  }
-  return made && !differs;
-}
-
-/**
- * @brief The picker names every unit of the device and answers with the one
- *
- * Two units of one device are connected, so the
- * combo has to tell them apart by the unit
- * each line names, and the window has to be
- * wide enough for the widest one to be read
- * whole.  The reader answers with the button
- * that repairs, and the window hands the unit
- * it held selected back to the caller.
- */
-static void test_picker_window_names_every_unit(void) {
-  struct device_entry *devices = NULL;
-  struct device_target *targets = NULL;
-  struct device_target *picked = NULL;
-  struct settings s;
-  struct device_entry entry;
-  struct device_target target;
-  struct ov_error err = {0};
-  ATOM atom = 0;
-  HFONT font = NULL;
-  HWND owner = NULL;
-  WNDCLASSEXW wc;
-
-  memset(&s, 0, sizeof(s));
-  memset(&entry, 0, sizeof(entry));
-  entry.id = "TUSBAUDIO_ENUM\\VID_2708&PID_0002&KS";
-  entry.name = "iD14";
-  TEST_CHECK(OV_ARRAY_PUSH(&devices, entry));
-  entry.id = "TUSBAUDIO_ENUM\\VID_2708&PID_0008&KS";
-  TEST_CHECK(OV_ARRAY_PUSH(&devices, entry));
-  s.devices = devices;
-  memset(&target, 0, sizeof(target));
-  target.devnode = "TUSBAUDIO_ENUM\\VID_2708&PID_0002&KS\\6&deadbee&0&2";
-  target.state = DEVICE_STATE_PROBLEM;
-  TEST_CHECK(OV_ARRAY_PUSH(&targets, target));
-  target.devnode = "TUSBAUDIO_ENUM\\VID_2708&PID_0008&KS\\6&feedface&0&3";
-  target.state = DEVICE_STATE_PROBLEM;
-  TEST_CHECK(OV_ARRAY_PUSH(&targets, target));
-
-  TEST_CHECK(theme_init(true, &err));
-  memset(&wc, 0, sizeof(wc));
-  wc.cbSize = sizeof(wc);
-  wc.lpfnWndProc = DefWindowProcW;
-  wc.hInstance = GetModuleHandleW(NULL);
-  wc.hCursor = LoadCursorW(NULL, (LPCWSTR)IDC_ARROW);
-  wc.hbrBackground = theme_class_brush();
-  wc.lpszClassName = L"adc_picker_test_owner";
-  atom = RegisterClassExW(&wc);
-  TEST_CHECK(atom != 0);
-  font = CreateFontW(layout_font_height(USER_DEFAULT_SCREEN_DPI),
-                     0,
-                     0,
-                     0,
-                     FW_NORMAL,
-                     FALSE,
-                     FALSE,
-                     FALSE,
-                     DEFAULT_CHARSET,
-                     OUT_DEFAULT_PRECIS,
-                     CLIP_DEFAULT_PRECIS,
-                     CLEARTYPE_QUALITY,
-                     DEFAULT_PITCH | FF_DONTCARE,
-                     L"Segoe UI");
-  if (!TEST_CHECK(font != NULL)) {
-    goto cleanup;
-  }
-  owner = CreateWindowExW(0, wc.lpszClassName, L"owner", WS_OVERLAPPEDWINDOW, 0, 0, 400, 300, NULL, NULL, wc.hInstance, NULL);
-  if (!TEST_CHECK(owner != NULL)) {
-    goto cleanup;
-  }
-  theme_attach(owner);
-  SendMessageW(owner, WM_SETFONT, (WPARAM)font, TRUE);
-  ShowWindow(owner, SW_SHOW);
-
-  TEST_CASE("the picker names every unit and answers with the one it held");
-  {
-    UINT_PTR timer = 0;
-
-    timer = SetTimer(owner, ADC_PICKER_TEST_TIMER_ID, ADC_PICKER_TEST_TIMER_MS, picker_test_timer);
-    if (!TEST_CHECK(timer != 0)) {
-      goto cleanup;
-    }
-    if (!TEST_SUCCEEDED(ui_device_picker_show(owner, &s, targets, &picked, &err), &err)) {
-      goto cleanup;
-    }
-    KillTimer(owner, ADC_PICKER_TEST_TIMER_ID);
-    TEST_CHECK(IsWindowEnabled(owner) != 0);
-    TEST_MSG("want the owner unlocked when the picker is done");
-    TEST_CHECK(GetActiveWindow() == owner);
-    TEST_MSG("want the owner active again after the popup is gone");
-    if (TEST_CHECK(picked != NULL)) {
-      TEST_CHECK_(strcmp(picked->devnode, "TUSBAUDIO_ENUM\\VID_2708&PID_0002&KS\\6&deadbee&0&2") == 0,
-                  "want the first unit, got [%s]",
-                  picked->devnode);
-    }
-    device_targets_release(&picked);
-  }
-  TEST_CASE_(NULL);
-
-cleanup:
-  if (owner != NULL) {
-    DestroyWindow(owner);
-  }
-  if (font != NULL) {
-    DeleteObject(font);
-  }
-  if (atom != 0) {
-    UnregisterClassW(wc.lpszClassName, wc.hInstance);
-  }
-  OV_ARRAY_DESTROY(&targets);
-  OV_ARRAY_DESTROY(&devices);
-}
-
-/**
- * @brief Does the whole text of one control fit in the room the control is given
- *
- * @param control the control to read
- * @return false when the text is cut off, or nothing could be measured
- */
-static bool text_fits(HWND const control) {
-  wchar_t text[256];
-  HFONT const font = (HFONT)(INT_PTR)SendMessageW(control, WM_GETFONT, 0, 0);
-  HDC dc = GetDC(control);
-  HFONT old = NULL;
-  SIZE size = {0, 0};
-  RECT rc;
-  bool measured = false;
-
-  if (dc == NULL) {
-    return false;
-  }
-  memset(text, 0, sizeof(text));
-  GetWindowTextW(control, text, (int)(sizeof(text) / sizeof(text[0])) - 1);
-  old = (HFONT)SelectObject(dc, font);
-  measured = GetTextExtentPoint32W(dc, text, (int)wcslen(text), &size) != FALSE;
-  if (old != NULL) {
-    SelectObject(dc, old);
-  }
-  ReleaseDC(control, dc);
-  if (!measured) {
-    return false;
-  }
-  GetClientRect(control, &rc);
-  return size.cx <= (rc.right - rc.left);
-}
-
-/**
- * @brief Press the OK button of the blockers window, the way a reader does
- *
- * The timer plays the reader while the modal loop of ui_blockers_window_show runs: the
- * window is the popup the owner last activated, and its OK button is the button child it
- * carries.  It also reads what the list shows, so the content of the window is checked
- * while it is up.
- *
- * @param hwnd the owner the timer was set on
- * @param msg the timer message
- * @param id the identifier of the timer
- * @param tickcount the tick count when the timer fired
- */
-static void CALLBACK blockers_test_timer(HWND const hwnd, UINT const msg, UINT_PTR const id, DWORD const tickcount) {
-  HWND blockers = NULL;
-  HWND list = NULL;
-  HWND ok_btn = NULL;
-  int rows = 0;
-  int col = 0;
-
-  (void)msg;
-  (void)id;
-  (void)tickcount;
-  KillTimer(hwnd, ADC_BLOCKERS_TEST_TIMER_ID);
-  blockers = GetLastActivePopup(hwnd);
-  if (blockers == NULL || blockers == hwnd) {
-    TEST_CHECK(false && "want the blockers window as the popup of the owner");
-    return;
-  }
-  TEST_CHECK(IsWindowEnabled(hwnd) == FALSE);
-  TEST_MSG("want a locked owner while the list is up");
-  list = FindWindowExW(blockers, NULL, WC_LISTVIEWW, NULL);
-  if (TEST_CHECK(list != NULL)) {
-    wchar_t pid_text[32];
-    LVITEMW item;
-
-    TEST_CHECK((SendMessageW(list, LVM_GETEXTENDEDLISTVIEWSTYLE, 0, 0) & LVS_EX_DOUBLEBUFFER) != 0);
-    TEST_MSG("want the list view to paint through a buffer of its own");
-    rows = (int)SendMessageW(list, LVM_GETITEMCOUNT, 0, 0);
-    TEST_CHECK_(rows == 2, "want the two records of the veto, got %d", rows);
-    memset(&item, 0, sizeof(item));
-    item.iSubItem = 0;
-    item.pszText = pid_text;
-    item.cchTextMax = (int)(sizeof(pid_text) / sizeof(pid_text[0]));
-    SendMessageW(list, LVM_GETITEMTEXTW, (WPARAM)0, (LPARAM)&item);
-    TEST_CHECK_(lstrcmpW(pid_text, L"100") == 0, "want the pid of the first record, got [%ls]", pid_text);
-    for (col = 0; col < 3; col++) {
-      wchar_t title[64];
-      wchar_t want[64];
-      LVCOLUMNW c;
-      char const *const caption = (col == 0) ? "PID" : ((col == 1) ? "Process" : "Blocked device");
-
-      memset(title, 0, sizeof(title));
-      memset(want, 0, sizeof(want));
-      memset(&c, 0, sizeof(c));
-      c.mask = LVCF_TEXT;
-      c.pszText = title;
-      c.cchTextMax = (int)(sizeof(title) / sizeof(title[0]));
-      if (!TEST_CHECK(SendMessageW(list, LVM_GETCOLUMNW, (WPARAM)col, (LPARAM)&c) != 0)) {
-        continue;
-      }
-      OV_SNPRINTF(want, sizeof(want) / sizeof(WCHAR), L"%1$s", L"%1$s", caption);
-      TEST_CHECK_(lstrcmpW(title, want) == 0, "column %d: want [%ls], got [%ls]", col, want, title);
-    }
-  }
-  ok_btn = FindWindowExW(blockers, NULL, L"Button", NULL);
-  if (!TEST_CHECK(ok_btn != NULL)) {
-    return;
-  }
-  TEST_CASE("the blockers window draws with a font of its own dpi");
-  {
-    int const dpi = (int)GetDpiForWindow(blockers);
-    HWND label = FindWindowExW(blockers, NULL, L"STATIC", NULL);
-    HFONT const borrowed = (HFONT)(INT_PTR)SendMessageW(hwnd, WM_GETFONT, 0, 0);
-
-    if (TEST_CHECK(label != NULL)) {
-      TEST_CHECK(font_of_dpi(label, dpi));
-      TEST_MSG("want the label of the list drawn with a font for dpi %d", dpi);
-      TEST_CHECK(text_fits(label));
-      TEST_MSG("want the sentence of the window readable whole in the room it is given");
-      TEST_CHECK_((INT_PTR)SendMessageW(label, WM_GETFONT, 0, 0) != (INT_PTR)borrowed,
-                  "want a font of the window itself, got the one the owner lends");
-    }
-    if (list != NULL) {
-      TEST_CHECK(font_of_dpi(list, dpi));
-      TEST_MSG("want the list drawn with a font for dpi %d", dpi);
-    }
-    TEST_CHECK(font_of_dpi(ok_btn, dpi));
-    TEST_MSG("want the button drawn with a font for dpi %d", dpi);
-  }
-  TEST_CASE_(NULL);
-
-  TEST_CASE("the smallest size the reader may resize to carries the frame");
-  {
-    MINMAXINFO limits;
-    RECT smallest;
-    UINT const dpi = GetDpiForWindow(blockers);
-
-    memset(&limits, 0, sizeof(limits));
-    SendMessageW(blockers, WM_GETMINMAXINFO, 0, (LPARAM)&limits);
-    layout_window_rect(layout_scale(ADC_LAYOUT_BLOCKERS_MIN_W, dpi),
-                       layout_scale(ADC_LAYOUT_BLOCKERS_MIN_H, dpi),
-                       dpi,
-                       (DWORD)GetWindowLongPtrW(blockers, GWL_STYLE),
-                       (DWORD)GetWindowLongPtrW(blockers, GWL_EXSTYLE),
-                       &smallest);
-    TEST_CHECK_((int)limits.ptMinTrackSize.x == (smallest.right - smallest.left),
-                "want the window %d wide at its smallest, it is held at %d",
-                (int)(smallest.right - smallest.left),
-                (int)limits.ptMinTrackSize.x);
-    TEST_CHECK_((int)limits.ptMinTrackSize.y == (smallest.bottom - smallest.top),
-                "want the window %d tall at its smallest, it is held at %d",
-                (int)(smallest.bottom - smallest.top),
-                (int)limits.ptMinTrackSize.y);
-  }
-  TEST_CASE_(NULL);
-
-  SendMessageW(blockers, WM_COMMAND, MAKEWPARAM(IDC_BLOCKERS_OK, BN_CLICKED), (LPARAM)ok_btn);
-}
-
-static void test_blockers_window_shows_the_processes(void) {
-  struct veto_event *events = NULL;
-  struct veto_event record;
-  struct ov_error berr = {0};
-  ATOM atom = 0;
-  HFONT font = NULL;
-  HWND owner = NULL;
-  HWND blockers_wnd = NULL;
-  WNDCLASSEXW wc;
-
-  memset(&record, 0, sizeof(record));
-  record.pid = 100;
-  record.path = "\\Device\\HarddiskVolume1\\Program Files\\Audient\\iD\\iD.exe";
-  record.device_instance = "USB\\VID_2708&PID_0008";
-  TEST_CHECK(OV_ARRAY_PUSH(&events, record));
-  record.pid = 200;
-  record.path = "C:\\WINDOWS\\system32\\audiodg.exe";
-  record.device_instance = NULL;
-  TEST_CHECK(OV_ARRAY_PUSH(&events, record));
-
-  TEST_CHECK(theme_init(true, &berr));
-  memset(&wc, 0, sizeof(wc));
-  wc.cbSize = sizeof(wc);
-  wc.lpfnWndProc = DefWindowProcW;
-  wc.hInstance = GetModuleHandleW(NULL);
-  wc.hCursor = LoadCursorW(NULL, (LPCWSTR)IDC_ARROW);
-  wc.hbrBackground = theme_class_brush();
-  wc.lpszClassName = L"adc_blockers_test_owner";
-  atom = RegisterClassExW(&wc);
-  TEST_CHECK(atom != 0);
-  font = CreateFontW(layout_font_height(USER_DEFAULT_SCREEN_DPI),
-                     0,
-                     0,
-                     0,
-                     FW_NORMAL,
-                     FALSE,
-                     FALSE,
-                     FALSE,
-                     DEFAULT_CHARSET,
-                     OUT_DEFAULT_PRECIS,
-                     CLIP_DEFAULT_PRECIS,
-                     CLEARTYPE_QUALITY,
-                     DEFAULT_PITCH | FF_DONTCARE,
-                     L"Segoe UI");
-  if (!TEST_CHECK(font != NULL)) {
-    goto cleanup;
-  }
-  owner = CreateWindowExW(0, wc.lpszClassName, L"owner", WS_OVERLAPPEDWINDOW, 0, 0, 400, 300, NULL, NULL, wc.hInstance, NULL);
-  if (!TEST_CHECK(owner != NULL)) {
-    goto cleanup;
-  }
-  theme_attach(owner);
-  SendMessageW(owner, WM_SETFONT, (WPARAM)font, TRUE);
-  ShowWindow(owner, SW_SHOW);
-
-  TEST_CASE("the blockers window opens over the main window and takes it back");
-  {
-    UINT_PTR timer = 0;
-
-    timer = SetTimer(owner, ADC_BLOCKERS_TEST_TIMER_ID, ADC_BLOCKERS_TEST_TIMER_MS, blockers_test_timer);
-    if (!TEST_CHECK(timer != 0)) {
-      goto cleanup;
-    }
-    if (!TEST_SUCCEEDED(ui_blockers_window_show(owner, events, &berr), &berr)) {
-      goto cleanup;
-    }
-    KillTimer(owner, ADC_BLOCKERS_TEST_TIMER_ID);
-    TEST_CHECK(!IsWindow(blockers_wnd));
-    TEST_MSG("want the blockers window gone after the press of its OK button");
-    TEST_CHECK(IsWindowEnabled(owner) != 0);
-    TEST_MSG("want the owner unlocked when the list is done");
-    TEST_CHECK(GetActiveWindow() == owner);
-    TEST_MSG("want the owner active again after the popup is gone");
-    blockers_wnd = NULL;
-  }
-  TEST_CASE_(NULL);
-
-cleanup:
-  if ((blockers_wnd != NULL) && IsWindow(blockers_wnd)) {
-    DestroyWindow(blockers_wnd);
-  }
-  if (owner != NULL) {
-    DestroyWindow(owner);
-  }
-  if (font != NULL) {
-    DeleteObject(font);
-  }
-  if (atom != 0) {
-    UnregisterClassW(wc.lpszClassName, wc.hInstance);
-  }
-  OV_ARRAY_DESTROY(&events);
-}
-
-/**
- * @brief The abort press and the close of the progress window are asks, not ends
- *
- * The window hands the ask over the flag its caller owns, greys its own ways out and stays
- * where it is: only the run that made it takes it down.  Every press here is a message sent
- * to a window of the test thread itself, so its answer is true when the send has returned
- * and no moment of the clock has to be trusted.
- */
-static void test_progress_window_greys_the_asks_and_stays(void) {
-  struct ov_error perr = {0};
-  bool cancel = false;
-  ATOM atom = 0;
-  HWND owner = NULL;
-  HWND progress = NULL;
-  WNDCLASSEXW wc;
-
-  TEST_CHECK(theme_init(true, &perr));
-  memset(&wc, 0, sizeof(wc));
-  wc.cbSize = sizeof(wc);
-  wc.lpfnWndProc = DefWindowProcW;
-  wc.hInstance = GetModuleHandleW(NULL);
-  wc.hCursor = LoadCursorW(NULL, (LPCWSTR)IDC_ARROW);
-  wc.hbrBackground = theme_class_brush();
-  wc.lpszClassName = L"adc_progress_ask_owner";
-  atom = RegisterClassExW(&wc);
-  TEST_CHECK(atom != 0);
-  owner = CreateWindowExW(0, wc.lpszClassName, L"owner", WS_OVERLAPPEDWINDOW, 0, 0, 400, 300, NULL, NULL, wc.hInstance, NULL);
-  if (!TEST_CHECK(owner != NULL)) {
-    goto cleanup;
-  }
-  if (!TEST_SUCCEEDED(ui_progress_window_create(
-                          owner, (int)GetDpiForWindow(owner), ui_progress_window_steps(false, 1), &cancel, NULL, NULL, &progress, &perr),
-                      &perr)) {
-    goto cleanup;
-  }
-
-  TEST_CASE("the press of abort raises the flag of the caller and greys the button");
-  {
-    HWND cancel_btn = FindWindowExW(progress, NULL, L"Button", NULL);
-
-    if (TEST_CHECK(cancel_btn != NULL)) {
-      SendMessageW(progress, WM_COMMAND, MAKEWPARAM(IDC_PROGRESS_CANCEL, BN_CLICKED), (LPARAM)cancel_btn);
-      TEST_CHECK(cancel == true);
-      TEST_MSG("want the press to hand the ask to the flag the caller owns");
-      TEST_CHECK(IsWindowEnabled(cancel_btn) == FALSE);
-      TEST_MSG("want the greyed button to say the ask was heard");
-      SendMessageW(progress, WM_COMMAND, MAKEWPARAM(IDC_PROGRESS_CANCEL, BN_CLICKED), (LPARAM)cancel_btn);
-      TEST_CHECK(IsWindowEnabled(cancel_btn) == FALSE);
-      TEST_MSG("want a second press to find nothing left to press");
-    }
-  }
-  TEST_CASE_(NULL);
-
-  TEST_CASE("the close of the window is an ask too, and it does not end the window");
-  SendMessageW(progress, WM_CLOSE, 0, 0);
-  TEST_CHECK(IsWindow(progress) != 0);
-  TEST_MSG("want the progress window to stay until the run that made it is done");
-
-  TEST_CASE("only the hands of the run take the window down");
-  ui_progress_window_destroy(&progress);
-  TEST_CHECK(progress == NULL);
-  TEST_CHECK(IsWindow(progress) == 0);
-  TEST_CASE_(NULL);
-
-cleanup:
-  if (progress != NULL) {
-    ui_progress_window_destroy(&progress);
-  }
-  if (owner != NULL) {
-    DestroyWindow(owner);
-  }
-  if (atom != 0) {
-    UnregisterClassW(wc.lpszClassName, wc.hInstance);
-  }
-  theme_release();
-}
-
-/**
- * @brief The progress bar follows the palette the way the list view does
- *
- * The dark class set of the theme has no progress parts, so a theme class cannot turn the
- * bar: with the dark palette the theme has to come off the bar and the palette has to
- * colour it, with the light palette the system theme draws it again.  The window of a run
- * lives on another thread, so this test makes a bar of its own on the thread it runs on.
- * The light side asks the theme manager for the progress parts directly: GetWindowTheme()
- * only answers once a paint has opened them, which a freshly created bar has not done yet.
- */
-static void test_progress_bar_follows_the_palette(void) {
-  struct ov_error berr = {0};
-  HWND parent = NULL;
-  HWND bar = NULL;
-
-  TEST_CHECK(theme_init(true, &berr));
-  parent = CreateWindowExW(0, L"STATIC", L"", WS_POPUP, 0, 0, 100, 60, NULL, NULL, GetModuleHandleW(NULL), NULL);
-  if (!TEST_CHECK(parent != NULL)) {
-    goto cleanup;
-  }
-  bar = CreateWindowExW(
-      0, PROGRESS_CLASSW, L"", WS_CHILD | WS_VISIBLE | PBS_SMOOTH, 0, 0, 100, 20, parent, NULL, GetModuleHandleW(NULL), NULL);
-  if (!TEST_CHECK(bar != NULL)) {
-    goto cleanup;
-  }
-  theme_attach(bar);
-  {
-    COLORREF const fill = (COLORREF)SendMessageW(bar, PBM_GETBARCOLOR, 0, 0);
-    COLORREF const channel = (COLORREF)SendMessageW(bar, PBM_GETBKCOLOR, 0, 0);
-
-    if (theme_dark()) {
-      TEST_CHECK(GetWindowTheme(bar) == NULL);
-      TEST_MSG("want the bar without a theme class in the dark palette");
-      TEST_CHECK_(fill != (COLORREF)CLR_DEFAULT, "want a fill colour of the palette, got 0x%08lX", (unsigned long)fill);
-      TEST_CHECK_(channel != (COLORREF)CLR_DEFAULT, "want a channel colour of the palette, got 0x%08lX", (unsigned long)channel);
-    } else {
-      HTHEME const system_theme = OpenThemeData(bar, L"Progress");
-      TEST_CHECK(system_theme != NULL);
-      TEST_MSG("want the system theme to draw the bar in the light palette");
-      if (system_theme != NULL) {
-        CloseThemeData(system_theme);
-      }
-      TEST_CHECK_(fill == (COLORREF)CLR_DEFAULT, "want the default fill back, got 0x%08lX", (unsigned long)fill);
-      TEST_CHECK_(channel == (COLORREF)CLR_DEFAULT, "want the default channel back, got 0x%08lX", (unsigned long)channel);
-    }
-  }
-
-cleanup:
-  if (bar != NULL) {
-    DestroyWindow(bar);
-  }
-  if (parent != NULL) {
-    DestroyWindow(parent);
-  }
-  theme_release();
-}
-
-/**
- * @brief What the probe window of the palette broadcast test saw
- */
-struct theme_probe {
-  unsigned theme_changed;
-  unsigned painted;
-};
-
-/**
- * @brief A window that talks to the theme the way the windows of the application do
- *
- * The probe counts the two things a palette change has to bring to every window: the
- * re-apply that theme_reapply() announces with WM_THEMECHANGED, and the redraw that comes
- * with WM_PAINT.
- */
-static LRESULT CALLBACK theme_probe_wndproc(HWND const hwnd, UINT const msg, WPARAM const wparam, LPARAM const lparam) {
-  struct theme_probe *probe = (struct theme_probe *)(INT_PTR)GetWindowLongPtrW(hwnd, GWLP_USERDATA);
-
-  if (msg == WM_NCCREATE) {
-    SetWindowLongPtrW(hwnd, GWLP_USERDATA, (LONG_PTR)((CREATESTRUCTW const *)lparam)->lpCreateParams);
-    return DefWindowProcW(hwnd, msg, wparam, lparam);
-  }
-  if (probe != NULL) {
-    if (msg == WM_THEMECHANGED) {
-      probe->theme_changed++;
-      return 0;
-    }
-    if (msg == WM_PAINT) {
-      PAINTSTRUCT ps;
-      BeginPaint(hwnd, &ps);
-      EndPaint(hwnd, &ps);
-      probe->painted++;
-      return 0;
-    }
-  }
-  {
-    LRESULT result = 0;
-    bool handled = false;
-
-    if (!theme_message(hwnd, msg, wparam, lparam, &result, &handled, NULL)) {
-      return DefWindowProcW(hwnd, msg, wparam, lparam);
-    }
-    if (handled) {
-      return result;
-    }
-  }
-  return DefWindowProcW(hwnd, msg, wparam, lparam);
-}
-
-/**
- * @brief A palette change reaches every window, not only the first one
- *
- * The shell broadcasts the change to every top-level window and the theme reads the new
- * palette once: the window that answers the broadcast first must not consume the change.
- * A modal dialog is a second top-level window, so with one open the old code updated one
- * window and left the other on the old palette.  The probe plays the owner of the modal,
- * which sits disabled behind the dialog: it has to re-apply and to redraw all the same.
- */
-static void test_theme_change_reaches_every_window(void) {
-  struct ov_error berr = {0};
-  WNDCLASSEXW wc;
-  struct theme_probe probe_owner = {0};
-  struct theme_probe probe_dialog = {0};
-  HWND owner = NULL;
-  HWND dialog = NULL;
-  ATOM atom = 0;
-
-  TEST_CHECK(theme_init(true, &berr));
-  memset(&wc, 0, sizeof(wc));
-  wc.cbSize = sizeof(wc);
-  wc.lpfnWndProc = theme_probe_wndproc;
-  wc.hInstance = GetModuleHandleW(NULL);
-  wc.hCursor = LoadCursorW(NULL, IDC_ARROW);
-  wc.lpszClassName = L"adc_theme_probe_test";
-  atom = RegisterClassExW(&wc);
-  if (!TEST_CHECK(atom != 0)) {
-    goto cleanup;
-  }
-  owner = CreateWindowExW(0, wc.lpszClassName, L"", WS_POPUP | WS_VISIBLE, 0, 0, 100, 60, NULL, NULL, wc.hInstance, &probe_owner);
-  dialog = CreateWindowExW(0, wc.lpszClassName, L"", WS_POPUP | WS_VISIBLE, 0, 0, 100, 60, NULL, NULL, wc.hInstance, &probe_dialog);
-  if (!TEST_CHECK(owner != NULL && dialog != NULL)) {
-    goto cleanup;
-  }
-  EnableWindow(owner, FALSE);
-
-  SendMessageW(owner, WM_SETTINGCHANGE, 0, (LPARAM)L"ImmersiveColorSet");
-  SendMessageW(dialog, WM_SETTINGCHANGE, 0, (LPARAM)L"ImmersiveColorSet");
-
-  TEST_CHECK_(probe_owner.theme_changed >= 1, "want the disabled owner re-applied, got %u", (unsigned)probe_owner.theme_changed);
-  TEST_CHECK_(probe_dialog.theme_changed >= 1, "want the dialog re-applied, got %u", (unsigned)probe_dialog.theme_changed);
-  TEST_CHECK_(probe_owner.painted >= 1, "want the disabled owner painted, got %u", (unsigned)probe_owner.painted);
-  TEST_CHECK_(probe_dialog.painted >= 1, "want the dialog painted, got %u", (unsigned)probe_dialog.painted);
-
-cleanup:
-  if (owner != NULL) {
-    DestroyWindow(owner);
-  }
-  if (dialog != NULL) {
-    DestroyWindow(dialog);
-  }
-  if (atom != 0) {
-    UnregisterClassW(wc.lpszClassName, wc.hInstance);
-  }
-  theme_release();
-}
-
-/**
- * @brief The switch that keeps the theme out of the process
- *
- * The undocumented entry points the theme works through are what a
- * future Windows may change and what an older one never had, so one
- * switch has to be able to detach the whole theme: no window is
- * themed, no painting is taken over and no colour message is answered
- * by the application.  A button, a bar and a list with its header are
- * made here, and each of them has to stay exactly as the system made
- * it.
- */
-static void test_theme_switch_detaches_the_theme(void) {
-  struct ov_error berr = {0};
-  struct ov_error merr = {0};
-  WNDCLASSEXW wc;
-  ATOM atom = 0;
-  HWND owner = NULL;
-  HWND button = NULL;
-  HWND bar = NULL;
-  HWND list = NULL;
-  HWND header = NULL;
-  LONG_PTR button_proc = 0;
-  LONG_PTR header_proc = 0;
-  LRESULT result = 0;
-  bool handled = true;
-  HDC dc = NULL;
-
-  TEST_CHECK(theme_init(false, &berr));
-  TEST_CHECK(theme_dark() == false);
-  TEST_CHECK(theme_refresh(&merr) == false);
-  TEST_CHECK(theme_class_brush() != NULL);
-
-  memset(&wc, 0, sizeof(wc));
-  wc.cbSize = sizeof(wc);
-  wc.lpfnWndProc = DefWindowProcW;
-  wc.hInstance = GetModuleHandleW(NULL);
-  wc.hCursor = LoadCursorW(NULL, (LPCWSTR)IDC_ARROW);
-  wc.hbrBackground = theme_class_brush();
-  wc.lpszClassName = L"adc_theme_off_test";
-  atom = RegisterClassExW(&wc);
-  if (!TEST_CHECK(atom != 0)) {
-    goto cleanup;
-  }
-  owner = CreateWindowExW(0, wc.lpszClassName, L"", WS_POPUP, 0, 0, 100, 60, NULL, NULL, wc.hInstance, NULL);
-  if (!TEST_CHECK(owner != NULL)) {
-    goto cleanup;
-  }
-
-  button = CreateWindowExW(0, L"BUTTON", L"", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 0, 0, 80, 24, owner, NULL, wc.hInstance, NULL);
-  if (!TEST_CHECK(button != NULL)) {
-    goto cleanup;
-  }
-  button_proc = GetWindowLongPtrW(button, GWLP_WNDPROC);
-  theme_attach(button);
-  TEST_CHECK(GetWindowLongPtrW(button, GWLP_WNDPROC) == button_proc);
-  TEST_MSG("want the button painted by the system, not by a subclass of the theme");
-
-  bar = CreateWindowExW(0, PROGRESS_CLASSW, L"", WS_CHILD | WS_VISIBLE | PBS_SMOOTH, 0, 0, 80, 20, owner, NULL, wc.hInstance, NULL);
-  if (!TEST_CHECK(bar != NULL)) {
-    goto cleanup;
-  }
-  theme_attach(bar);
-  TEST_CHECK(GetWindowTheme(bar) == NULL);
-  TEST_MSG("want no theme class of the palette on the bar");
-  {
-    COLORREF const fill = (COLORREF)SendMessageW(bar, PBM_GETBARCOLOR, 0, 0);
-    TEST_CHECK(fill == (COLORREF)CLR_DEFAULT);
-    TEST_MSG("want the fill colour of the system, not one of the palette");
-  }
-
-  list = CreateWindowExW(0, WC_LISTVIEWW, L"", WS_CHILD | WS_VISIBLE | LVS_REPORT, 0, 0, 80, 60, owner, NULL, wc.hInstance, NULL);
-  if (!TEST_CHECK(list != NULL)) {
-    goto cleanup;
-  }
-  {
-    LVCOLUMNW column;
-
-    memset(&column, 0, sizeof(column));
-    column.mask = LVCF_TEXT;
-    column.pszText = L"";
-    SendMessageW(list, LVM_INSERTCOLUMNW, 0, (LPARAM)&column);
-  }
-  {
-    LRESULT const hdr = SendMessageW(list, LVM_GETHEADER, 0, 0);
-
-    header = (HWND)(void *)hdr;
-  }
-  if (TEST_CHECK(header != NULL)) {
-    header_proc = GetWindowLongPtrW(header, GWLP_WNDPROC);
-  }
-  theme_attach_list(list);
-  TEST_CHECK(GetWindowTheme(list) == NULL);
-  TEST_MSG("want no theme class of the palette on the list");
-  if (header != NULL) {
-    TEST_CHECK(GetWindowLongPtrW(header, GWLP_WNDPROC) == header_proc);
-    TEST_MSG("want the header painted by the system, not by a subclass of the theme");
-  }
-
-  dc = GetDC(button);
-  if (TEST_CHECK(dc != NULL)) {
-    theme_message(button, WM_CTLCOLORSTATIC, (WPARAM)dc, (LPARAM)button, &result, &handled, NULL);
-    TEST_CHECK(handled == false);
-    TEST_MSG("want the colour messages answered by the system, not by the application");
-    ReleaseDC(button, dc);
-    dc = NULL;
-  }
-
-cleanup:
-  if (list != NULL) {
-    DestroyWindow(list);
-  }
-  if (bar != NULL) {
-    DestroyWindow(bar);
-  }
-  if (button != NULL) {
-    DestroyWindow(button);
-  }
-  if (owner != NULL) {
-    DestroyWindow(owner);
-  }
-  if (atom != 0) {
-    UnregisterClassW(wc.lpszClassName, wc.hInstance);
-    atom = 0;
-  }
-  theme_release();
-}
-
-/**
- * @brief The progress window keeps the size and the font of its own layout
- *
- * The window is made once for one run, on whatever monitor the run was started from: the
- * size it is made at, the size a monitor of another dpi gives it, and the font it draws with
- * all come from the layout, not from the window the run belongs to.
- */
-static void test_progress_window_keeps_its_size_and_font(void) {
-  struct ov_error perr = {0};
-  bool cancel = false;
-  ATOM atom = 0;
-  HFONT borrowed = NULL;
-  HWND owner = NULL;
-  HWND progress = NULL;
-  WNDCLASSEXW wc;
-
-  TEST_CHECK(theme_init(true, &perr));
-  memset(&wc, 0, sizeof(wc));
-  wc.cbSize = sizeof(wc);
-  wc.lpfnWndProc = DefWindowProcW;
-  wc.hInstance = GetModuleHandleW(NULL);
-  wc.hCursor = LoadCursorW(NULL, (LPCWSTR)IDC_ARROW);
-  wc.hbrBackground = theme_class_brush();
-  wc.lpszClassName = L"adc_progress_test_owner";
-  atom = RegisterClassExW(&wc);
-  TEST_CHECK(atom != 0);
-  owner = CreateWindowExW(0, wc.lpszClassName, L"owner", WS_OVERLAPPEDWINDOW, 0, 0, 400, 300, NULL, NULL, wc.hInstance, NULL);
-  if (!TEST_CHECK(owner != NULL)) {
-    goto cleanup;
-  }
-  theme_attach(owner);
-  borrowed = layout_make_font((UINT)GetDpiForWindow(owner));
-  SendMessageW(owner, WM_SETFONT, (WPARAM)borrowed, TRUE);
-  if (!TEST_SUCCEEDED(ui_progress_window_create(
-                          owner, (int)GetDpiForWindow(owner), ui_progress_window_steps(false, 1), &cancel, NULL, NULL, &progress, &perr),
-                      &perr)) {
-    goto cleanup;
-  }
-  ShowWindow(progress, SW_SHOW);
-  /* the owner moves to a monitor of its own dpi and lets go of its font */
-  DeleteObject(borrowed);
-  borrowed = NULL;
-
-  {
-    int const least = layout_scale(ADC_LAYOUT_PROGRESS_CANCEL_W, 96) + 2 * layout_scale(ADC_LAYOUT_MARGIN_X, 96);
-    RECT outer;
-
-    GetWindowRect(progress, &outer);
-    TEST_CHECK_(least <= (outer.right - outer.left), "want the window at least %d wide, it is %d", least, (int)(outer.right - outer.left));
-  }
-
-  TEST_CASE("the window is the size its layout asks for");
-  {
-    int const dpi = (int)GetDpiForWindow(progress);
-    int const want_w = layout_scale(ADC_LAYOUT_PROGRESS_W, (UINT)dpi);
-    struct progress_layout g;
-    RECT client;
-
-    layout_progress_compute(want_w, (UINT)dpi, &g);
-    GetClientRect(progress, &client);
-    TEST_CHECK_((client.right - client.left) == want_w, "want the client %d wide, got %d", want_w, (int)(client.right - client.left));
-    TEST_CHECK_((client.bottom - client.top) == g.needed_height,
-                "want the client %d tall, got %d",
-                (int)g.needed_height,
-                (int)(client.bottom - client.top));
-  }
-  TEST_CASE_(NULL);
-
-  TEST_CASE("the rectangle a monitor suggests moves the window, it does not size it");
-  {
-    int const dpi = (int)GetDpiForWindow(progress);
-    int const want_w = layout_scale(ADC_LAYOUT_PROGRESS_W, (UINT)dpi);
-    struct progress_layout g;
-    RECT client;
-    RECT outer;
-    RECT suggested;
-
-    layout_progress_compute(want_w, (UINT)dpi, &g);
-    /* the size of this suggestion is not the size the layout asks for */
-    SetRect(&suggested,
-            ADC_TEST_PROGRESS_SUGGEST_LEFT,
-            ADC_TEST_PROGRESS_SUGGEST_TOP,
-            ADC_TEST_PROGRESS_SUGGEST_RIGHT,
-            ADC_TEST_PROGRESS_SUGGEST_BOTTOM);
-    SendMessageW(progress, WM_DPICHANGED, MAKEWPARAM(dpi, dpi), (LPARAM)&suggested);
-    GetWindowRect(progress, &outer);
-    GetClientRect(progress, &client);
-    TEST_CHECK_(outer.left == suggested.left, "want the window moved to %d, it is at %d", (int)suggested.left, (int)outer.left);
-    TEST_CHECK_(outer.top == suggested.top, "want the window moved to %d, it is at %d", (int)suggested.top, (int)outer.top);
-    TEST_CHECK_((client.right - client.left) == want_w, "want the client %d wide, got %d", want_w, (int)(client.right - client.left));
-    TEST_CHECK_((client.bottom - client.top) == g.needed_height,
-                "want the client %d tall, got %d",
-                (int)g.needed_height,
-                (int)(client.bottom - client.top));
-  }
-  TEST_CASE_(NULL);
-
-  TEST_CASE("the window makes room for the line a run may report, instead of hiding it");
-  {
-    static char const long_line[] = "MMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMM (7/7)";
-    int const dpi = (int)GetDpiForWindow(progress);
-    int const least = layout_scale(ADC_LAYOUT_PROGRESS_W, (UINT)dpi);
-    HWND wide = NULL;
-    RECT client;
-
-    if (!TEST_SUCCEEDED(
-            ui_progress_window_create(owner, dpi, ui_progress_window_steps(false, 1), &cancel, long_line, long_line, &wide, &perr),
-            &perr)) {
-      goto cleanup;
-    }
-    {
-      wchar_t shown[256];
-      HWND status = FindWindowExW(wide, NULL, L"STATIC", NULL);
-
-      GetClientRect(wide, &client);
-      TEST_CHECK_((client.right - client.left) > least,
-                  "want the window wider than its least %d, it is %d",
-                  least,
-                  (int)(client.right - client.left));
-      if (TEST_CHECK(status != NULL)) {
-        memset(shown, 0, sizeof(shown));
-        OV_SNPRINTF(shown, sizeof(shown) / sizeof(WCHAR), L"%1$s", L"%1$s", long_line);
-        SetWindowTextW(status, shown);
-        TEST_CHECK(text_fits(status));
-        TEST_MSG("want the line of the run shown whole in the window");
-        TEST_CHECK_((GetWindowLongPtrW(status, GWL_STYLE) & SS_ENDELLIPSIS) == 0, "want room for the line, not an ellipsis that hides it");
-      }
-      ui_progress_window_destroy(&wide);
-      wide = NULL;
-    }
-  }
-  TEST_CASE_(NULL);
-
-  TEST_CASE("the window draws with fonts of its own, alive after the owner let go of its font");
-  {
-    int const dpi = (int)GetDpiForWindow(progress);
-    HWND label = FindWindowExW(progress, NULL, L"STATIC", NULL);
-    HWND button = FindWindowExW(progress, NULL, L"Button", NULL);
-
-    if (TEST_CHECK(label != NULL)) {
-      TEST_CHECK(font_of_dpi(label, dpi));
-      TEST_MSG("want the status line drawn with a font for dpi %d", dpi);
-    }
-    if (TEST_CHECK(button != NULL)) {
-      TEST_CHECK(font_of_dpi(button, dpi));
-      TEST_MSG("want the button drawn with a font for dpi %d", dpi);
-    }
-  }
-  TEST_CASE_(NULL);
-
-cleanup:
-  if (progress != NULL) {
-    ui_progress_window_destroy(&progress);
-    progress = NULL;
-  }
-  if (borrowed != NULL) {
-    DeleteObject(borrowed);
-    borrowed = NULL;
-  }
-  if (owner != NULL) {
-    DestroyWindow(owner);
-    owner = NULL;
-  }
-  if (atom != 0) {
-    UnregisterClassW(wc.lpszClassName, wc.hInstance);
-    atom = 0;
-  }
-  theme_release();
-}
-
-/**
- * @brief A second start reaches the window of the copy that is already running
+ * @brief A start reaches the window of the copy that is already running
  *
  * The call is what a person who pressed the icon twice gets instead of a second window: the
  * window that is there, in front.  Without such a window the call says that nobody runs.
+ * The window is the one of this test, under a class of its own, so the answer does not
+ * depend on whether the program happens to be running beside the harness.
  */
 static void test_activate_reaches_the_window_of_the_running_copy(void) {
-  char service_name[] = "adc-ui-test-no-such-service";
-  struct settings settings;
-  struct options options;
-  struct adc_ui_result result;
-  struct adc_ui_thread job;
-  thrd_t thread = {0};
+  struct test_window window;
+  wchar_t class_name[64];
   struct ov_error err = {0};
-  bool started = false;
-  HWND top = NULL;
-  DWORD const start = GetTickCount();
 
-  memset(&settings, 0, sizeof(settings));
-  memset(&result, 0, sizeof(result));
-  options_default(&options);
-  settings.ks_service = service_name;
-  settings.use_theme = true;
+  if (!TEST_SUCCEEDED(test_window_class_name(class_name, sizeof(class_name) / sizeof(class_name[0]), &err), &err)) {
+    goto cleanup;
+  }
 
   TEST_CASE("no copy is running yet");
-  if (find_own_window(UI_MAIN_WINDOW_CLASS) != NULL) {
-    TEST_SKIP("a window of this program is on the screen already");
-    goto cleanup;
-  }
-  TEST_FAILED_WITH(ui_activate_running_window(&err), &err, ov_error_type_generic, ov_error_generic_not_found);
+  TEST_FAILED_WITH(activate_window_of_class(class_name, &err), &err, ov_error_type_generic, ov_error_generic_not_found);
 
   TEST_CASE("the window of the running copy is reached");
-  job.options = &options;
-  job.settings = &settings;
-  job.out = &result;
-  cndvar_init(&job.done);
-  if (!TEST_CHECK(start_ui(&thread, &job))) {
+  if (!TEST_SUCCEEDED(test_window_open(&window, class_name, &err), &err)) {
     goto cleanup;
   }
-  started = true;
-  while ((GetTickCount() - start) < ADC_UI_TEST_TIMEOUT_MS) {
-    top = find_own_window(UI_MAIN_WINDOW_CLASS);
-    if (top != NULL) {
-      break;
-    }
-    Sleep(ADC_UI_TEST_POLL_MS);
-  }
-  if (!TEST_CHECK(top != NULL)) {
-    result.timed_out = true;
+  if (!TEST_SUCCEEDED(activate_window_of_class(class_name, &err), &err)) {
     goto cleanup;
   }
-  SendMessageW(top, WM_NULL, 0, 0);
-  if (!TEST_SUCCEEDED(ui_activate_running_window(&err), &err)) {
-    goto cleanup;
-  }
-
-  PostMessageW(top, WM_CLOSE, 0, 0);
-  started = false;
-  TEST_CHECK(join_ui(&thread, &job.done));
-  TEST_CASE_(NULL);
 
 cleanup:
-  if (started) {
-    TEST_CHECK(join_ui(&thread, &job.done));
-    started = false;
+  test_window_close(&window);
+}
+
+/** @brief The dpis the checks of the geometry walk */
+static UINT const geometry_dpi_list[] = {96, 120, 144, 192};
+#define GEOMETRY_DPI_COUNT ((int)(sizeof(geometry_dpi_list) / sizeof(geometry_dpi_list[0])))
+
+/** @brief The pixels the scaling of one part and the scaling of a whole can differ by */
+static int const geometry_slack = 1;
+
+/**
+ * @brief The captions the geometry checks hand to the window
+ *
+ * These are the widest captions the application has, measured at 96dpi by the tests that
+ * check the boxes, so the geometry is checked with room to spare.
+ */
+static int const settings_caption_logical = 90;
+static int const install_caption_logical = 60;
+
+/**
+ * @brief The size of a difference, unsigned
+ *
+ * @param v the difference of two values
+ * @return the size it stands for
+ */
+static int geometry_abs(int const v) { return (v < 0) ? -v : v; }
+
+/**
+ * @brief The client area of the default window
+ *
+ * @param dpi the dpi to draw for
+ * @param extra_width how much wider than the default the window is
+ * @param extra_height how much taller than the default the window is
+ * @return the client rectangle of the window
+ */
+static RECT client_of(UINT const dpi, int const extra_width, int const extra_height) {
+  RECT r;
+  r.left = 0;
+  r.top = 0;
+  r.right = layout_scale(ADC_MAIN_WINDOW_W, dpi) + extra_width;
+  r.bottom = layout_scale(ADC_MAIN_WINDOW_H, dpi) + extra_height;
+  return r;
+}
+
+/**
+ * @brief The geometry of the main window these checks walk
+ *
+ * @param dpi the dpi to draw for
+ * @param extra_width how much wider than the default the window is
+ * @param extra_height how much taller than the default the window is
+ * @param caption_width the room the group captions take
+ * @return the geometry to check
+ */
+static struct main_layout compute(UINT const dpi, int const extra_width, int const extra_height, int const caption_width) {
+  struct main_layout g;
+  RECT const c = client_of(dpi, extra_width, extra_height);
+  int const settings_w = layout_scale(ADC_MAIN_SETTINGS_MIN_W, dpi);
+  main_compute(&c, dpi, settings_w, caption_width, layout_scale(install_caption_logical, dpi), layout_scale(ADC_LAYOUT_CAPTION_H, dpi), &g);
+  return g;
+}
+
+/**
+ * @brief The width of the smallest client area
+ *
+ * It follows the width of the settings group.
+ *
+ * @param dpi the dpi to draw for
+ * @return the narrowest client area that shows both groups
+ */
+static int min_client_width(UINT const dpi) {
+  return layout_scale(ADC_MAIN_MIN_CLIENT_EXTRA_W, dpi) + layout_scale(ADC_MAIN_SETTINGS_MIN_W, dpi);
+}
+
+/**
+ * @brief Every frame of the window, for the tests that walk them all
+ *
+ * @param g the geometry to read
+ * @param out receives the rectangles
+ * @param n receives how many there are
+ */
+static void frames_of(struct main_layout const *const g, RECT const **const out, size_t *const n) {
+  out[(*n)++] = &g->settings_frame;
+  out[(*n)++] = &g->install_frame;
+}
+
+/**
+ * @brief Every caption of the window, for the tests that walk them all
+ *
+ * @param g the geometry to read
+ * @param out receives the rectangles
+ * @param n receives how many there are
+ */
+static void captions_of(struct main_layout const *const g, RECT const **const out, size_t *const n) {
+  out[(*n)++] = &g->settings_caption;
+  out[(*n)++] = &g->install_caption;
+}
+
+/**
+ * @brief The top line of a frame runs through the middle of its caption
+ *
+ * A group box of the system puts the text at the top of its area and draws the top line at
+ * half the height of that text, so the line balances the caption.  The frames here follow
+ * the same convention: the caption is asked for its height, and the line goes through its
+ * middle, at every dpi and for an even and an odd height alike.  Both groups are checked:
+ * they share the code that places a caption on a frame.
+ */
+static void test_caption_line_balance(void) {
+  int i = 0;
+  for (i = 0; i < GEOMETRY_DPI_COUNT; i++) {
+    UINT const dpi = geometry_dpi_list[i];
+    int const reserved = layout_scale(ADC_LAYOUT_CAPTION_H, dpi);
+    int const heights[2] = {reserved, reserved - 1};
+    int k = 0;
+    for (k = 0; k < 2; k++) {
+      RECT const c = client_of(dpi, 0, 0);
+      struct main_layout g;
+      int const caption_h = heights[k];
+      int const group_h = layout_scale(ADC_MAIN_GROUP_H, dpi);
+
+      main_compute(&c,
+                   dpi,
+                   layout_scale(ADC_MAIN_SETTINGS_MIN_W, dpi),
+                   layout_scale(settings_caption_logical, dpi),
+                   layout_scale(install_caption_logical, dpi),
+                   caption_h,
+                   &g);
+      TEST_CHECK_(g.settings_caption.bottom - g.settings_caption.top == caption_h,
+                  "dpi %u height %d: the caption is %d tall",
+                  (unsigned)dpi,
+                  caption_h,
+                  (int)(g.settings_caption.bottom - g.settings_caption.top));
+      TEST_CHECK_(g.settings_frame.top - g.settings_caption.top == caption_h / 2,
+                  "dpi %u height %d: the line sits %d under the caption top",
+                  (unsigned)dpi,
+                  caption_h,
+                  (int)(g.settings_frame.top - g.settings_caption.top));
+      TEST_CHECK_((g.settings_caption.top + g.settings_caption.bottom) / 2 == g.settings_frame.top,
+                  "dpi %u height %d: the line misses the middle of the caption",
+                  (unsigned)dpi,
+                  caption_h);
+      TEST_CHECK_(g.settings_frame.bottom - g.settings_frame.top == group_h,
+                  "dpi %u height %d: the frame is %d tall",
+                  (unsigned)dpi,
+                  caption_h,
+                  (int)(g.settings_frame.bottom - g.settings_frame.top));
+      TEST_CHECK_(g.install_frame.top - g.install_caption.top == caption_h / 2,
+                  "dpi %u height %d: the second group is not balanced the same way",
+                  (unsigned)dpi,
+                  caption_h);
+    }
   }
-  cndvar_exit(&job.done);
+}
+
+/**
+ * @brief The frame line must run through the middle of the caption
+ *
+ * A fixed offset only holds at one dpi, which is exactly the defect this replaces.  Both
+ * groups are checked: they share the code that places a caption on a frame.
+ */
+static void test_caption_rides_the_frame(void) {
+  int i = 0;
+  for (i = 0; i < GEOMETRY_DPI_COUNT; i++) {
+    UINT const dpi = geometry_dpi_list[i];
+    struct main_layout const g = compute(dpi, 0, 0, layout_scale(settings_caption_logical, dpi));
+    RECT const *frames[2];
+    RECT const *captions[2];
+    size_t nf = 0;
+    size_t nc = 0;
+    size_t k = 0;
+    frames_of(&g, frames, &nf);
+    captions_of(&g, captions, &nc);
+    TEST_CHECK(nf == nc);
+    for (k = 0; k < nf; k++) {
+      int const caption_mid = (int)((captions[k]->top + captions[k]->bottom) / 2);
+      int const frame_top = (int)frames[k]->top;
+      int const tolerance = (dpi >= 144) ? 2 : 1;
+      TEST_CHECK_(geometry_abs(caption_mid - frame_top) <= tolerance,
+                  "dpi %u group %u: caption middle %d, frame top %d",
+                  (unsigned)dpi,
+                  (unsigned)k,
+                  caption_mid,
+                  frame_top);
+    }
+  }
+}
+
+/**
+ * @brief The two groups of the band line up
+ *
+ * The same top, the same bottom, and the settings group on the left of the install group.
+ */
+static void test_groups_share_the_band(void) {
+  int i = 0;
+  for (i = 0; i < GEOMETRY_DPI_COUNT; i++) {
+    UINT const dpi = geometry_dpi_list[i];
+    struct main_layout const g = compute(dpi, 0, 0, layout_scale(settings_caption_logical, dpi));
+    TEST_CHECK_(g.settings_frame.top == g.install_frame.top,
+                "dpi %u: the frames start on different lines, %d and %d",
+                (unsigned)dpi,
+                (int)g.settings_frame.top,
+                (int)g.install_frame.top);
+    TEST_CHECK(g.settings_frame.bottom == g.install_frame.bottom);
+    TEST_CHECK(g.settings_frame.right <= g.install_frame.left);
+    TEST_CHECK(g.settings_frame.right < g.install_frame.left);
+  }
+}
+
+/**
+ * @brief The task buttons of the install group are one above the other
+ *
+ * Not side by side, and the group is tall enough to hold both with the same inset as the
+ * check boxes have.
+ */
+static void test_task_buttons_stack_in_group(void) {
+  int i = 0;
+  for (i = 0; i < GEOMETRY_DPI_COUNT; i++) {
+    UINT const dpi = geometry_dpi_list[i];
+    struct main_layout const g = compute(dpi, 0, 0, layout_scale(settings_caption_logical, dpi));
+    int const inset = layout_scale(ADC_MAIN_GROUP_INSET, dpi);
+    TEST_CHECK_(g.task_remove.top > g.task_install.bottom, "dpi %u: the task buttons overlap vertically", (unsigned)dpi);
+    TEST_CHECK_(g.task_install.left == g.task_remove.left, "dpi %u: the task buttons are not aligned", (unsigned)dpi);
+    TEST_CHECK(g.task_install.left - g.install_frame.left == inset);
+    TEST_CHECK(g.install_frame.right - g.task_install.right == inset);
+    TEST_CHECK(g.task_remove.bottom <= g.install_frame.bottom - inset + 1);
+    TEST_CHECK_(
+        g.install_frame.bottom - g.task_remove.bottom >= inset - 1, "dpi %u: the last task button has no room below it", (unsigned)dpi);
+  }
+}
+
+/**
+ * @brief The task buttons stay inside the frame of their group
+ *
+ * The minimum width was taken from the client size while ptMinTrackSize is the size of the
+ * whole window, so the last button stuck out of the frame.
+ */
+static void test_buttons_inside_the_frame(void) {
+  int i = 0;
+  for (i = 0; i < GEOMETRY_DPI_COUNT; i++) {
+    UINT const dpi = geometry_dpi_list[i];
+    RECT c;
+    struct main_layout g;
+    SetRect(&c, 0, 0, min_client_width(dpi), layout_scale(ADC_MAIN_WINDOW_H, dpi));
+    main_compute(&c,
+                 dpi,
+                 layout_scale(ADC_MAIN_SETTINGS_MIN_W, dpi),
+                 layout_scale(settings_caption_logical, dpi),
+                 layout_scale(install_caption_logical, dpi),
+                 layout_scale(ADC_LAYOUT_CAPTION_H, dpi),
+                 &g);
+    TEST_CHECK_(g.task_remove.right <= g.install_frame.right,
+                "dpi %u: button right %d exceeds frame right %d",
+                (unsigned)dpi,
+                (int)g.task_remove.right,
+                (int)g.install_frame.right);
+    TEST_CHECK(g.task_install.left >= g.install_frame.left);
+    TEST_CHECK(g.task_remove.right <= c.right);
+    TEST_CHECK(g.install_frame.right <= c.right);
+  }
+}
+
+/**
+ * @brief Everything scales with the dpi, nothing is measured twice
+ *
+ * Everything scaled twice (the width minus a logical margin, then scaled again) shows up
+ * here: the button of a 144dpi window must be 1.5 times as wide as the one of a 96dpi
+ * window.
+ */
+static void test_growth_is_proportional(void) {
+  struct main_layout const small = compute(96, 0, 0, 120);
+  struct main_layout const large = compute(144, 0, 0, 180);
+  TEST_CHECK_(
+      geometry_abs((small.task_remove.right - small.task_remove.left) * 144 / 96 - (large.task_remove.right - large.task_remove.left)) <= 2,
+      "task button does not scale");
+  TEST_CHECK_(geometry_abs((small.settings_frame.right - small.settings_frame.left) * 144 / 96 -
+                           (large.settings_frame.right - large.settings_frame.left)) <= 2,
+              "the settings group does not scale");
+}
+
+/**
+ * @brief The minimum width covers what the group needs
+ *
+ * The minimum width is a separate number from the group geometry.  If somebody shrinks it
+ * below what the group needs, the buttons overflow the frame again, and that happens
+ * outside main_compute(), so it has to be checked against the constants directly.
+ */
+static void test_minimum_covers_the_group(void) {
+  static int const width_parts[] = {
+      ADC_LAYOUT_MARGIN_X, ADC_LAYOUT_MARGIN_X, ADC_MAIN_SETTINGS_MIN_W, ADC_MAIN_GROUP_GAP, ADC_MAIN_GROUP_INSET, ADC_MAIN_GROUP_INSET};
+  static int const box_parts[] = {ADC_MAIN_GROUP_INSET, ADC_MAIN_CHECK_H, ADC_LAYOUT_GAP, ADC_MAIN_CHECK_H, ADC_MAIN_GROUP_INSET};
+  static int const task_parts[] = {ADC_MAIN_GROUP_INSET, ADC_MAIN_TASK_H, ADC_MAIN_TASK_GAP, ADC_MAIN_TASK_H, ADC_MAIN_GROUP_INSET};
+  size_t const boxes_in_the_catalog = 2;
+  int const room_of_the_catalog = ADC_MAIN_GROUP_INSET + (int)boxes_in_the_catalog * ADC_MAIN_CHECK_H +
+                                  (int)(boxes_in_the_catalog - 1) * ADC_LAYOUT_GAP + ADC_MAIN_GROUP_INSET;
+  int need = 0;
+  int boxes = 0;
+  int tasks = 0;
+  size_t i = 0;
+  for (i = 0; i < (sizeof(width_parts) / sizeof(width_parts[0])); i++) {
+    need += width_parts[i];
+  }
+  for (i = 0; i < (sizeof(box_parts) / sizeof(box_parts[0])); i++) {
+    boxes += box_parts[i];
+  }
+  for (i = 0; i < (sizeof(task_parts) / sizeof(task_parts[0])); i++) {
+    tasks += task_parts[i];
+  }
+  TEST_CHECK_((int)min_client_width(96) >= need, "minimum client width %d, the band needs %d", (int)min_client_width(96), need);
+  TEST_CHECK_(boxes == room_of_the_catalog,
+              "the layout gives the check boxes %d, the %u captions of the catalogue need %d",
+              boxes,
+              (unsigned)boxes_in_the_catalog,
+              room_of_the_catalog);
+  {
+    int const taller = (boxes > tasks) ? boxes : tasks;
+    TEST_CHECK_((int)ADC_MAIN_GROUP_H == taller, "the group height %d, the taller group needs %d", (int)ADC_MAIN_GROUP_H, taller);
+  }
+}
+
+/**
+ * @brief Nothing may leave the client area, not even at the smallest allowed window
+ */
+static void test_inside_the_client(void) {
+  int i = 0;
+  for (i = 0; i < GEOMETRY_DPI_COUNT; i++) {
+    RECT c;
+    struct main_layout g;
+    SetRect(&c, 0, 0, min_client_width(geometry_dpi_list[i]), layout_scale(ADC_MAIN_WINDOW_H, geometry_dpi_list[i]));
+    main_compute(&c,
+                 geometry_dpi_list[i],
+                 layout_scale(ADC_MAIN_SETTINGS_MIN_W, geometry_dpi_list[i]),
+                 layout_scale(settings_caption_logical, geometry_dpi_list[i]),
+                 layout_scale(install_caption_logical, geometry_dpi_list[i]),
+                 layout_scale(ADC_LAYOUT_CAPTION_H, geometry_dpi_list[i]),
+                 &g);
+    TEST_CHECK(g.install_frame.bottom <= c.bottom);
+    TEST_CHECK(g.settings_frame.bottom <= c.bottom);
+    TEST_CHECK(g.task_remove.bottom <= g.install_frame.bottom);
+  }
+}
+
+/**
+ * @brief The check boxes take their places in the stack without pushing anything out of the
+ *        client area
+ */
+static void test_checks_stack(void) {
+  int i = 0;
+  for (i = 0; i < GEOMETRY_DPI_COUNT; i++) {
+    RECT c;
+    struct main_layout g;
+    SetRect(&c, 0, 0, min_client_width(geometry_dpi_list[i]), layout_scale(ADC_MAIN_WINDOW_H, geometry_dpi_list[i]));
+    main_compute(&c,
+                 geometry_dpi_list[i],
+                 layout_scale(ADC_MAIN_SETTINGS_MIN_W, geometry_dpi_list[i]),
+                 layout_scale(settings_caption_logical, geometry_dpi_list[i]),
+                 layout_scale(install_caption_logical, geometry_dpi_list[i]),
+                 layout_scale(ADC_LAYOUT_CAPTION_H, geometry_dpi_list[i]),
+                 &g);
+    TEST_CHECK_(g.check_audiodg.bottom > g.check_audiodg.top, "dpi %u: the audiodg check has no height", (unsigned)geometry_dpi_list[i]);
+    TEST_CHECK_(
+        g.check_mixer.bottom <= g.check_audiodg.top, "dpi %u: the mixer check overlaps the audiodg check", (unsigned)geometry_dpi_list[i]);
+    TEST_CHECK(g.check_audiodg.left == g.check_mixer.left);
+    TEST_CHECK(g.check_mixer.left >= g.settings_frame.left);
+    TEST_CHECK(g.check_mixer.right <= g.settings_frame.right);
+    TEST_CHECK(g.check_audiodg.bottom <= g.settings_frame.bottom);
+    TEST_CHECK(g.check_audiodg.bottom <= c.bottom);
+    {
+      int const above = g.check_mixer.top - g.settings_frame.top;
+      int const below = g.settings_frame.bottom - g.check_audiodg.bottom;
+      TEST_CHECK_(geometry_abs(above - below) <= 1,
+                  "dpi %u: the boxes sit %d from the top and %d from the bottom",
+                  (unsigned)geometry_dpi_list[i],
+                  above,
+                  below);
+    }
+  }
+}
+
+/**
+ * @brief The group gets exactly the width its captions asked for
+ *
+ * The point of the settings group is its captions, and the room it gives them is measured
+ * at run time from those captions: a translation can be longer than the English text, and
+ * a language can bring a font of its own.  What the geometry has to guarantee is that the
+ * group gets exactly the width it asked for, so nothing is cut.  Two very different widths
+ * stand in for two languages here.
+ */
+static void test_group_follows_its_captions(void) {
+  static int const dpi = 96;
+  int const widths[] = {layout_scale(260, (UINT)dpi), layout_scale(420, (UINT)dpi)};
+  size_t i = 0;
+
+  for (i = 0; i < (sizeof(widths) / sizeof(widths[0])); i++) {
+    struct main_layout g;
+    RECT const c = client_of((UINT)dpi, 400, 0);
+    int const settings_w = widths[i];
+    int const inset = layout_scale(ADC_MAIN_GROUP_INSET, (UINT)dpi);
+
+    main_compute(&c,
+                 (UINT)dpi,
+                 settings_w,
+                 layout_scale(settings_caption_logical, (UINT)dpi),
+                 layout_scale(install_caption_logical, (UINT)dpi),
+                 layout_scale(ADC_LAYOUT_CAPTION_H, (UINT)dpi),
+                 &g);
+    TEST_CHECK_(g.check_mixer.right - g.check_mixer.left == settings_w - 2 * inset,
+                "%d: the check boxes got %d of the %d asked for",
+                settings_w,
+                (int)(g.check_mixer.right - g.check_mixer.left),
+                settings_w - 2 * inset);
+    TEST_CHECK(g.check_mixer.left - g.settings_frame.left == inset);
+    TEST_CHECK(g.settings_frame.right - g.settings_frame.left == settings_w);
+  }
+}
+
+/**
+ * @brief The narrowest window follows the width of the settings group
+ *
+ * A longer translation moves the window limit with it instead of leaving the group cut
+ * off.
+ */
+static void test_minimum_follows_the_group(void) {
+  static int const dpi = 96;
+  int const widths[] = {layout_scale(260, (UINT)dpi), layout_scale(420, (UINT)dpi)};
+  size_t i = 0;
+
+  for (i = 0; i < (sizeof(widths) / sizeof(widths[0])); i++) {
+    struct main_layout g;
+    RECT const c = client_of((UINT)dpi, 0, 0);
+    int const expected = widths[i] + layout_scale(ADC_MAIN_MIN_CLIENT_EXTRA_W, (UINT)dpi);
+
+    main_compute(&c, (UINT)dpi, widths[i], 0, 0, 0, &g);
+    TEST_CHECK_(
+        (int)g.min_client_width == expected, "%d: want %d (the group and the rest), got %d", widths[i], expected, (int)g.min_client_width);
+    {
+      RECT narrow;
+      struct main_layout at_limit;
+      SetRect(&narrow, 0, 0, g.min_client_width, layout_scale(ADC_MAIN_WINDOW_H, (UINT)dpi));
+      main_compute(&narrow, (UINT)dpi, widths[i], 0, 0, 0, &at_limit);
+      TEST_CHECK(at_limit.settings_frame.left >= 0);
+      TEST_CHECK(at_limit.install_frame.right <= narrow.right);
+      TEST_CHECK(at_limit.task_install.right <= at_limit.install_frame.right);
+    }
+  }
+}
+
+/**
+ * @brief The window is no bigger than the parts it holds
+ */
+static void test_window_is_no_bigger_than_its_parts(void) {
+  int i = 0;
+
+  for (i = 0; i < GEOMETRY_DPI_COUNT; i++) {
+    UINT const dpi = geometry_dpi_list[i];
+    RECT client;
+    struct main_layout g;
+    int const section = layout_scale(ADC_MAIN_SECTION_GAP, dpi);
+    int room = 0;
+
+    SetRect(&client, 0, 0, layout_scale(ADC_MAIN_WINDOW_W, dpi), layout_scale(ADC_MAIN_WINDOW_H, dpi));
+    main_compute(&client,
+                 dpi,
+                 layout_scale(ADC_MAIN_SETTINGS_MIN_W, dpi),
+                 layout_scale(settings_caption_logical, dpi),
+                 layout_scale(install_caption_logical, dpi),
+                 layout_scale(ADC_LAYOUT_CAPTION_H, dpi),
+                 &g);
+    /* the parts are scaled one by one, the height of the window as a whole */
+    room = g.settings_caption.top - g.button.bottom;
+    TEST_CHECK_(geometry_abs(room - section) <= geometry_slack,
+                "dpi %u: want %d of room between the button and the band, got %d",
+                (unsigned)dpi,
+                (int)section,
+                (int)room);
+    TEST_CHECK_(room >= 0, "dpi %u: the button sits on the band", (unsigned)dpi);
+    TEST_CHECK_(g.min_client_width <= client.right - client.left, "dpi %u: the two groups do not fit side by side", (unsigned)dpi);
+    TEST_CHECK_(
+        g.install_frame.right <= client.right - layout_scale(ADC_LAYOUT_MARGIN_X, dpi), "dpi %u: the band sticks out", (unsigned)dpi);
+    TEST_CHECK_(g.settings_caption.top >= 0, "dpi %u: the caption rides out of the window", (unsigned)dpi);
+    TEST_CHECK_(g.task_remove.bottom <= client.bottom - layout_scale(ADC_LAYOUT_MARGIN_BOTTOM, dpi),
+                "dpi %u: the band is not above the margin",
+                (unsigned)dpi);
+  }
 }
 
 TEST_LIST = {
+    {"geometry_caption_line_balance", test_caption_line_balance},
+    {"geometry_caption_rides_the_frame", test_caption_rides_the_frame},
+    {"geometry_groups_share_the_band", test_groups_share_the_band},
+    {"geometry_task_buttons_stack_in_group", test_task_buttons_stack_in_group},
+    {"geometry_buttons_inside_the_frame", test_buttons_inside_the_frame},
+    {"geometry_growth_is_proportional", test_growth_is_proportional},
+    {"geometry_minimum_covers_the_group", test_minimum_covers_the_group},
+    {"geometry_inside_the_client", test_inside_the_client},
+    {"geometry_checks_stack", test_checks_stack},
+    {"geometry_group_follows_its_captions", test_group_follows_its_captions},
+    {"geometry_minimum_follows_the_group", test_minimum_follows_the_group},
+    {"geometry_window_is_no_bigger_than_its_parts", test_window_is_no_bigger_than_its_parts},
     {"every_control_carries_the_font", test_every_control_carries_the_font_of_the_window},
     {"window_without_the_theme_is_traditional", test_window_without_the_theme_is_traditional},
     {"window_tells_that_it_waits", test_window_tells_that_it_waits},
-    {"blockers_window_shows_the_processes", test_blockers_window_shows_the_processes},
-    {"progress_window_keeps_its_size_and_font", test_progress_window_keeps_its_size_and_font},
-    {"progress_window_greys_the_asks", test_progress_window_greys_the_asks_and_stays},
-    {"progress_bar_follows_the_palette", test_progress_bar_follows_the_palette},
-    {"theme_change_reaches_every_window", test_theme_change_reaches_every_window},
-    {"theme_switch_detaches_the_theme", test_theme_switch_detaches_the_theme},
-    {"device_picker_label", test_device_picker_label},
-    {"picker_window_names_every_unit", test_picker_window_names_every_unit},
     {"auto_close_follows_the_run", test_auto_close_only_for_a_run_nobody_watches},
     {"result_dialog_follows_the_window", test_result_dialog_only_for_a_window_that_stays},
     {"auto_run_acts_on_the_state", test_auto_run_acts_on_the_state_it_is_for},

@@ -1,8 +1,10 @@
 #include "options.h"
 
 #include <string.h>
+#include <wchar.h>
 
 #include <ovarray.h>
+#include <ovprintf.h>
 #include <ovprintf_ex.h>
 
 /**
@@ -18,9 +20,13 @@ void options_default(struct options *const out) {
 
 /**
  * @brief One token of the command line
+ *
+ * The command line is what the system hands the process, and the system hands it as a wide
+ * text, so it is read as one: a form of the same text in UTF-8 would only have to be
+ * converted back to be read.
  */
 struct scanner {
-  char const *text;
+  wchar_t const *text;
   size_t pos;
 };
 
@@ -34,33 +40,33 @@ struct scanner {
  * @param token_size room of token
  * @return false at the end of the command line
  */
-static bool scanner_next(struct scanner *const sc, char *const token, size_t const token_size) {
-  while (sc->text[sc->pos] == ' ' || sc->text[sc->pos] == '\t') {
+static bool scanner_next(struct scanner *const sc, wchar_t *const token, size_t const token_size) {
+  while (sc->text[sc->pos] == L' ' || sc->text[sc->pos] == L'\t') {
     sc->pos++;
   }
-  if (sc->text[sc->pos] == '\0') {
+  if (sc->text[sc->pos] == L'\0') {
     return false;
   }
   bool quoted = false;
-  if (sc->text[sc->pos] == '"') {
+  if (sc->text[sc->pos] == L'"') {
     quoted = true;
     sc->pos++;
   }
   size_t n = 0;
-  for (; sc->text[sc->pos] != '\0'; sc->pos++) {
+  for (; sc->text[sc->pos] != L'\0'; sc->pos++) {
     if (quoted) {
-      if (sc->text[sc->pos] == '"') {
+      if (sc->text[sc->pos] == L'"') {
         sc->pos++;
         break;
       }
-    } else if (sc->text[sc->pos] == ' ' || sc->text[sc->pos] == '\t') {
+    } else if (sc->text[sc->pos] == L' ' || sc->text[sc->pos] == L'\t') {
       break;
     }
     if (n + 1 < token_size) {
       token[n++] = sc->text[sc->pos];
     }
   }
-  token[n] = '\0';
+  token[n] = L'\0';
   return true;
 }
 
@@ -75,46 +81,33 @@ static bool scanner_next(struct scanner *const sc, char *const token, size_t con
  * @param err receives a failure of the parsing
  * @return false only on a hard failure
  */
-bool options_parse(NATIVE_CHAR const *const command_line, struct options *const out, struct ov_error *const err) {
-  bool success = false;
-  char *text = NULL;
-  char token[256];
+NODISCARD bool options_parse(NATIVE_CHAR const *const command_line, struct options *const out, struct ov_error *const err) {
+  wchar_t token[256];
   struct scanner sc = {NULL, 0};
 
   if (!out) {
     OV_ERROR_SET_GENERIC(err, ov_error_generic_invalid_argument);
-    goto cleanup;
+    return false;
   }
   options_default(out);
   if ((command_line == NULL) || (command_line[0] == 0)) {
-    success = true;
-    goto cleanup;
-  }
-  if (!ov_sprintf_char(&text, err, NULL, "%ls", command_line)) {
-    OV_ERROR_ADD_TRACE(err);
-    goto cleanup;
+    return true;
   }
 
-  sc.text = text;
+  sc.text = command_line;
   sc.pos = 0;
-  while (scanner_next(&sc, token, sizeof(token))) {
-    if (strcmp(token, "-auto-run") == 0) {
+  while (scanner_next(&sc, token, sizeof(token) / sizeof(token[0]))) {
+    if (wcscmp(token, L"-auto-run") == 0) {
       out->auto_run = true;
-    } else if (strcmp(token, "-close-mixer") == 0) {
+    } else if (wcscmp(token, L"-close-mixer") == 0) {
       out->close_mixer = true;
-    } else if (strcmp(token, "-no-close-mixer") == 0) {
+    } else if (wcscmp(token, L"-no-close-mixer") == 0) {
       out->close_mixer = false;
-    } else if (strcmp(token, "-close-audiodg") == 0) {
+    } else if (wcscmp(token, L"-close-audiodg") == 0) {
       out->close_audiodg = true;
-    } else if (strcmp(token, "-no-close-audiodg") == 0) {
+    } else if (wcscmp(token, L"-no-close-audiodg") == 0) {
       out->close_audiodg = false;
     }
   }
-  success = true;
-
-cleanup:
-  if (text) {
-    OV_ARRAY_DESTROY(&text);
-  }
-  return success;
+  return true;
 }

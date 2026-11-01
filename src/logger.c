@@ -10,14 +10,27 @@
 #include <ovprintf_ex.h>
 #include <ovthreads.h>
 
+#include "clock_manager.h"
 #include "loggate.h"
 #include "paths.h"
-#include "process.h"
 
 static HANDLE g_file = INVALID_HANDLE_VALUE;
 static mtx_t g_lock;
 static bool g_lock_ready = false;
 static struct loggate g_gate;
+
+/**
+ * @brief The sizes the log works with
+ *
+ * The upper bound for the file: when a write would push it past this, the oldest records
+ * are dropped until nothing but the newest LOGGER_KEEP_BYTES are left; when a single
+ * record is bigger than the whole file, the file starts over with that record.
+ */
+enum {
+  LOGGER_MAX_BYTES = 100 * 1024,
+  LOGGER_KEEP_BYTES = 50 * 1024,
+  LOGGER_LINE_BYTES = 4 * 1024,
+};
 
 /**
  * @brief One line of a rendered error, shaped into the two record fields
@@ -34,8 +47,7 @@ static struct loggate g_gate;
  * @param message receives the line without its decorations, UTF-8
  * @param message_size room of message
  */
-static void
-logger_error_fields(char const *const line, char *const tag, size_t const tag_size, char *const message, size_t const message_size) {
+static void error_fields(char const *const line, char *const tag, size_t const tag_size, char *const message, size_t const message_size) {
   static char const *const markers[] = {"[ERROR] ", "[WARN] ", "[INFO] ", "[VERBOSE] "};
   char const *p = (line != NULL) ? line : "";
   size_t o = 0;
@@ -88,7 +100,7 @@ logger_error_fields(char const *const line, char *const tag, size_t const tag_si
  * @param level the level to name
  * @return a static string
  */
-static char const *logger_level_name(enum ov_error_severity const level) {
+static char const *level_name(enum ov_error_severity const level) {
   switch (level) {
   case ov_error_severity_error:
     return "error";
@@ -145,12 +157,12 @@ static size_t append_field(char *const out, size_t const pos, size_t const size,
  * @return how many bytes were written without the terminating NUL, or 0 when the line does
  *         not fit into size at all
  */
-static size_t logger_format_line(char *const out,
-                                 size_t const size,
-                                 uint64_t const time_ms_utc,
-                                 enum ov_error_severity const level,
-                                 char const *const tag,
-                                 char const *const message) {
+static size_t format_line(char *const out,
+                          size_t const size,
+                          uint64_t const time_ms_utc,
+                          enum ov_error_severity const level,
+                          char const *const tag,
+                          char const *const message) {
   char stamp[32];
   struct tm local;
   time_t seconds = 0;
@@ -178,7 +190,7 @@ static size_t logger_format_line(char *const out,
     return 0;
   }
   out[p++] = '\t';
-  p = append_field(out, p, size, logger_level_name(level));
+  p = append_field(out, p, size, level_name(level));
   if ((p + 1) >= size) {
     return 0;
   }
@@ -201,7 +213,7 @@ static size_t logger_format_line(char *const out,
  * @return how many bytes to drop from the front, 0 when nothing has to go, -1 when the
  *         record alone is bigger than the file may become
  */
-static long long logger_trim_size(long long const new_size, size_t const add_size) {
+static long long trim_size(long long const new_size, size_t const add_size) {
   if (new_size <= 0) {
     return 0; // nothing on disk yet, nothing to trim
   }
@@ -222,17 +234,6 @@ static long long logger_trim_size(long long const new_size, size_t const add_siz
 static bool logger_is_open(void) { return g_file != INVALID_HANDLE_VALUE; }
 
 /**
- * @brief Release a string this module handed out
- *
- * @param value set to NULL afterwards, NULL is allowed
- */
-static void logger_string_free(char **const value) {
-  if ((value != NULL) && (*value != NULL)) {
-    OV_FREE(value); // made by OV_REALLOC inside paths_replace_extension
-  }
-}
-
-/**
  * @brief Make the folder an installed copy writes its log into
  *
  * The name of the log is built without touching the disk, so the machine-wide folder is made
@@ -240,15 +241,20 @@ static void logger_string_free(char **const value) {
  * the executable already sits in.  Without the folder the open cannot succeed either, so a
  * failure here is the failure of the open.
  *
- * @param exe_path the executable the log belongs to, UTF-8
+ * @param exe_path the executable the log belongs to
  * @param err receives the failure of the folder
  * @return false when the folder could not be made
  */
-static bool logger_make_folder(char const *const exe_path, struct ov_error *const err) {
-  char *folder = NULL;
+static NODISCARD bool make_folder(wchar_t const *const exe_path, struct ov_error *const err) {
+  wchar_t *folder = NULL;
+  ov_tribool const installed = paths_is_in_program_files(exe_path, err);
   bool success = false;
 
-  if (!paths_is_in_program_files(exe_path)) {
+  if (installed == ov_indeterminate) {
+    OV_ERROR_ADD_TRACE(err);
+    goto cleanup;
+  }
+  if (installed == ov_false) {
     success = true; // a portable copy writes next to itself, its folder exists already
     goto cleanup;
   }
@@ -264,7 +270,9 @@ static bool logger_make_folder(char const *const exe_path, struct ov_error *cons
   success = true;
 
 cleanup:
-  paths_string_free(&folder);
+  if (folder != NULL) {
+    OV_ARRAY_DESTROY(&folder);
+  }
   return success;
 }
 
@@ -276,59 +284,56 @@ cleanup:
  * keeps its log under its own name in the folder paths_log_folder gives, because that copy is
  * run both by the person at the screen and by the task scheduler.
  *
- * @param exe_path the executable the log belongs to, UTF-8
+ * @param exe_path the executable the log belongs to
  * @param err receives the failure of the build
- * @return the path in UTF-8, NULL when it could not be built
- * @note Release with logger_string_free.
+ * @return the path, NULL when it could not be built
+ * @note Release with OV_ARRAY_DESTROY.
  */
-static char *logger_path_for_exe(char const *const exe_path, struct ov_error *const err) {
-  char *folder = NULL;
-  char *joined = NULL;
-  char *result = NULL;
-  size_t len = 0;
+static NODISCARD wchar_t *path_for_exe(wchar_t const *const exe_path, struct ov_error *const err) {
+  wchar_t *folder = NULL;
+  wchar_t *result = NULL;
   bool success = false;
 
   if (exe_path == NULL) {
     OV_ERROR_SET_GENERIC(err, ov_error_generic_invalid_argument);
     goto cleanup;
   }
-  if (!paths_is_in_program_files(exe_path)) {
-    result = paths_replace_extension(exe_path, ".log", err); // a portable copy keeps its log next to itself
-    if (result == NULL) {
+  {
+    ov_tribool const installed = paths_is_in_program_files(exe_path, err);
+
+    if (installed == ov_indeterminate) {
       OV_ERROR_ADD_TRACE(err);
       goto cleanup;
     }
-    success = true;
-    goto cleanup;
+    if (installed == ov_false) {
+      result = paths_replace_extension(exe_path, L".log", err); // a portable copy keeps its log next to itself
+      if (result == NULL) {
+        OV_ERROR_ADD_TRACE(err);
+        goto cleanup;
+      }
+      success = true;
+      goto cleanup;
+    }
   }
   folder = paths_log_folder(err);
   if (folder == NULL) {
     OV_ERROR_ADD_TRACE(err);
     goto cleanup;
   }
-  joined = paths_join(folder, "audient-device-closer.log", err);
-  if (joined == NULL) {
+  result = paths_join(folder, L"audient-device-closer.log", err);
+  if (result == NULL) {
     OV_ERROR_ADD_TRACE(err);
     goto cleanup;
   }
-  // the caller releases the result with logger_string_free, which frees a block of
-  // OV_REALLOC, so the joined string of ov_sprintf_char is copied into one
-  len = strlen(joined) + 1;
-  if (!OV_REALLOC(&result, len, sizeof(result[0]))) {
-    OV_ERROR_SET_GENERIC(err, ov_error_generic_out_of_memory);
-    goto cleanup;
-  }
-  memcpy(result, joined, len);
   success = true;
 
 cleanup:
-  paths_string_free(&folder);
-  if (joined != NULL) {
-    OV_ARRAY_DESTROY(&joined); // made by paths_join
+  if (folder != NULL) {
+    OV_ARRAY_DESTROY(&folder);
   }
   if (!success) {
     if (result != NULL) {
-      OV_FREE(&result);
+      OV_ARRAY_DESTROY(&result);
     }
   }
   return success ? result : NULL;
@@ -346,7 +351,7 @@ cleanup:
  * @param err receives the failure of the rewrite
  * @return false when the file could not be trimmed
  */
-static bool trim(HANDLE const h, long long const keep_size, struct ov_error *const err) {
+static NODISCARD bool trim(HANDLE const h, long long const keep_size, struct ov_error *const err) {
   bool success = false;
   char *buf = NULL;
   LARGE_INTEGER size;
@@ -421,20 +426,28 @@ cleanup:
  * @param err receives the failure of the write
  * @return false when the record did not reach the file
  */
-static bool write_line(HANDLE const h, char const *const line, struct ov_error *const err) {
+static NODISCARD bool write_line(HANDLE const h, char const *const line, struct ov_error *const err) {
   DWORD written = 0;
   size_t const len = strlen(line);
+  bool success = false;
 
   if (!WriteFile(h, line, (DWORD)len, &written, NULL) || (written != (DWORD)len)) {
     OV_ERROR_SET_HRESULT(err, HRESULT_FROM_WIN32(GetLastError()));
-    return false;
+    goto cleanup;
   }
   if (!WriteFile(h, "\n", 1, &written, NULL) || (written != 1)) {
     OV_ERROR_SET_HRESULT(err, HRESULT_FROM_WIN32(GetLastError()));
-    return false;
+    goto cleanup;
   }
-  FlushFileBuffers(h); // this file is for reading after something went wrong
-  return true;
+  // a line that did not reach the disk is missing when the log is read back
+  if (!FlushFileBuffers(h)) {
+    OV_ERROR_SET_HRESULT(err, HRESULT_FROM_WIN32(GetLastError()));
+    goto cleanup;
+  }
+  success = true;
+
+cleanup:
+  return success;
 }
 
 /**
@@ -444,7 +457,7 @@ static bool write_line(HANDLE const h, char const *const line, struct ov_error *
  * @param err receives the failure of the write
  * @return false when the note did not reach the file
  */
-static bool write_trim_note(HANDLE const h, struct ov_error *const err) {
+static NODISCARD bool write_trim_note(HANDLE const h, struct ov_error *const err) {
   char note[128];
 
   if (OV_SNPRINTF(note, sizeof(note), NULL, "the log exceeded %d bytes, the oldest records were dropped", LOGGER_MAX_BYTES) > 0) {
@@ -465,11 +478,10 @@ static bool write_trim_note(HANDLE const h, struct ov_error *const err) {
  * @param err receives the failure of the open
  * @return false when the log could not be opened
  */
-bool logger_open(struct ov_error *const err) {
+NODISCARD bool logger_open(struct ov_error *const err) {
   bool success = false;
-  char *exe = NULL;
-  char *path = NULL;
-  wchar_t wide[PATHS_MAX] = {0};
+  wchar_t *exe = NULL;
+  wchar_t *path = NULL;
   HANDLE h = INVALID_HANDLE_VALUE;
   LARGE_INTEGER size;
   LARGE_INTEGER zero;
@@ -483,23 +495,16 @@ bool logger_open(struct ov_error *const err) {
     OV_ERROR_ADD_TRACE(err);
     goto cleanup;
   }
-  path = logger_path_for_exe(exe, err);
+  path = path_for_exe(exe, err);
   if (path == NULL) {
     OV_ERROR_ADD_TRACE(err);
     goto cleanup;
   }
-  if (!logger_make_folder(exe, err)) {
+  if (!make_folder(exe, err)) {
     OV_ERROR_ADD_TRACE(err);
     goto cleanup;
   }
-  {
-    int const n = OV_SNPRINTF(wide, sizeof(wide) / sizeof(wide[0]), NULL, L"%s", path);
-    if ((n < 0) || ((size_t)n >= (sizeof(wide) / sizeof(wide[0])))) {
-      OV_ERROR_SET_GENERIC(err, ov_error_generic_invalid_argument);
-      goto cleanup;
-    }
-  }
-  h = CreateFileW(wide, GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ, NULL, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+  h = CreateFileW(path, GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ, NULL, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
   if (h == INVALID_HANDLE_VALUE) {
     OV_ERROR_SET_HRESULT(err, HRESULT_FROM_WIN32(GetLastError()));
     goto cleanup;
@@ -528,12 +533,21 @@ bool logger_open(struct ov_error *const err) {
   success = true;
 cleanup:
   if (h != INVALID_HANDLE_VALUE) {
-    CloseHandle(h);
+    if (!CloseHandle(h)) {
+      if (success) {
+        OV_ERROR_SET_HRESULT(err, HRESULT_FROM_WIN32(GetLastError()));
+      } else {
+        OV_ERROR_PUSH(err, ov_error_type_hresult, HRESULT_FROM_WIN32(GetLastError()), NULL);
+      }
+      success = false;
+    }
   }
   if (exe != NULL) {
-    OV_ARRAY_DESTROY(&exe); // made by ov_sprintf_char
+    OV_ARRAY_DESTROY(&exe);
   }
-  logger_string_free(&path);
+  if (path != NULL) {
+    OV_ARRAY_DESTROY(&path);
+  }
   return success;
 }
 
@@ -546,8 +560,8 @@ cleanup:
  * @param err receives the failure of the write
  * @return false when the record did not reach the file
  */
-static bool
-logger_write_level(enum ov_error_severity const level, char const *const tag, char const *const message, struct ov_error *const err) {
+static NODISCARD bool
+write_level(enum ov_error_severity const level, char const *const tag, char const *const message, struct ov_error *const err) {
   bool success = false;
   bool locked = false;
   char line[LOGGER_LINE_BYTES];
@@ -562,7 +576,7 @@ logger_write_level(enum ov_error_severity const level, char const *const tag, ch
     success = true; // no log wanted: reporting is not a failure
     goto cleanup;
   }
-  if (logger_format_line(line, sizeof(line), process_now_ms(), level, tag, message) == 0) {
+  if (format_line(line, sizeof(line), clock_now_ms(), level, tag, message) == 0) {
     OV_ERROR_SET_GENERIC(err, ov_error_generic_unexpected);
     goto cleanup;
   }
@@ -574,7 +588,7 @@ logger_write_level(enum ov_error_severity const level, char const *const tag, ch
     OV_ERROR_SET_HRESULT(err, HRESULT_FROM_WIN32(GetLastError()));
     goto cleanup;
   }
-  trim_to = logger_trim_size(size.QuadPart, strlen(line) + 1);
+  trim_to = trim_size(size.QuadPart, strlen(line) + 1);
   if (trim_to < 0) {
     LARGE_INTEGER zero;
     zero.QuadPart = 0;
@@ -609,8 +623,8 @@ cleanup:
  * @param err receives the failure of the write
  * @return false when the record did not reach the file
  */
-bool logger_write(char const *const tag, char const *const message, struct ov_error *const err) {
-  return logger_write_level(ov_error_severity_info, tag, message, err);
+static NODISCARD bool logger_write(char const *const tag, char const *const message, struct ov_error *const err) {
+  return write_level(ov_error_severity_info, tag, message, err);
 }
 
 /**
@@ -668,12 +682,24 @@ void logger_log_run_end(char const *const sentence) {
 /**
  * @brief Flush and release the log
  *
- * Safe to call without an open log.
+ * Safe to call without an open log.  The log is released whether or not the flush worked.
  */
-void logger_close(void) {
+NODISCARD bool logger_close(struct ov_error *const err) {
+  bool success = true;
+
   if (g_file != INVALID_HANDLE_VALUE) {
-    FlushFileBuffers(g_file);
-    CloseHandle(g_file);
+    if (!FlushFileBuffers(g_file)) {
+      OV_ERROR_SET_HRESULT(err, HRESULT_FROM_WIN32(GetLastError()));
+      success = false;
+    }
+    if (!CloseHandle(g_file)) {
+      if (success) {
+        OV_ERROR_SET_HRESULT(err, HRESULT_FROM_WIN32(GetLastError()));
+      } else {
+        OV_ERROR_PUSH(err, ov_error_type_hresult, HRESULT_FROM_WIN32(GetLastError()), NULL);
+      }
+      success = false;
+    }
     g_file = INVALID_HANDLE_VALUE;
   }
   loggate_release(&g_gate); // the next open is a new reader of the file
@@ -681,6 +707,7 @@ void logger_close(void) {
     mtx_destroy(&g_lock);
     g_lock_ready = false;
   }
+  return success;
 }
 
 /**
@@ -713,9 +740,9 @@ void logger_output(enum ov_error_severity const severity, char const *const str)
       if (n > 0) {
         memcpy(one, start, n);
         one[n] = '\0';
-        logger_error_fields(one, tag, sizeof(tag), message, sizeof(message));
+        error_fields(one, tag, sizeof(tag), message, sizeof(message));
         if (message[0] != '\0') {
-          if (!logger_write_level(severity, tag, message, &err)) {
+          if (!write_level(severity, tag, message, &err)) {
             OV_ERROR_REPORT(&err, NULL);
           }
         }

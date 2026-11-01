@@ -4,7 +4,7 @@
 
 #include <windows.h>
 
-#include "veto_event.h"
+struct veto_event;
 
 /**
  * @brief The window that names the processes that hold the device
@@ -29,7 +29,13 @@
  *
  * @param owner the window that waits while the list is read
  * @param events the records to show, may be NULL
+ * @param closed the process ids this run closed, the records that name them are not shown
+ * @param closed_count how many there are
  * @param err receives the failure of the start-up
  * @return false when the window could not be made
  */
-bool ui_blockers_window_show(HWND const owner, struct veto_event const *const events, struct ov_error *const err);
+NODISCARD bool ui_blockers_window_show(HWND const owner,
+                                       struct veto_event const *const events,
+                                       uint32_t const *const closed,
+                                       size_t const closed_count,
+                                       struct ov_error *const err);

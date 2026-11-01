@@ -3,6 +3,7 @@
 #include <windows.h>
 
 #include <string.h>
+#include <wchar.h>
 
 #ifdef __GNUC__
 #  pragma GCC diagnostic push
@@ -16,25 +17,36 @@
 #endif // __GNUC__
 
 #include <ovarray.h>
+#include <ovprintf.h>
 #include <ovprintf_ex.h>
 
 #include "paths.h"
 
-/**
- * @brief The delay a run nobody is watching waits before it looks at the devices
- *
- * The settings file may say another value; this is the one the
- * settings fall back to when the file does not say.
- */
-enum { adc_settings_auto_run_delay_ms = 5000 };
+#include "device_probe.h"
 
 /**
- * @brief How long the confirmation waits for a released device to come back
+ * @brief The numbers the settings fall back to, and the range a key may name
  *
- * The settings file may say another value; this is the one the settings fall back to when
- * the file does not say.
+ * The settings file may say another value for the optional keys; the defaults below are
+ * the ones a run uses when the file does not say.  The limits are the room a key is given,
+ * so a value that cannot be meant is refused at the read rather than taken as far as it
+ * reaches.  They sit together so that the range of every key can be read at once.
  */
-enum { adc_settings_confirm_max_wait_ms = 5000 };
+enum {
+  //!< the delay a run nobody is watching waits before it looks at the devices
+  adc_settings_auto_run_delay_ms = 5000,
+  //!< how long the confirmation waits for a released device to come back
+  adc_settings_confirm_max_wait_ms = 5000,
+  //!< how long a run waits for the veto record of the attempt it just made
+  adc_settings_veto_max_wait_ms = 5000,
+
+  //!< the largest number a wait the settings name may be, in milliseconds
+  adc_settings_wait_max_ms = 600000,
+  //!< the event id of the veto record fits the field the log carries it in
+  adc_settings_event_id_max = 65535,
+  //!< the largest settings file this program reads, in bytes
+  adc_settings_file_max_bytes = 0x400000,
+};
 
 /**
  * @brief The allocator yyjson works through
@@ -46,7 +58,7 @@ enum { adc_settings_confirm_max_wait_ms = 5000 };
  * @param size how many bytes to make
  * @return the block, NULL when there is none
  */
-static void *ov_alloc(void *const ctx, size_t const size) {
+static void *json_alloc(void *const ctx, size_t const size) {
   void *p = NULL;
   (void)ctx;
   if (!OV_REALLOC(&p, size, 1)) {
@@ -64,12 +76,12 @@ static void *ov_alloc(void *const ctx, size_t const size) {
  * @param size how big it should be
  * @return the block, NULL when there is none
  */
-static void *ov_realloc(void *const ctx, void *const ptr, size_t const old_size, size_t const size) {
+static void *json_realloc(void *const ctx, void *const ptr, size_t const old_size, size_t const size) {
   void *p = ptr;
   (void)ctx;
   (void)old_size;
   if (p == NULL) {
-    return ov_alloc(ctx, size);
+    return json_alloc(ctx, size);
   }
   if (!OV_REALLOC(&p, size, 1)) {
     return NULL;
@@ -83,51 +95,18 @@ static void *ov_realloc(void *const ctx, void *const ptr, size_t const old_size,
  * @param ctx unused
  * @param ptr the block to release, NULL is allowed
  */
-static void ov_release(void *const ctx, void *const ptr) {
+static void json_release(void *const ctx, void *const ptr) {
   void *p = ptr;
   (void)ctx;
   OV_FREE(&p);
 }
 
 static struct yyjson_alc const kAlc = {
-    .malloc = ov_alloc,
-    .realloc = ov_realloc,
-    .free = ov_release,
+    .malloc = json_alloc,
+    .realloc = json_realloc,
+    .free = json_release,
     .ctx = NULL,
 };
-
-/**
- * @brief A copy of a string of the settings file
- *
- * MEM_FILEPOS_PARAMS hands the position of the caller down: the allocator records where a
- * block was made, and without it every copy in this file would be blamed on this helper in
- * a leak report.
- *
- * @param src the string to copy, UTF-8
- * @return the copy, NULL when there is no memory for it
- * @note Release with OV_FREE.
- */
-static char *dup_text(char const *const src MEM_FILEPOS_PARAMS) {
-  char *dst = NULL;
-  size_t const len = strlen(src) + 1;
-  if (!ov_mem_realloc(&dst, len, sizeof(dst[0]) MEM_FILEPOS_VALUES_PASSTHRU)) {
-    return NULL;
-  }
-  memcpy(dst, src, len);
-  return dst;
-}
-
-/**
- * @brief A copy of a string of the settings file, made at the position of the call
- *
- * The caller should not have to write MEM_FILEPOS_VALUES itself: this appends the position
- * of the call, which is what dup_text hands down to the allocator.
- *
- * @param src the string to copy, UTF-8
- * @return the copy, NULL when there is no memory for it
- * @note Release with OV_FREE.
- */
-#define DUP_TEXT(src) dup_text((src)MEM_FILEPOS_VALUES)
 
 /**
  * @brief Read one string of the settings file
@@ -139,11 +118,12 @@ static char *dup_text(char const *const src MEM_FILEPOS_PARAMS) {
  * @param root the object that holds the key
  * @param key the key to read
  * @param required when true, a key that is not there is an error
- * @param out receives the value, release with settings_string_free
+ * @param out receives the value, release with OV_ARRAY_DESTROY
  * @param err receives the problem of the key
  * @return false when the key is missing, of the wrong type or out of memory
  */
-static bool get_str(yyjson_val *const root, char const *const key, bool const required, char **const out, struct ov_error *const err) {
+static NODISCARD bool
+get_str(yyjson_val *const root, char const *const key, bool const required, wchar_t **const out, struct ov_error *const err) {
   yyjson_val *v = NULL;
 
   *out = NULL;
@@ -160,10 +140,24 @@ static bool get_str(yyjson_val *const root, char const *const key, bool const re
     OV_ERROR_SETF(err, ov_error_type_generic, ov_error_generic_invalid_argument, "%1$hs must be a string", "%1$hs must be a string", key);
     return false;
   }
-  *out = DUP_TEXT(yyjson_get_str(v));
-  if (*out == NULL) {
-    OV_ERROR_SET_GENERIC(err, ov_error_generic_out_of_memory);
-    return false;
+  {
+    char const *const src = yyjson_get_str(v);
+
+    // an empty value is handed on as an empty string: ov_sprintf_wchar reads an empty
+    // result as a format mismatch, so it is not the one to ask for it
+    if (src[0] == '\0') {
+      if (!OV_ARRAY_GROW(out, 1)) {
+        OV_ERROR_SET_GENERIC(err, ov_error_generic_out_of_memory);
+        return false;
+      }
+      OV_ARRAY_SET_LENGTH(*out, 0);
+      (*out)[0] = L'\0';
+      return true;
+    }
+    if (!ov_sprintf_wchar(out, err, NULL, L"%s", src)) {
+      OV_ERROR_ADD_TRACE(err);
+      return false;
+    }
   }
   return true;
 }
@@ -238,7 +232,8 @@ static bool get_ulong_full(yyjson_val *const root,
  * @param err receives the problem of the key
  * @return false when the key is of the wrong type
  */
-static bool get_bool_optional(yyjson_val *const root, char const *const key, bool const def, bool *const out, struct ov_error *const err) {
+static NODISCARD bool
+get_bool_optional(yyjson_val *const root, char const *const key, bool const def, bool *const out, struct ov_error *const err) {
   yyjson_val *v = yyjson_obj_get(root, key);
 
   *out = def;
@@ -262,21 +257,20 @@ static bool get_bool_optional(yyjson_val *const root, char const *const key, boo
  * @param err receives the problem of the entry
  * @return false when the entry is refused or there is no memory for it
  */
-static bool mixer_name_push(char ***const out, yyjson_val *const item, struct ov_error *const err) {
+static NODISCARD bool mixer_name_push(wchar_t ***const out, yyjson_val *const item, struct ov_error *const err) {
   bool success = false;
-  char *name = NULL;
+  wchar_t *name = NULL;
 
   if (!yyjson_is_str(item)) {
     OV_ERROR_SET(err, ov_error_type_generic, ov_error_generic_invalid_argument, "every mixer image name must be a string");
     goto cleanup;
   }
-  name = DUP_TEXT(yyjson_get_str(item));
-  if (name == NULL) {
-    OV_ERROR_SET_GENERIC(err, ov_error_generic_out_of_memory);
+  if (yyjson_get_str(item)[0] == '\0') {
+    OV_ERROR_SET(err, ov_error_type_generic, ov_error_generic_invalid_argument, "a mixer image name must not be empty");
     goto cleanup;
   }
-  if (name[0] == '\0') {
-    OV_ERROR_SET(err, ov_error_type_generic, ov_error_generic_invalid_argument, "a mixer image name must not be empty");
+  if (!ov_sprintf_wchar(&name, err, NULL, L"%s", yyjson_get_str(item))) {
+    OV_ERROR_ADD_TRACE(err);
     goto cleanup;
   }
   if (!OV_ARRAY_PUSH(out, name)) {
@@ -288,7 +282,7 @@ static bool mixer_name_push(char ***const out, yyjson_val *const item, struct ov
 
 cleanup:
   if (name != NULL) {
-    OV_FREE(&name);
+    OV_ARRAY_DESTROY(&name);
   }
   return success;
 }
@@ -305,8 +299,8 @@ cleanup:
  * @param err receives the problem of the list
  * @return false when the list is missing, of the wrong shape or out of memory
  */
-static bool
-get_str_list(yyjson_val *const root, char const *const key, bool const required, char ***const out, struct ov_error *const err) {
+static NODISCARD bool
+get_str_list(yyjson_val *const root, char const *const key, bool const required, wchar_t ***const out, struct ov_error *const err) {
   yyjson_val *v = yyjson_obj_get(root, key);
   size_t n = 0;
   bool pushed_all = true;
@@ -357,10 +351,10 @@ get_str_list(yyjson_val *const root, char const *const key, bool const required,
  * @param err receives the problem of the entry
  * @return false when the entry is not a device this program can run with
  */
-static bool device_entry_load(yyjson_val *const item, struct device_entry *const out, struct ov_error *const err) {
+static NODISCARD bool device_entry_load(yyjson_val *const item, struct device_entry *const out, struct ov_error *const err) {
   bool success = false;
-  char *name = NULL;
-  char *id = NULL;
+  wchar_t *name = NULL;
+  wchar_t *id = NULL;
 
   if (!yyjson_is_obj(item)) {
     OV_ERROR_SET(err, ov_error_type_generic, ov_error_generic_invalid_argument, "every device must be an object");
@@ -370,7 +364,7 @@ static bool device_entry_load(yyjson_val *const item, struct device_entry *const
     OV_ERROR_ADD_TRACE(err);
     goto cleanup;
   }
-  if (name[0] == '\0') {
+  if (name[0] == L'\0') {
     OV_ERROR_SET(err, ov_error_type_generic, ov_error_generic_invalid_argument, "a device name must not be empty");
     goto cleanup;
   }
@@ -378,7 +372,7 @@ static bool device_entry_load(yyjson_val *const item, struct device_entry *const
     OV_ERROR_ADD_TRACE(err);
     goto cleanup;
   }
-  if (id[0] == '\0') {
+  if (id[0] == L'\0') {
     OV_ERROR_SET(err, ov_error_type_generic, ov_error_generic_invalid_argument, "a device identifier must not be empty");
     goto cleanup;
   }
@@ -390,10 +384,10 @@ static bool device_entry_load(yyjson_val *const item, struct device_entry *const
 
 cleanup:
   if (name) {
-    OV_FREE(&name);
+    OV_ARRAY_DESTROY(&name);
   }
   if (id) {
-    OV_FREE(&id);
+    OV_ARRAY_DESTROY(&id);
   }
   return success;
 }
@@ -406,7 +400,7 @@ cleanup:
  * @param err receives the problem of the entry
  * @return false when the entry is refused or there is no memory for it
  */
-static bool device_push(struct device_entry **const out, yyjson_val *const item, struct ov_error *const err) {
+static NODISCARD bool device_push(struct device_entry **const out, yyjson_val *const item, struct ov_error *const err) {
   bool success = false;
   struct device_entry e;
 
@@ -423,8 +417,12 @@ static bool device_push(struct device_entry **const out, yyjson_val *const item,
 
 cleanup:
   if (!success) {
-    OV_FREE(&e.id);
-    OV_FREE(&e.name);
+    if (e.id != NULL) {
+      OV_ARRAY_DESTROY(&e.id);
+    }
+    if (e.name != NULL) {
+      OV_ARRAY_DESTROY(&e.name);
+    }
   }
   return success;
 }
@@ -437,7 +435,7 @@ cleanup:
  * @param err receives the problem of the table
  * @return false when the table is not one this program can run with
  */
-static bool get_devices(yyjson_val *const root, struct device_entry **const out, struct ov_error *const err) {
+static NODISCARD bool get_devices(yyjson_val *const root, struct device_entry **const out, struct ov_error *const err) {
   bool success = false;
   yyjson_val *v = yyjson_obj_get(root, "devices");
   size_t n = 0;
@@ -480,7 +478,7 @@ cleanup:
  * @param err receives the problem of the devices
  * @return false when the table is missing or not one this program can run with
  */
-static bool load_devices(yyjson_val *const root, struct settings *const out, struct ov_error *const err) {
+static NODISCARD bool load_devices(yyjson_val *const root, struct settings *const out, struct ov_error *const err) {
   if (!get_devices(root, &out->devices, err)) {
     OV_ERROR_ADD_TRACE(err);
     return false;
@@ -501,14 +499,14 @@ static bool load_devices(yyjson_val *const root, struct settings *const out, str
  * @brief Fill the settings from the text of the file
  *
  * Nothing is read from disk here.  Required keys must be strings, veto_event_id must
- * be a number in 1..65535.
+ * be a number in 1..adc_settings_event_id_max.
  *
  * @param json_utf8 the contents of the settings file, UTF-8
  * @param out filled in and owned by the caller afterwards; release with settings_release
  * @param err receives the first problem of the file
  * @return false when the text does not describe settings this program can run with
  */
-static bool settings_apply_json(char const *const json_utf8, struct settings *const out, struct ov_error *const err) {
+static NODISCARD bool apply_json(char const *const json_utf8, struct settings *const out, struct ov_error *const err) {
   bool success = false;
   yyjson_doc *doc = NULL;
   yyjson_val *root = NULL;
@@ -552,7 +550,7 @@ static bool settings_apply_json(char const *const json_utf8, struct settings *co
     OV_ERROR_ADD_TRACE(err);
     goto cleanup;
   }
-  if (!get_ulong_full(root, "veto_event_id", true, 1, 65535, 0, &out->veto_event_id, err)) {
+  if (!get_ulong_full(root, "veto_event_id", true, 1, adc_settings_event_id_max, 0, &out->veto_event_id, err)) {
     OV_ERROR_ADD_TRACE(err);
     goto cleanup;
   }
@@ -560,15 +558,32 @@ static bool settings_apply_json(char const *const json_utf8, struct settings *co
     OV_ERROR_ADD_TRACE(err);
     goto cleanup;
   }
+  if (!get_str(root, "task_dir", false, &out->task_dir, err)) {
+    OV_ERROR_ADD_TRACE(err);
+    goto cleanup;
+  }
   if (!get_str(root, "task_name", false, &out->task_name, err)) {
     OV_ERROR_ADD_TRACE(err);
     goto cleanup;
   }
-  if (!get_ulong_full(root, "auto_run_delay_ms", false, 0, 600000, adc_settings_auto_run_delay_ms, &out->auto_run_delay_ms, err)) {
+  if (!get_ulong_full(
+          root, "auto_run_delay_ms", false, 0, adc_settings_wait_max_ms, adc_settings_auto_run_delay_ms, &out->auto_run_delay_ms, err)) {
     OV_ERROR_ADD_TRACE(err);
     goto cleanup;
   }
-  if (!get_ulong_full(root, "confirm_max_wait_ms", false, 0, 600000, adc_settings_confirm_max_wait_ms, &out->confirm_max_wait_ms, err)) {
+  if (!get_ulong_full(root,
+                      "confirm_max_wait_ms",
+                      false,
+                      0,
+                      adc_settings_wait_max_ms,
+                      adc_settings_confirm_max_wait_ms,
+                      &out->confirm_max_wait_ms,
+                      err)) {
+    OV_ERROR_ADD_TRACE(err);
+    goto cleanup;
+  }
+  if (!get_ulong_full(
+          root, "veto_max_wait_ms", false, 0, adc_settings_wait_max_ms, adc_settings_veto_max_wait_ms, &out->veto_max_wait_ms, err)) {
     OV_ERROR_ADD_TRACE(err);
     goto cleanup;
   }
@@ -580,6 +595,12 @@ static bool settings_apply_json(char const *const json_utf8, struct settings *co
     OV_ERROR_ADD_TRACE(err);
     goto cleanup;
   }
+#ifndef NDEBUG
+  if (!get_str(root, "simulate", false, &out->simulate, err)) {
+    OV_ERROR_ADD_TRACE(err);
+    goto cleanup;
+  }
+#endif
   success = true;
 
 cleanup:
@@ -595,29 +616,24 @@ cleanup:
 /**
  * @brief Read a whole file into memory
  *
- * @param path_utf8 the file to read, UTF-8
+ * @param path the file to read
  * @param out_text receives the contents, release with OV_FREE
  * @param err receives the failure of the read
  * @return false when the file could not be read
  */
-static bool read_whole_file(char const *const path_utf8, char **const out_text, struct ov_error *const err) {
+static NODISCARD bool read_whole_file(wchar_t const *const path, char **const out_text, struct ov_error *const err) {
   bool success = false;
-  wchar_t *path = NULL;
   char *text = NULL;
   HANDLE h = INVALID_HANDLE_VALUE;
   LARGE_INTEGER size;
   DWORD got = 0;
 
-  if (!ov_sprintf_wchar(&path, err, NULL, L"%s", path_utf8)) {
-    OV_ERROR_ADD_TRACE(err);
-    goto cleanup;
-  }
   h = CreateFileW(path, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
   if (h == INVALID_HANDLE_VALUE) {
-    OV_ERROR_SETF(err, ov_error_type_hresult, (int)HRESULT_FROM_WIN32(GetLastError()), "cannot open %1$hs", "cannot open %1$hs", path_utf8);
+    OV_ERROR_SETF(err, ov_error_type_hresult, (int)HRESULT_FROM_WIN32(GetLastError()), "cannot open %1$ls", "cannot open %1$ls", path);
     goto cleanup;
   }
-  if (!GetFileSizeEx(h, &size) || (size.QuadPart < 0) || (size.QuadPart > (LONGLONG)0x400000)) {
+  if (!GetFileSizeEx(h, &size) || (size.QuadPart < 0) || (size.QuadPart > (LONGLONG)adc_settings_file_max_bytes)) {
     OV_ERROR_SET(err, ov_error_type_generic, ov_error_generic_invalid_argument, "the settings file has an unusable size");
     goto cleanup;
   }
@@ -639,14 +655,18 @@ static bool read_whole_file(char const *const path_utf8, char **const out_text, 
   success = true;
 
 cleanup:
-  if (path) {
-    OV_ARRAY_DESTROY(&path);
-  }
   if (text) {
     OV_FREE(&text);
   }
   if (h != INVALID_HANDLE_VALUE) {
-    CloseHandle(h);
+    if (!CloseHandle(h)) {
+      if (success) {
+        OV_ERROR_SET_HRESULT(err, HRESULT_FROM_WIN32(GetLastError()));
+      } else {
+        OV_ERROR_PUSH(err, ov_error_type_hresult, HRESULT_FROM_WIN32(GetLastError()), NULL);
+      }
+      success = false;
+    }
   }
   return success;
 }
@@ -654,20 +674,20 @@ cleanup:
 /**
  * @brief Read the settings file and fill the settings from it
  *
- * @param path_utf8 the file to read, UTF-8
+ * @param path the file to read
  * @param out filled in and owned by the caller afterwards; release with settings_release
  * @param err receives the failure of the read or of the contents
  * @return false when the file could not be read or understood
  */
-bool settings_load(char const *const path_utf8, struct settings *const out, struct ov_error *const err) {
+NODISCARD bool settings_load(wchar_t const *const path, struct settings *const out, struct ov_error *const err) {
   bool success = false;
   char *text = NULL;
 
-  if (!read_whole_file(path_utf8, &text, err)) {
+  if (!read_whole_file(path, &text, err)) {
     OV_ERROR_ADD_TRACE(err);
     goto cleanup;
   }
-  if (!settings_apply_json(text, out, err)) {
+  if (!apply_json(text, out, err)) {
     OV_ERROR_ADD_TRACE(err);
     goto cleanup;
   }
@@ -688,26 +708,26 @@ cleanup:
  * that reads them.
  *
  * @param err receives the failure of the lookup
- * @return the path in UTF-8, NULL when it could not be built
- * @note Release with settings_string_free.
+ * @return the path, NULL when it could not be built
+ * @note Release with OV_ARRAY_DESTROY.
  */
-char *settings_default_path(struct ov_error *const err) {
-  char *exe = NULL;
-  char *result = NULL;
+NODISCARD wchar_t *settings_default_path(struct ov_error *const err) {
+  wchar_t *exe = NULL;
+  wchar_t *result = NULL;
 
   exe = paths_executable(err);
   if (exe == NULL) {
     OV_ERROR_ADD_TRACE(err);
     goto cleanup;
   }
-  result = paths_replace_extension(exe, ".json", err);
+  result = paths_replace_extension(exe, L".json", err);
   if (result == NULL) {
     OV_ERROR_ADD_TRACE(err);
   }
 
 cleanup:
   if (exe != NULL) {
-    paths_string_free(&exe);
+    OV_ARRAY_DESTROY(&exe);
   }
   return result;
 }
@@ -721,25 +741,45 @@ void settings_release(struct settings *const s) {
   if (s == NULL) {
     return;
   }
-  OV_FREE(&s->ks_service);
+  if (s->ks_service != NULL) {
+    OV_ARRAY_DESTROY(&s->ks_service);
+  }
   if (s->devices != NULL) {
     size_t const n = OV_ARRAY_LENGTH(s->devices);
     for (size_t i = 0; i < n; ++i) {
-      OV_FREE(&s->devices[i].id);
-      OV_FREE(&s->devices[i].name);
+      if (s->devices[i].id != NULL) {
+        OV_ARRAY_DESTROY(&s->devices[i].id);
+      }
+      if (s->devices[i].name != NULL) {
+        OV_ARRAY_DESTROY(&s->devices[i].name);
+      }
     }
     OV_ARRAY_DESTROY(&s->devices);
   }
-  OV_FREE(&s->veto_log_name);
-  OV_FREE(&s->veto_provider_name);
+  if (s->veto_log_name != NULL) {
+    OV_ARRAY_DESTROY(&s->veto_log_name);
+  }
+  if (s->veto_provider_name != NULL) {
+    OV_ARRAY_DESTROY(&s->veto_provider_name);
+  }
   if (s->mixer_process_names != NULL) {
     size_t const n = OV_ARRAY_LENGTH(s->mixer_process_names);
     for (size_t i = 0; i < n; ++i) {
-      OV_FREE(&s->mixer_process_names[i]);
+      if (s->mixer_process_names[i] != NULL) {
+        OV_ARRAY_DESTROY(&s->mixer_process_names[i]);
+      }
     }
     OV_ARRAY_DESTROY(&s->mixer_process_names);
   }
-  OV_FREE(&s->task_name);
+  if (s->task_dir != NULL) {
+    OV_ARRAY_DESTROY(&s->task_dir);
+  }
+  if (s->task_name != NULL) {
+    OV_ARRAY_DESTROY(&s->task_name);
+  }
+  if (s->simulate != NULL) {
+    OV_ARRAY_DESTROY(&s->simulate);
+  }
   s->veto_event_id = 0;
 }
 
@@ -749,11 +789,11 @@ void settings_release(struct settings *const s) {
  * @param s the settings to read from, may be NULL
  * @return the names as a flat read-only array, NULL when there is none
  */
-char const *const *settings_mixer_names(struct settings const *const s) {
+wchar_t const *const *settings_mixer_names(struct settings const *const s) {
   if ((s == NULL) || (s->mixer_process_names == NULL)) {
     return NULL;
   }
-  return (char const *const *)(void const *)s->mixer_process_names;
+  return (wchar_t const *const *)(void const *)s->mixer_process_names;
 }
 
 /**
@@ -767,15 +807,4 @@ size_t settings_mixer_name_count(struct settings const *const s) {
     return 0;
   }
   return OV_ARRAY_LENGTH(s->mixer_process_names);
-}
-
-/**
- * @brief Release a string this module handed out
- *
- * @param value set to NULL afterwards, NULL is allowed
- */
-void settings_string_free(char **const value) {
-  if ((value != NULL) && (*value != NULL)) {
-    OV_FREE(value); // made by OV_REALLOC inside paths_replace_extension
-  }
 }

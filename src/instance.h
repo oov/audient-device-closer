@@ -1,9 +1,5 @@
 #pragma once
 
-#include <stdbool.h>
-
-#include <windows.h>
-
 #include <ovbase.h>
 
 /**
@@ -20,32 +16,37 @@
  */
 
 /**
- * @brief The name the mutex of a running copy carries
+ * @brief The mutex a copy of this program holds while it runs
  *
- * Windows compares mutex names case-sensitively, and installer.iss names the same string
- * in its AppMutex directive: the two have to agree exactly.
+ * The handle is held by value: a NULL handle is the copy that holds nothing, and the caller
+ * keeps the instance until its cleanup hands it back.
  */
-#define INSTANCE_MUTEX_NAME L"AudientDeviceCloser.Mutex"
+struct instance {
+  void *handle; // HANDLE, kept opaque so this header stays free of windows.h
+};
 
 /**
- * @brief Take the mutex of this name, which marks the copy that holds it as the running one
+ * @brief Take the mutex that marks this copy as the running one
  *
- * A copy that finds the mutex already taken is not a failure: the caller is told so and
- * leaves the way a second start of any single copy program leaves.  The handle is released
- * with instance_release, and in any case when the process ends.
+ * The mutex is not waited for: a take that finds the mutex taken answers at once, so that a
+ * second start can reach the window of the first one and leave.  A take that finds another
+ * copy running is a failure of this call like any other, and it is told apart the way the
+ * system tells it: the error carries HRESULT_FROM_WIN32(ERROR_ALREADY_EXISTS).  The
+ * instance is released with instance_release, and in any case when the process ends.
  *
- * @param mutex_name the name of the mutex to take
- * @param out_other_running true when somebody already holds the name, false for the first
- * @param err receives the failure of the create, only when no handle came back
- * @return the handle of the mutex, NULL when the system refused the create
+ * @param err receives the reason no mutex is held: the refusal of the create, or
+ *            HRESULT_FROM_WIN32(ERROR_ALREADY_EXISTS) when another copy holds the mutex
+ * @return the instance of the running copy, one without a handle when err says why not
  */
-HANDLE instance_take(wchar_t const *const mutex_name, bool *const out_other_running, struct ov_error *const err);
+NODISCARD struct instance instance_take(struct ov_error *const err);
 
 /**
  * @brief Hand the mutex back
  *
  * Safe to call without a held mutex.
  *
- * @param mutex the handle to release, set to NULL afterwards, NULL is allowed
+ * @param instance the instance to release, NULL is allowed
+ * @param err receives the failure of the close, NULL is allowed
+ * @return false when the mutex could not be given back
  */
-void instance_release(HANDLE *const mutex);
+NODISCARD bool instance_release(struct instance *const instance, struct ov_error *const err);

@@ -9,11 +9,17 @@ msgstr ""
 "Content-Transfer-Encoding: 8bit\n"
 "Plural-Forms: nplurals=1; plural=0;\n"
 
+msgid "%1$hs could not be closed."
+msgstr "%1$hs を終了できませんでした。"
+
 msgid "(unknown)"
 msgstr "(不明)"
 
 msgid "A process is still using the device, so it could not be released."
 msgstr "デバイスを使用しているプロセスがあるため、解放できません。"
+
+msgid "A process that is using the device could not be closed."
+msgstr "デバイスを使用しているプロセスを終了できませんでした。"
 
 msgid "Abort"
 msgstr "中止"
@@ -57,12 +63,16 @@ msgstr "Audient ミキサーを終了しています..."
 msgid "Closing the device..."
 msgstr "デバイスを閉じています..."
 
+#, c-format
 msgid ""
 "Could not read the settings file.\n"
-"It has to sit next to the program as %1$hs."
+"It has to sit next to the program as %1$ls."
 msgstr ""
 "設定ファイルを読み込めませんでした。\n"
-"%1$hs という名前でプログラムと同じ場所に置いてください。"
+"%1$ls という名前でプログラムと同じ場所に置いてください。"
+
+msgid "Done."
+msgstr "完了しました。"
 
 msgid "Failed."
 msgstr "失敗しました。"
@@ -72,6 +82,9 @@ msgstr "インストール"
 
 msgid "No Audient device was found."
 msgstr "Audient のデバイスは見つかりませんでした。"
+
+msgid "No repair is needed."
+msgstr "修復は不要です。"
 
 msgid ""
 "None of the connected devices needs a repair.\n"
@@ -104,11 +117,20 @@ msgstr "タスクスケジューラーから削除"
 msgid "Repair"
 msgstr "修復"
 
+msgid "Starting the Windows Audio service..."
+msgstr "Windows Audio サービスを開始しています..."
+
 msgid "Starts Audient Device Closer after the computer resumes from sleep and tries to fix the problem when the Audient device did not come back properly."
 msgstr "コンピューターがスリープから復帰した後に Audient Device Closer を起動し、Audient デバイスが正しく復帰できなかった場合に問題解消を試みます。"
 
 msgid "Success."
 msgstr "成功しました。"
+
+msgid "The Windows Audio service could not be started again."
+msgstr "Windows Audio サービスを開始できませんでした。"
+
+msgid "The Windows Audio service could not be stopped."
+msgstr "Windows Audio サービスを停止できませんでした。"
 
 msgid "The device cannot be closed because it is in use"
 msgstr "デバイスが使用中のため閉じられません"
@@ -119,17 +141,32 @@ msgstr "デバイスを閉じることができませんでした。"
 msgid "The device has a problem that this tool cannot solve."
 msgstr "このデバイスには、このツールでは解決できない問題が発生しています。"
 
+msgid "The device is disabled."
+msgstr "デバイスが無効化されています。"
+
 msgid "The device was already gone."
 msgstr "デバイスはすでに取り外されていました。"
+
+msgid "The device was released, but it did not come back as an audio device."
+msgstr "デバイスは解放しましたが、オーディオデバイスとして復帰しませんでした。"
+
+msgid "The device was released, but whether it came back could not be checked."
+msgstr "デバイスは解放しましたが、復帰を確認できませんでした。"
 
 msgid "The device was released."
 msgstr "デバイスを正常に解放しました。"
 
-msgid "The name of the scheduled task is not valid."
-msgstr "タスクスケジューラーの登録名が不正です。"
+msgid "The path is too long to compare"
+msgstr "パスが長すぎて比較できません"
+
+msgid "The process that is using the device could not be found."
+msgstr "デバイスを使用しているプロセスを特定できませんでした。"
 
 msgid "The processes below have the device open, so the close was refused."
 msgstr "以下のプロセスがデバイスを開いているため、閉じる操作は拒否されました。"
+
+msgid "The record of what is using the device could not be read."
+msgstr "デバイスを使用しているプロセスの記録を読み取れませんでした。"
 
 msgid "The scheduled task could not be registered."
 msgstr "タスクスケジューラーに登録できませんでした。"
@@ -137,11 +174,17 @@ msgstr "タスクスケジューラーに登録できませんでした。"
 msgid "The scheduled task could not be removed."
 msgstr "タスクスケジューラーから削除できませんでした。"
 
+msgid "The scheduled task is not registered."
+msgstr "タスクスケジューラーに登録されていません。"
+
 msgid "The scheduled task was registered."
 msgstr "タスクスケジューラーに登録しました。"
 
 msgid "The scheduled task was removed."
 msgstr "タスクスケジューラーから削除しました。"
+
+msgid "The state of the device could not be determined."
+msgstr "デバイスの状態を確認できませんでした。"
 
 msgid ""
 "This program is not allowed to close the device.\n"
@@ -155,6 +198,10 @@ msgstr ""
 msgid "This tool cannot handle the problem that was found."
 msgstr "このツールでは対応できない異常を検知しました。"
 
+#, c-format
+msgid "UnregisterClassW failed for %1$ls"
+msgstr "%1$ls のウィンドウクラスを登録解除できませんでした"
+
 msgid "Waiting for the device to come back..."
 msgstr "デバイスの復帰を確認しています..."
 
@@ -164,27 +211,3 @@ msgstr "待機しています..."
 #. trans: This dagger helps UTF-8 detection. You don't need to translate this.
 msgid "†"
 msgstr "†"
-
-#~ msgid "Close audiodg (audiodg.exe) automatically"
-#~ msgstr "audiodg (audiodg.exe) を自動的に終了する"
-
-#~ msgid "Closing audiodg (audiodg.exe)..."
-#~ msgstr "audiodg (audiodg.exe) を終了しています..."
-
-#~ msgid "Do you really want to continue?"
-#~ msgstr "本当に続けますか？"
-
-#~ msgid ""
-#~ "No faulty Audient device was found.\n"
-#~ "\n"
-#~ "A device that is working normally is likely to fail to be closed."
-#~ msgstr ""
-#~ "不正な状態の Audient デバイスはありません。\n"
-#~ "\n"
-#~ "正常に動作しているデバイスではクローズに失敗することがあります。"
-
-#~ msgid "To repair one anyway, choose it below."
-#~ msgstr "それでも修復する場合は、以下からデバイスを選択してください。"
-
-#~ msgid "Too many blocker processes are named in the record, more than this tool can close at once."
-#~ msgstr "ブロック中のプロセスが多く、このツールで一度に終了できる上限を超えています。"

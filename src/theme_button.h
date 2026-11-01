@@ -3,6 +3,8 @@
 
 #include <windows.h>
 
+#include <ovbase.h>
+
 /**
  * Painting of a push button.  Internal to the theme implementation, see theme_internal.h.
  */
@@ -16,7 +18,9 @@
  * this component, with the light palette nothing happens and the theme keeps control.
  *
  * @param button the button to attach to, NULL is allowed
+ * @param err receives the failure of the subclass
+ * @return false when the painting could not be taken over
  */
-void theme_button_attach(HWND const button);
+NODISCARD bool theme_button_attach(HWND const button, struct ov_error *const err);
 
 #endif /* ADC_THEME_BUTTON_H */

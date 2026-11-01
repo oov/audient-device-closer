@@ -3,7 +3,7 @@
 
 #include <windows.h>
 
-#include "theme.h"
+#include <ovbase.h>
 
 /**
  * Private interface between the parts of the theme implementation.
@@ -111,5 +111,16 @@ int theme_window_dpi(HWND const hwnd);
  * @return the font of the window
  */
 HFONT theme_window_font(HWND const hwnd);
+
+/**
+ * @brief The sizes the theme paints with, in logical units
+ *
+ * They are dimensions like every other one: no component draws from a literal, and all of
+ * them scale with the dpi of the window.  The parts of the theme sit in separate files but
+ * draw one surface, so the hairline they share is named once, here, beside the palette.
+ */
+enum theme_frame_size {
+  ADC_THEME_FRAME_LINE = 1, /* hairline: group frame and header divider */
+};
 
 #endif /* ADC_THEME_INTERNAL_H */
