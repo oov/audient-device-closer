@@ -96,6 +96,29 @@ A rough outline of what this tool actually does:
    5. If it was released, check whether it has come back as an audio device. Once that is confirmed, this device is done
    6. It could not be released, so show a list of the applications that caused it and stop the remaining devices as well
 
+## About audient-device-closer-minimal.ps1
+
+The minimal work needed to recover a device is also available as a PowerShell script.
+
+### Download the script and run it
+
+When no sound comes out after resuming from sleep, download the script and run it as follows.
+A UAC prompt appears.
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\audient-device-closer-minimal.ps1
+```
+
+### Run it without downloading it
+
+The following runs it without keeping a copy. Run it from a shell with administrator rights.
+
+```powershell
+powershell -NoProfile -Command "irm https://raw.githubusercontent.com/oov/audient-device-closer/refs/heads/main/audient-device-closer-minimal.ps1 | iex"
+```
+
+This is handy for a quick test, but it needs internet access, and anyone who took over the developer's account could run whatever they liked on your machine, so it is not meant for everyday use.
+
 ## Credits
 
 audient-device-closer is made possible by the following open source softwares.

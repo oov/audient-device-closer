@@ -209,7 +209,7 @@ set_target_properties(adc PROPERTIES
 # an installed copy, and a sample that keeps the values of an earlier build hides a change of
 # the settings from the person who starts it.
 add_custom_command(TARGET adc POST_BUILD
-  COMMAND "${CMAKE_COMMAND}" -D "src=${PROJECT_SOURCE_DIR}/audient-device-closer.example.json"
+  COMMAND "${CMAKE_COMMAND}" -D "src=${PROJECT_SOURCE_DIR}/audient-device-closer.json"
           -D "dst=$<TARGET_FILE_DIR:adc>/audient-device-closer.json"
           -P "${PROJECT_SOURCE_DIR}/cmake/copy-settings.cmake"
   VERBATIM
