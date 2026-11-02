@@ -6,9 +6,9 @@
  * @brief What this run was asked to do
  */
 struct options {
-  bool auto_run;      //!< the scheduler started this run, so no window waits for a person
-  bool close_mixer;   //!< close iD Mixer without asking
-  bool close_audiodg; //!< close the audio engine without asking
+  bool auto_run;                  //!< the scheduler started this run, so no window waits for a person
+  bool close_mixer;               //!< close iD Mixer without asking
+  bool allow_audio_service_pause; //!< allow pausing the Windows Audio service without asking
 };
 
 /**
@@ -21,8 +21,8 @@ void options_default(struct options *const out);
 /**
  * @brief Read the switches of the command line
  *
- * Unknown tokens are ignored on purpose: a task registration of an older version must keep
- * working.  A switch that is spelled out twice keeps its last answer.
+ * Unknown tokens are ignored on purpose.  A switch that is spelled out twice keeps its last
+ * answer.
  *
  * @param command_line the command line of this process, NULL is allowed
  * @param out filled in with what the command line says

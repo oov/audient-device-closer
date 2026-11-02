@@ -15,7 +15,7 @@
 void options_default(struct options *const out) {
   out->auto_run = false;
   out->close_mixer = true;
-  out->close_audiodg = false;
+  out->allow_audio_service_pause = false;
 }
 
 /**
@@ -73,8 +73,8 @@ static bool scanner_next(struct scanner *const sc, wchar_t *const token, size_t 
 /**
  * @brief Read the switches of the command line
  *
- * Unknown tokens are ignored on purpose: a task registration of an older version must keep
- * working.  A switch that is spelled out twice keeps its last answer.
+ * Unknown tokens are ignored on purpose.  A switch that is spelled out twice keeps its last
+ * answer.
  *
  * @param command_line the command line of this process, NULL is allowed
  * @param out filled in with what the command line says
@@ -103,10 +103,10 @@ NODISCARD bool options_parse(NATIVE_CHAR const *const command_line, struct optio
       out->close_mixer = true;
     } else if (wcscmp(token, L"-no-close-mixer") == 0) {
       out->close_mixer = false;
-    } else if (wcscmp(token, L"-close-audiodg") == 0) {
-      out->close_audiodg = true;
-    } else if (wcscmp(token, L"-no-close-audiodg") == 0) {
-      out->close_audiodg = false;
+    } else if (wcscmp(token, L"-pause-audio-service") == 0) {
+      out->allow_audio_service_pause = true;
+    } else if (wcscmp(token, L"-no-pause-audio-service") == 0) {
+      out->allow_audio_service_pause = false;
     }
   }
   return true;

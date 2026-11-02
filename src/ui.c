@@ -27,7 +27,7 @@
 
 #define IDC_CLOSE_BTN 2
 #define IDC_CHK_MIXER 5
-#define IDC_CHK_AUDIODG 10
+#define IDC_CHK_AUDIO_SERVICE 10
 #define IDC_GROUP_SETTINGS 11
 #define IDC_GROUP_INSTALL 7
 #define IDC_TASK_INSTALL 8
@@ -89,16 +89,16 @@ enum main_layout_size {
  * rectangles to MoveWindow(), which is what makes the layout testable without a screen.
  */
 struct main_layout {
-  RECT button;           /* the button that closes the device */
-  RECT check_mixer;      /* close the mixer automatically */
-  RECT check_audiodg;    /* close audiodg automatically */
-  RECT settings_frame;   /* the line around the check boxes */
-  RECT settings_caption; /* its caption, riding on the frame line */
-  RECT install_frame;    /* the line around the task buttons */
-  RECT install_caption;  /* its caption, riding on the frame line */
-  RECT task_install;     /* register the scheduled task */
-  RECT task_remove;      /* remove the scheduled task */
-  int min_client_width;  /* the narrowest client area that shows both groups */
+  RECT button;              /* the button that closes the device */
+  RECT check_mixer;         /* close the mixer automatically */
+  RECT check_audio_service; /* allow pausing the audio service */
+  RECT settings_frame;      /* the line around the check boxes */
+  RECT settings_caption;    /* its caption, riding on the frame line */
+  RECT install_frame;       /* the line around the task buttons */
+  RECT install_caption;     /* its caption, riding on the frame line */
+  RECT task_install;        /* register the scheduled task */
+  RECT task_remove;         /* remove the scheduled task */
+  int min_client_width;     /* the narrowest client area that shows both groups */
 };
 
 struct repair_job {
@@ -106,7 +106,7 @@ struct repair_job {
   struct settings const *settings;
   struct device_target *targets; // the devices to repair, NULL says the run looks for them
   bool allow_mixer_close;
-  bool allow_audiodg_close;
+  bool allow_audio_service_pause;
   bool wait_first;        // the run of the scheduler: it waits for the devices before it looks
   HANDLE cancel;          // the ask to stop, signaled by the UI thread and read by the run
   struct repair_run *run; // the run, NULL until it is taken up
@@ -199,7 +199,7 @@ struct ui_state {
   HFONT font;
   HWND close_btn;
   HWND chk_mixer;
-  HWND chk_audiodg;
+  HWND chk_audio_service;
   HWND task_install;
   HWND task_remove;
   HWND group_settings;
@@ -286,7 +286,7 @@ static wchar_t const state_prop[] = L"audient_device_closer_main_state";
  */
 static void enable_actions(struct ui_state *const st, bool const enabled) {
   BOOL const on = enabled ? TRUE : FALSE;
-  HWND const controls[] = {st->close_btn, st->chk_mixer, st->chk_audiodg, st->task_install, st->task_remove};
+  HWND const controls[] = {st->close_btn, st->chk_mixer, st->chk_audio_service, st->task_install, st->task_remove};
   size_t i = 0;
 
   for (i = 0; i < (sizeof(controls) / sizeof(controls[0])); i++) {
@@ -339,8 +339,8 @@ static void install_task(struct ui_state *const st, HWND const hwnd) {
   wchar_t text[512];
   struct ov_error err = {0};
   bool const close_mixer = (SendMessageW(st->chk_mixer, BM_GETCHECK, 0, 0) == BST_CHECKED);
-  bool const close_audiodg = (SendMessageW(st->chk_audiodg, BM_GETCHECK, 0, 0) == BST_CHECKED);
-  bool const ok = task_install(st->settings, close_mixer, close_audiodg, &err);
+  bool const allow_audio_service_pause = (SendMessageW(st->chk_audio_service, BM_GETCHECK, 0, 0) == BST_CHECKED);
+  bool const ok = task_install(st->settings, close_mixer, allow_audio_service_pause, &err);
 
   OV_SNPRINTF(title, sizeof(title) / sizeof(title[0]), ph, ph, ok ? gettext("Done.") : gettext("Failed."));
   OV_SNPRINTF(text,
@@ -504,7 +504,7 @@ static NODISCARD size_t settings_group_width(struct ui_state *const st, HWND con
   char mixer_label[256];
   char const *const captions[] = {
       mixer_label,
-      repair_option_audiodg_label(),
+      repair_option_audio_service_label(),
   };
   repair_option_mixer_label(st->settings, mixer_label, sizeof(mixer_label));
   int widest = 0;
@@ -807,18 +807,18 @@ static void main_compute(RECT const *const client,
             install_caption_width,
             install_left + inset);
   out->check_mixer = layout_rect(margin + inset, frame_top + inset, settings_w - 2 * inset, layout_scale(ADC_MAIN_CHECK_H, dpi));
-  out->check_audiodg = layout_rect(margin + inset,
-                                   frame_top + inset + layout_scale(ADC_MAIN_CHECK_H, dpi) + layout_scale(ADC_LAYOUT_GAP, dpi),
-                                   settings_w - 2 * inset,
-                                   layout_scale(ADC_MAIN_CHECK_H, dpi));
+  out->check_audio_service = layout_rect(margin + inset,
+                                         frame_top + inset + layout_scale(ADC_MAIN_CHECK_H, dpi) + layout_scale(ADC_LAYOUT_GAP, dpi),
+                                         settings_w - 2 * inset,
+                                         layout_scale(ADC_MAIN_CHECK_H, dpi));
   {
-    int const last_bottom = out->check_audiodg.bottom;
+    int const last_bottom = out->check_audio_service.bottom;
     int const shift = ((out->settings_frame.bottom - last_bottom) - (out->check_mixer.top - out->settings_frame.top)) / 2;
     if (shift != 0) {
       out->check_mixer.top += shift;
       out->check_mixer.bottom += shift;
-      out->check_audiodg.top += shift;
-      out->check_audiodg.bottom += shift;
+      out->check_audio_service.top += shift;
+      out->check_audio_service.bottom += shift;
     }
   }
   out->task_install = layout_rect(install_left + inset, task_top, install_w - 2 * inset, layout_scale(ADC_MAIN_TASK_H, dpi));
@@ -872,7 +872,12 @@ layout(struct ui_state *const st, HWND const hwnd, RECT const *const client, int
     OV_ERROR_SET_HRESULT(err, HRESULT_FROM_WIN32(GetLastError()));
     goto cleanup;
   }
-  if (!MoveWindow(st->chk_audiodg, LX(g.check_audiodg), LY(g.check_audiodg), LW(g.check_audiodg), LH(g.check_audiodg), TRUE)) {
+  if (!MoveWindow(st->chk_audio_service,
+                  LX(g.check_audio_service),
+                  LY(g.check_audio_service),
+                  LW(g.check_audio_service),
+                  LH(g.check_audio_service),
+                  TRUE)) {
     OV_ERROR_SET_HRESULT(err, HRESULT_FROM_WIN32(GetLastError()));
     goto cleanup;
   }
@@ -992,7 +997,7 @@ static NODISCARD bool apply_dpi(struct ui_state *const st, HWND const hwnd, int 
   /* the controls the font of the window goes to: a control added
    * here is one line, and the count is the array's own */
   HWND const kids[] = {
-      st->close_btn, st->chk_mixer, st->chk_audiodg, st->group_settings, st->group_install, st->task_install, st->task_remove};
+      st->close_btn, st->chk_mixer, st->chk_audio_service, st->group_settings, st->group_install, st->task_install, st->task_remove};
   HFONT stale = NULL;
   size_t i = 0;
   RECT rc;
@@ -1230,7 +1235,7 @@ static void begin_repair(struct ui_state *const st, HWND const hwnd) {
   job->run = repair_run_begin(job->settings,
                               job->targets,
                               job->allow_mixer_close,
-                              job->allow_audiodg_close,
+                              job->allow_audio_service_pause,
                               repair_progress,
                               job,
                               job->cancel,
@@ -1575,7 +1580,7 @@ static void do_repair(struct ui_state *const st, HWND const hwnd, bool const wai
   st->job.targets = targets;
   st->job.wait_first = wait_first;
   st->job.allow_mixer_close = (SendMessageW(st->chk_mixer, BM_GETCHECK, 0, 0) == BST_CHECKED);
-  st->job.allow_audiodg_close = (SendMessageW(st->chk_audiodg, BM_GETCHECK, 0, 0) == BST_CHECKED);
+  st->job.allow_audio_service_pause = (SendMessageW(st->chk_audio_service, BM_GETCHECK, 0, 0) == BST_CHECKED);
   st->busy = true;
   enable_actions(st, false);
   {
@@ -1727,7 +1732,7 @@ static NODISCARD bool build(struct ui_state *const st, HWND const hwnd, struct o
     wchar_t title[128];
     wchar_t button[256];
     wchar_t check_mixer[256];
-    wchar_t check_audiodg[256];
+    wchar_t check_audio_service[256];
     wchar_t group_settings[128];
     wchar_t group_install[128];
     wchar_t task_install[256];
@@ -1757,7 +1762,11 @@ static NODISCARD bool build(struct ui_state *const st, HWND const hwnd, struct o
     repair_option_mixer_label(st->settings, mixer_label, sizeof(mixer_label));
     OV_SNPRINTF(text.check_mixer, sizeof(text.check_mixer) / sizeof(text.check_mixer[0]), ph, ph, mixer_label);
   }
-  OV_SNPRINTF(text.check_audiodg, sizeof(text.check_audiodg) / sizeof(text.check_audiodg[0]), ph, ph, repair_option_audiodg_label());
+  OV_SNPRINTF(text.check_audio_service,
+              sizeof(text.check_audio_service) / sizeof(text.check_audio_service[0]),
+              ph,
+              ph,
+              repair_option_audio_service_label());
   OV_SNPRINTF(text.group_settings, sizeof(text.group_settings) / sizeof(text.group_settings[0]), ph, ph, gettext("Behaviour"));
   OV_SNPRINTF(text.group_install, sizeof(text.group_install) / sizeof(text.group_install[0]), ph, ph, gettext("Install"));
   OV_SNPRINTF(text.task_install, sizeof(text.task_install) / sizeof(text.task_install[0]), ph, ph, gettext("Register the scheduled task"));
@@ -1778,18 +1787,19 @@ static NODISCARD bool build(struct ui_state *const st, HWND const hwnd, struct o
   }
   st->close_btn = child(st, hwnd, L"BUTTON", text.button, BS_PUSHBUTTON | WS_TABSTOP, 0, 0, 0, 0, IDC_CLOSE_BTN, err);
   st->chk_mixer = child(st, hwnd, L"BUTTON", text.check_mixer, BS_AUTOCHECKBOX | WS_TABSTOP, 0, 0, 0, 0, IDC_CHK_MIXER, err);
-  st->chk_audiodg = child(st, hwnd, L"BUTTON", text.check_audiodg, BS_AUTOCHECKBOX | WS_TABSTOP, 0, 0, 0, 0, IDC_CHK_AUDIODG, err);
+  st->chk_audio_service =
+      child(st, hwnd, L"BUTTON", text.check_audio_service, BS_AUTOCHECKBOX | WS_TABSTOP, 0, 0, 0, 0, IDC_CHK_AUDIO_SERVICE, err);
   st->task_install = child(st, hwnd, L"BUTTON", text.task_install, BS_PUSHBUTTON | WS_TABSTOP, 0, 0, 0, 0, IDC_TASK_INSTALL, err);
   st->task_remove = child(st, hwnd, L"BUTTON", text.task_remove, BS_PUSHBUTTON | WS_TABSTOP, 0, 0, 0, 0, IDC_TASK_REMOVE, err);
   if ((st->group_settings == NULL) || (st->group_install == NULL) || (st->close_btn == NULL) || (st->chk_mixer == NULL) ||
-      (st->chk_audiodg == NULL) || (st->task_install == NULL) || (st->task_remove == NULL)) {
+      (st->chk_audio_service == NULL) || (st->task_install == NULL) || (st->task_remove == NULL)) {
     OV_ERROR_ADD_TRACE(err);
     goto cleanup;
   }
   // the choice to pause the audio service takes the sound away from the whole machine,
   // so a build that ships only offers it when the settings say so in as many words
   if (!repair_can_pause_audio_service(st->settings)) {
-    if (!ShowWindow(st->chk_audiodg, SW_HIDE)) {
+    if (!ShowWindow(st->chk_audio_service, SW_HIDE)) {
       OV_ERROR_SET_HRESULT(err, HRESULT_FROM_WIN32(GetLastError()));
       goto cleanup;
     }
@@ -1799,7 +1809,7 @@ static NODISCARD bool build(struct ui_state *const st, HWND const hwnd, struct o
     goto cleanup;
   }
   SendMessageW(st->chk_mixer, BM_SETCHECK, st->options->close_mixer ? BST_CHECKED : BST_UNCHECKED, 0);
-  SendMessageW(st->chk_audiodg, BM_SETCHECK, st->options->close_audiodg ? BST_CHECKED : BST_UNCHECKED, 0);
+  SendMessageW(st->chk_audio_service, BM_SETCHECK, st->options->allow_audio_service_pause ? BST_CHECKED : BST_UNCHECKED, 0);
   success = true;
 
 cleanup:

@@ -35,11 +35,12 @@ task_target(struct settings const *settings, wchar_t const **const out_dir, wcha
  *
  * @param settings the settings that name the task
  * @param close_mixer the box of the caller that allows closing the mixer
- * @param close_audiodg the box of the caller that allows closing the audio engine
+ * @param allow_audio_service_pause the box of the caller that allows pausing the Windows
+ *        Audio service
  * @param err receives the refusal of the system
  * @return false when the registration did not happen
  */
-NODISCARD bool task_install(struct settings const *settings, bool close_mixer, bool close_audiodg, struct ov_error *const err);
+NODISCARD bool task_install(struct settings const *settings, bool close_mixer, bool allow_audio_service_pause, struct ov_error *const err);
 
 /**
  * @brief Remove the task of this program

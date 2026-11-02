@@ -20,8 +20,8 @@ static void test_arguments_carry_the_switches_only(void) {
   if (!TEST_SUCCEEDED(args != NULL, &err)) {
     goto cleanup;
   }
-  TEST_CHECK(wcscmp(args, L"-auto-run -close-mixer -no-close-audiodg") == 0);
-  TEST_MSG("want -auto-run -close-mixer -no-close-audiodg, got %ls", args);
+  TEST_CHECK(wcscmp(args, L"-auto-run -close-mixer -no-pause-audio-service") == 0);
+  TEST_MSG("want -auto-run -close-mixer -no-pause-audio-service, got %ls", args);
 
 cleanup:
   OV_ARRAY_DESTROY(&args);
@@ -44,11 +44,11 @@ static void test_arguments_carry_both_boxes(void) {
     goto cleanup;
   }
   TEST_CHECK(wcsstr(on, L"-close-mixer") != NULL);
-  TEST_CHECK(wcsstr(on, L"-close-audiodg") != NULL);
+  TEST_CHECK(wcsstr(on, L"-pause-audio-service") != NULL);
   TEST_CHECK(wcsstr(on, L"-no-close-mixer") == NULL);
-  TEST_CHECK(wcsstr(on, L"-no-close-audiodg") == NULL);
+  TEST_CHECK(wcsstr(on, L"-no-pause-audio-service") == NULL);
   TEST_CHECK(wcsstr(off, L"-no-close-mixer") != NULL);
-  TEST_CHECK(wcsstr(off, L"-no-close-audiodg") != NULL);
+  TEST_CHECK(wcsstr(off, L"-no-pause-audio-service") != NULL);
 
 cleanup:
   OV_ARRAY_DESTROY(&on);
@@ -66,7 +66,7 @@ static void test_xml_escapes_what_it_has_to(void) {
   struct ov_error err = {0};
   wchar_t *xml = NULL;
 
-  xml = build_xml(L"C:\\a&b\\adc.exe", L"\"C:\\a&b\\adc.exe\" -auto-run -close-mixer -close-audiodg", NULL, &err);
+  xml = build_xml(L"C:\\a&b\\adc.exe", L"\"C:\\a&b\\adc.exe\" -auto-run -close-mixer -pause-audio-service", NULL, &err);
   if (!TEST_SUCCEEDED(xml != NULL, &err)) {
     goto cleanup;
   }

@@ -346,7 +346,7 @@ static void test_option_labels_are_named_once(void) {
 
   repair_option_mixer_label(NULL, label, sizeof(label));
   TEST_CHECK(strcmp(label, "Close the Audient mixer automatically") == 0);
-  TEST_CHECK(strcmp(repair_option_audiodg_label(), "Allow pausing the Windows Audio service") == 0);
+  TEST_CHECK(strcmp(repair_option_audio_service_label(), "Allow pausing the Windows Audio service") == 0);
 }
 
 /**
@@ -666,7 +666,7 @@ static void test_blocker_not_allowed_is_left_alone(void) {
     goto cleanup;
   }
   run.allow_mixer_close = true;
-  run.allow_audiodg_close = true;
+  run.allow_audio_service_pause = true;
   outcome = repair_target(&run, &target, &err);
   TEST_CHECK_(outcome == REPAIR_OUTCOME_VETOED, "want the vetoed outcome, got %d", (int)outcome);
   TEST_CHECK_(veto_log_mock_read_count() == 2, "want the veto read once per attempt, got %zu", veto_log_mock_read_count());
@@ -689,13 +689,13 @@ cleanup:
 }
 
 /**
- * @brief The audio engine is answered by pausing the service that starts it, and it always comes back
+ * @brief Pausing and resuming the service for an audio engine blocker
  *
- * Terminating audiodg is useless, because Windows starts a new one within milliseconds.  The
- * service that starts it is paused instead, and it has to be started again whatever else
- * happened, or the machine is left without sound.
+ * Terminating the audio engine does not work: Windows starts it again and it takes the
+ * device.  The service that starts it is paused instead, and it is started again whatever
+ * else happened, or the machine is left without sound.
  */
-static void test_audiodg_is_answered_by_pausing_the_service(void) {
+static void test_pausing_and_resuming_the_service_for_an_audio_engine_blocker(void) {
   static struct veto_log_mock_record const records[] = {
       {.pid = 100, .event_time_ms = 1000, .device_instance = kUsbInstance},
   };
@@ -721,7 +721,7 @@ static void test_audiodg_is_answered_by_pausing_the_service(void) {
   run.settings = &s;
   run.out = &r;
   run.total = REPAIR_STEPS_PER_TARGET;
-  run.allow_audiodg_close = true;
+  run.allow_audio_service_pause = true;
   run.can_pause_audio_service = true;
 
   TEST_CASE("the audio engine is there, so the service is paused and started again");
@@ -745,7 +745,7 @@ static void test_audiodg_is_answered_by_pausing_the_service(void) {
                   install_processes(entries, 1, false))) {
     goto cleanup;
   }
-  run.allow_audiodg_close = false;
+  run.allow_audio_service_pause = false;
   outcome = repair_target(&run, &target, &err);
   TEST_CHECK_(outcome == REPAIR_OUTCOME_VETOED, "want the vetoed outcome, got %d", (int)outcome);
   TEST_CHECK_(process_mock_service_pause_count() == 0, "want nothing paused, got %zu", process_mock_service_pause_count());
@@ -761,7 +761,7 @@ static void test_audiodg_is_answered_by_pausing_the_service(void) {
                   install_processes(entries, 1, true))) {
     goto cleanup;
   }
-  run.allow_audiodg_close = true;
+  run.allow_audio_service_pause = true;
   outcome = repair_target(&run, &target, &err);
   TEST_CHECK_(outcome == REPAIR_OUTCOME_FAILED, "want the failed outcome, got %d", (int)outcome);
   TEST_CHECK_(process_mock_service_resume_count() == 1, "want the start to be tried once, got %zu", process_mock_service_resume_count());
@@ -807,7 +807,7 @@ static void test_a_pause_that_failed_still_starts_the_service(void) {
   run.settings = &s;
   run.out = &r;
   run.total = REPAIR_STEPS_PER_TARGET;
-  run.allow_audiodg_close = true;
+  run.allow_audio_service_pause = true;
   run.can_pause_audio_service = true;
 
   if (!TEST_CHECK(install_machine(service_name, devnode, WATCH_COMES_BACK, 2) && install_log(records, 1, NULL, 0) &&
@@ -1387,7 +1387,7 @@ TEST_LIST = {
     {"second_veto_is_answered", test_second_veto_is_answered},
     {"ask_while_closing_aborts", test_ask_while_closing_aborts},
     {"blocker_not_allowed_is_left_alone", test_blocker_not_allowed_is_left_alone},
-    {"audiodg_is_answered_by_pausing_the_service", test_audiodg_is_answered_by_pausing_the_service},
+    {"pausing_and_resuming_the_service_for_an_audio_engine_blocker", test_pausing_and_resuming_the_service_for_an_audio_engine_blocker},
     {"a_pause_that_failed_still_starts_the_service", test_a_pause_that_failed_still_starts_the_service},
     {"a_run_that_never_paused_still_asks_for_the_service", test_a_run_that_never_paused_still_asks_for_the_service},
     {"a_failure_stops_the_run", test_a_failure_stops_the_run},

@@ -93,11 +93,11 @@ void repair_option_mixer_label(struct settings const *const s, char *const out, 
 void repair_stage_mixer_caption(struct settings const *const s, char *const out, size_t const out_size);
 
 /**
- * @brief The words of the setting that lets this tool pause the audio service
+ * @brief The words of the setting that lets this tool pause the Windows Audio service
  *
  * @return the caption, UTF-8
  */
-char const *repair_option_audiodg_label(void);
+char const *repair_option_audio_service_label(void);
 
 /**
  * @brief May this build pause the audio service for these settings at all
@@ -181,7 +181,7 @@ enum repair_step_result {
  * @param s the settings this run works for, may not be NULL
  * @param targets the devices to repair, NULL says the run looks for the faulted devices itself
  * @param allow_mixer_close the user allowed closing the mixer
- * @param allow_audiodg_close the user allowed closing the audio engine
+ * @param allow_audio_service_pause the user allowed pausing the Windows Audio service
  * @param progress may be NULL
  * @param progress_userdata handed back to progress
  * @param cancel may be NULL; a manual-reset event the caller owns
@@ -194,7 +194,7 @@ enum repair_step_result {
 NODISCARD struct repair_run *repair_run_begin(struct settings const *s,
                                               struct device_target *targets,
                                               bool allow_mixer_close,
-                                              bool allow_audiodg_close,
+                                              bool allow_audio_service_pause,
                                               repair_progress_fn progress,
                                               void *progress_userdata,
                                               HANDLE cancel,
@@ -226,14 +226,14 @@ NODISCARD bool repair_run_finish(struct repair_run **run, struct ov_error *err);
  * @brief Run the repair
  *
  * The documented sequence: remove, look up the events when vetoed, optionally close the
- * blockers (the mixer and audiodg) and remove again.  It never touches anything outside the
- * settings.
+ * mixer and pause the Windows Audio service, and remove again.  It never touches anything
+ * outside the settings.
  *
  * @param s the settings this run works for
  * @param targets the devices to repair, NULL says the run looks for the faulted
  *        devices itself; an empty list is the same as no device at all
  * @param allow_mixer_close the user allowed closing the mixer
- * @param allow_audiodg_close the user allowed closing the audio engine
+ * @param allow_audio_service_pause the user allowed pausing the Windows Audio service
  * @param progress may be NULL; it is called from the thread that runs the repair
  * @param progress_userdata handed back to progress
  * @param cancel may be NULL; a manual-reset event the caller owns.  The run waits on it
@@ -249,7 +249,7 @@ NODISCARD bool repair_run_finish(struct repair_run **run, struct ov_error *err);
 NODISCARD bool repair_run(struct settings const *const s,
                           struct device_target *const targets,
                           bool const allow_mixer_close,
-                          bool const allow_audiodg_close,
+                          bool const allow_audio_service_pause,
                           repair_progress_fn const progress,
                           void *const progress_userdata,
                           HANDLE const cancel,

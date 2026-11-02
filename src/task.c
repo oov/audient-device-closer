@@ -53,17 +53,18 @@ static NODISCARD bool xml_append_escaped(wchar_t **const out, wchar_t const *con
  * @brief The switches the task runs with, as the arguments field of the action
  *
  * -auto-run is always in it: a run that does not know it was started by the scheduler
- * would keep its window and wait for a person who is not there.  The two close flags
- * follow the boxes of the caller.  The program is not named here: the command field names
- * it and the scheduler runs it with these arguments in front of it.
+ * would keep its window and wait for a person who is not there.  The close flag and the
+ * pause flag follow the boxes of the caller.  The program is not named here: the command
+ * field names it and the scheduler runs it with these arguments in front of it.
  *
  * @param close_mixer the box of the caller that allows closing the mixer
- * @param close_audiodg the box of the caller that allows closing the audio engine
+ * @param allow_audio_service_pause the box of the caller that allows pausing the Windows
+ *        Audio service
  * @param err receives a failure of the build
  * @return the arguments, NULL when they could not be built
  * @note Release with OV_ARRAY_DESTROY.
  */
-static NODISCARD wchar_t *build_arguments(bool const close_mixer, bool const close_audiodg, struct ov_error *const err) {
+static NODISCARD wchar_t *build_arguments(bool const close_mixer, bool const allow_audio_service_pause, struct ov_error *const err) {
   wchar_t *args = NULL;
   bool success = false;
 
@@ -72,7 +73,7 @@ static NODISCARD wchar_t *build_arguments(bool const close_mixer, bool const clo
                         NULL,
                         L"-auto-run%ls%ls",
                         close_mixer ? L" -close-mixer" : L" -no-close-mixer",
-                        close_audiodg ? L" -close-audiodg" : L" -no-close-audiodg")) {
+                        allow_audio_service_pause ? L" -pause-audio-service" : L" -no-pause-audio-service")) {
     OV_ERROR_ADD_TRACE(err);
     goto cleanup;
   }
@@ -454,12 +455,15 @@ cleanup:
  *
  * @param settings the settings that name the task
  * @param close_mixer the box of the caller that allows closing the mixer
- * @param close_audiodg the box of the caller that allows closing the audio engine
+ * @param allow_audio_service_pause the box of the caller that allows pausing the Windows
+ *        Audio service
  * @param err receives the refusal of the system
  * @return false when the registration did not happen
  */
-NODISCARD bool
-task_install(struct settings const *const settings, bool const close_mixer, bool const close_audiodg, struct ov_error *const err) {
+NODISCARD bool task_install(struct settings const *const settings,
+                            bool const close_mixer,
+                            bool const allow_audio_service_pause,
+                            struct ov_error *const err) {
   wchar_t *exe = NULL;
   wchar_t *args = NULL;
   wchar_t *xml = NULL;
@@ -474,7 +478,7 @@ task_install(struct settings const *const settings, bool const close_mixer, bool
     OV_ERROR_ADD_TRACE(err);
     goto cleanup;
   }
-  args = build_arguments(close_mixer, close_audiodg, err);
+  args = build_arguments(close_mixer, allow_audio_service_pause, err);
   if (args == NULL) {
     OV_ERROR_ADD_TRACE(err);
     goto cleanup;

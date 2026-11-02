@@ -1433,17 +1433,20 @@ static void test_checks_stack(void) {
                  layout_scale(install_caption_logical, geometry_dpi_list[i]),
                  layout_scale(ADC_LAYOUT_CAPTION_H, geometry_dpi_list[i]),
                  &g);
-    TEST_CHECK_(g.check_audiodg.bottom > g.check_audiodg.top, "dpi %u: the audiodg check has no height", (unsigned)geometry_dpi_list[i]);
-    TEST_CHECK_(
-        g.check_mixer.bottom <= g.check_audiodg.top, "dpi %u: the mixer check overlaps the audiodg check", (unsigned)geometry_dpi_list[i]);
-    TEST_CHECK(g.check_audiodg.left == g.check_mixer.left);
+    TEST_CHECK_(g.check_audio_service.bottom > g.check_audio_service.top,
+                "dpi %u: the audio service check has no height",
+                (unsigned)geometry_dpi_list[i]);
+    TEST_CHECK_(g.check_mixer.bottom <= g.check_audio_service.top,
+                "dpi %u: the mixer check overlaps the audio service check",
+                (unsigned)geometry_dpi_list[i]);
+    TEST_CHECK(g.check_audio_service.left == g.check_mixer.left);
     TEST_CHECK(g.check_mixer.left >= g.settings_frame.left);
     TEST_CHECK(g.check_mixer.right <= g.settings_frame.right);
-    TEST_CHECK(g.check_audiodg.bottom <= g.settings_frame.bottom);
-    TEST_CHECK(g.check_audiodg.bottom <= c.bottom);
+    TEST_CHECK(g.check_audio_service.bottom <= g.settings_frame.bottom);
+    TEST_CHECK(g.check_audio_service.bottom <= c.bottom);
     {
       int const above = g.check_mixer.top - g.settings_frame.top;
-      int const below = g.settings_frame.bottom - g.check_audiodg.bottom;
+      int const below = g.settings_frame.bottom - g.check_audio_service.bottom;
       TEST_CHECK_(geometry_abs(above - below) <= 1,
                   "dpi %u: the boxes sit %d from the top and %d from the bottom",
                   (unsigned)geometry_dpi_list[i],

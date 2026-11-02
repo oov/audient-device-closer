@@ -47,7 +47,7 @@ enum repair_phase {
 struct repair_run {
   struct settings const *settings; //!< the settings this run works for
   bool allow_mixer_close;          //!< the user allowed closing the mixer
-  bool allow_audiodg_close;        //!< the user allowed pausing the audio engine
+  bool allow_audio_service_pause;  //!< the user allowed pausing the Windows Audio service
   bool can_pause_audio_service;    //!< pausing the audio service is allowed on this build and by these settings
   repair_progress_fn progress;     //!< may be NULL; called where the run is taken forward
   void *progress_userdata;         //!< handed back to progress
@@ -180,11 +180,11 @@ void repair_stage_mixer_caption(struct settings const *const s, char *const out,
 }
 
 /**
- * @brief The words of the setting that lets this tool close the audio engine
+ * @brief The words of the setting that lets this tool pause the Windows Audio service
  *
  * @return the caption, UTF-8
  */
-char const *repair_option_audiodg_label(void) { return gettext("Allow pausing the Windows Audio service"); }
+char const *repair_option_audio_service_label(void) { return gettext("Allow pausing the Windows Audio service"); }
 
 /**
  * @brief The sentence of a veto that closed nothing for lack of a blocker this run may close
@@ -747,7 +747,7 @@ static NODISCARD enum phase_result phase_veto_first(struct repair_run *const run
       logger_notef("probe", "none of the records names a running process");
     }
     run->may_close_mixer = run->allow_mixer_close && (run->mixers > 0);
-    run->may_pause_audio = run->allow_audiodg_close && run->has_audiodg;
+    run->may_pause_audio = run->allow_audio_service_pause && run->has_audiodg;
     if ((blockers > 0) && !run->may_close_mixer && !run->may_pause_audio) {
       char option_buf[256] = {0};
       char const *option = NULL;
@@ -760,7 +760,7 @@ static NODISCARD enum phase_result phase_veto_first(struct repair_run *const run
         repair_option_mixer_label(run->settings, option_buf, sizeof(option_buf));
         option = option_buf;
       } else if (run->has_audiodg) {
-        option = repair_option_audiodg_label();
+        option = repair_option_audio_service_label();
       }
       blocked_sentence(option, blockers, sentence, sizeof(sentence));
       say(out, sentence);
@@ -1348,7 +1348,7 @@ NODISCARD enum repair_step_result repair_step(struct repair_run *const run, stru
  * @param targets the devices to repair, NULL says the run looks for the faulted devices
  *        itself; an empty list is the same as no device at all
  * @param allow_mixer_close the user allowed closing the mixer
- * @param allow_audiodg_close the user allowed closing the audio engine
+ * @param allow_audio_service_pause the user allowed pausing the Windows Audio service
  * @param progress may be NULL
  * @param progress_userdata handed back to progress
  * @param cancel may be NULL; a manual-reset event the caller owns.  A signaled event ends
@@ -1362,7 +1362,7 @@ NODISCARD enum repair_step_result repair_step(struct repair_run *const run, stru
 NODISCARD struct repair_run *repair_run_begin(struct settings const *const s,
                                               struct device_target *const targets,
                                               bool const allow_mixer_close,
-                                              bool const allow_audiodg_close,
+                                              bool const allow_audio_service_pause,
                                               repair_progress_fn const progress,
                                               void *const progress_userdata,
                                               HANDLE const cancel,
@@ -1384,7 +1384,7 @@ NODISCARD struct repair_run *repair_run_begin(struct settings const *const s,
   memset(out, 0, sizeof(*out));
   run->settings = s;
   run->allow_mixer_close = allow_mixer_close;
-  run->allow_audiodg_close = allow_audiodg_close;
+  run->allow_audio_service_pause = allow_audio_service_pause;
   // the service is only paused when this build allows it, and, in a build that ships, only
   // when the settings say so: pausing it takes the sound away from the whole machine
   run->can_pause_audio_service = repair_can_pause_audio_service(s);
@@ -1445,7 +1445,7 @@ static void wake_set(void *const userdata) {
  * @param s the settings this run works for
  * @param targets the devices to repair, NULL says the run looks for the faulted devices itself
  * @param allow_mixer_close the user allowed closing the mixer
- * @param allow_audiodg_close the user allowed closing the audio engine
+ * @param allow_audio_service_pause the user allowed pausing the Windows Audio service
  * @param progress may be NULL; it is called from the thread that runs the repair
  * @param progress_userdata handed back to progress
  * @param cancel the flag of the caller, may be NULL
@@ -1458,7 +1458,7 @@ static void wake_set(void *const userdata) {
 NODISCARD bool repair_run(struct settings const *const s,
                           struct device_target *const targets,
                           bool const allow_mixer_close,
-                          bool const allow_audiodg_close,
+                          bool const allow_audio_service_pause,
                           repair_progress_fn const progress,
                           void *const progress_userdata,
                           HANDLE const cancel,
@@ -1478,7 +1478,8 @@ NODISCARD bool repair_run(struct settings const *const s,
     OV_ERROR_SET_HRESULT(err, HRESULT_FROM_WIN32(GetLastError()));
     return false;
   }
-  run = repair_run_begin(s, targets, allow_mixer_close, allow_audiodg_close, progress, progress_userdata, cancel, wake_set, NULL, out, err);
+  run = repair_run_begin(
+      s, targets, allow_mixer_close, allow_audio_service_pause, progress, progress_userdata, cancel, wake_set, NULL, out, err);
   if (run == NULL) {
     OV_ERROR_ADD_TRACE(err);
     goto cleanup;
