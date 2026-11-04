@@ -44,8 +44,7 @@ $ErrorActionPreference = 'Stop'
 
 # The settings of audient-device-closer.json are kept inside this script so that it can be
 # carried around as one file.  To bring in a new settings file, paste its whole text between
-# the two markers below; nothing else in this script has to change.  A test compares these
-# settings with the file, so a change there has to come here too.
+# the two markers below; nothing else in this script has to change.
 $EmbeddedSettings = @'
 {
   "ks_service": "audientusbaudioks",
