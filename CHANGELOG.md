@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 1.0.0rc4 2026-11-05
 
 - Ship the installer only; the portable zip archive is no longer provided
 - Register the scheduled task only from the installed copy
