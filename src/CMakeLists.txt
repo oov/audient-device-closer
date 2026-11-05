@@ -201,6 +201,33 @@ set_property(SOURCE app.rc APPEND PROPERTY OBJECT_DEPENDS
 # The folder the program is built into is also the folder its documents are built into, so
 # the two are named together and cannot drift apart.
 set(adc_bin_dir "${CMAKE_BINARY_DIR}/bin")
+# The minimal script is one file a reader can carry around.  CMake writes the settings of
+# audient-device-closer.json and the version into it at configure time, so a build cannot
+# ship a script that reads other devices than the program, and the file name says what
+# release it belongs to.
+if(NOT DEFINED ADC_VERSION)
+  set(ADC_VERSION "dev")
+endif()
+file(READ "${CMAKE_CURRENT_SOURCE_DIR}/audient-device-closer.json" ADC_EMBEDDED_SETTINGS)
+string(REPLACE "\r\n" "\n" ADC_EMBEDDED_SETTINGS "${ADC_EMBEDDED_SETTINGS}")
+string(REGEX REPLACE "\n+$" "\n" ADC_EMBEDDED_SETTINGS "${ADC_EMBEDDED_SETTINGS}")
+if(NOT ADC_EMBEDDED_SETTINGS MATCHES "\n$")
+  string(APPEND ADC_EMBEDDED_SETTINGS "\n")
+endif()
+file(MAKE_DIRECTORY "${adc_bin_dir}")
+file(GLOB adc_old_minimal_scripts "${adc_bin_dir}/audient-device-closer_*_minimal.ps1")
+foreach(adc_old_minimal_script IN LISTS adc_old_minimal_scripts)
+  file(REMOVE "${adc_old_minimal_script}")
+endforeach()
+configure_file(
+  "${CMAKE_CURRENT_SOURCE_DIR}/audient-device-closer-minimal.ps1.in"
+  "${adc_bin_dir}/audient-device-closer_${ADC_VERSION}_minimal.ps1"
+  @ONLY
+)
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+  "${CMAKE_CURRENT_SOURCE_DIR}/audient-device-closer.json"
+  "${CMAKE_CURRENT_SOURCE_DIR}/audient-device-closer-minimal.ps1.in"
+)
 set_target_properties(adc PROPERTIES
   OUTPUT_NAME audient-device-closer
   RUNTIME_OUTPUT_DIRECTORY "${adc_bin_dir}"
@@ -210,7 +237,7 @@ set_target_properties(adc PROPERTIES
 # an installed copy, and a sample that keeps the values of an earlier build hides a change of
 # the settings from the person who starts it.
 add_custom_command(TARGET adc POST_BUILD
-  COMMAND "${CMAKE_COMMAND}" -D "src=${PROJECT_SOURCE_DIR}/audient-device-closer.json"
+  COMMAND "${CMAKE_COMMAND}" -D "src=${CMAKE_CURRENT_SOURCE_DIR}/audient-device-closer.json"
           -D "dst=$<TARGET_FILE_DIR:adc>/audient-device-closer.json"
           -P "${PROJECT_SOURCE_DIR}/cmake/copy-settings.cmake"
   VERBATIM

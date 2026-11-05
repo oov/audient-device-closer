@@ -95,30 +95,6 @@ iD14mkII 以外の Audient 製品にも対応する想定で作成していま�
    5. 解放できたら、オーディオデバイスとして復帰したかを確認する。復帰を確認できたらこのデバイスは完了
    6. 解放できなかったので、原因になったアプリケーションをリストで表示し、残りのデバイスの処理も打ち切りで終了
 
-## audient-device-closer-minimal.ps1 について
-
-デバイスの復帰を行うための最小限の処理を PowerShell 用スクリプトにもまとめました。
-
-### スクリプトをダウンロードしてから使う方法
-
-スリープからの復帰時、音が出なくなったらスクリプトをダウンロードして、以下のように実行してください。  
-UACの確認ダイアログが表示されます。
-
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\audient-device-closer-minimal.ps1
-```
-
-### スクリプトをダウンロードせずに使う方法
-
-以下のようにするとダウンロードしなくても試せます。
-管理者権限を持つシェルから以下を実行してください。
-
-```powershell
-powershell -NoProfile -Command "irm https://raw.githubusercontent.com/oov/audient-device-closer/refs/heads/main/audient-device-closer-minimal.ps1 | iex"
-```
-
-この方法は簡単に試す場合には便利ですが、インターネットアクセスが必要になるし、もし開発者のアカウントが誰かに乗っ取られたら大変なことになるので常用には向きません。
-
 ## Credits
 
 audient-device-closer is made possible by the following open source softwares.

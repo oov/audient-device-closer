@@ -171,6 +171,7 @@ if [ "${SKIP_BUILD}" -eq 0 ]; then
     rm -rf "${destdir}"
     cmake -S "${PWD}" -B "${destdir}" --preset default \
       -DCMAKE_BUILD_TYPE="${CMAKE_BUILD_TYPE}" \
+      -DADC_VERSION="${ADC_VERSION:-dev}" \
       -DCMAKE_TOOLCHAIN_FILE="${PWD}/cmake/llvm-mingw.cmake" \
       -DCMAKE_C_COMPILER="${CMAKE_C_COMPILER:-clang}" \
       -DCMAKE_C_COMPILER_TARGET="${CMAKE_C_COMPILER_TARGET:-x86_64-w64-mingw32}"

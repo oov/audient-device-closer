@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- Generate the minimal PowerShell script at build time with the version and settings embedded
+- Ship the minimal PowerShell script as a versioned release asset
+
 ## 1.0.0rc4 2026-11-05
 
 - Ship the installer only; the portable zip archive is no longer provided

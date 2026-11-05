@@ -1,3 +1,5 @@
+# audient-device-closer-minimal.ps1 @ADC_VERSION@
+
 <#
 .SYNOPSIS
   Minimal stand-in for audient-device-closer.
@@ -42,49 +44,8 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-# The settings of audient-device-closer.json are kept inside this script so that it can be
-# carried around as one file.  To bring in a new settings file, paste its whole text between
-# the two markers below; nothing else in this script has to change.
 $EmbeddedSettings = @'
-{
-  "ks_service": "audientusbaudioks",
-  "devices": [
-    { "name": "iD22", "id": "TUSBAUDIO_ENUM\\VID_2708&PID_0001&KS" },
-    { "name": "iD14", "id": "TUSBAUDIO_ENUM\\VID_2708&PID_0002&KS" },
-    { "name": "iD4", "id": "TUSBAUDIO_ENUM\\VID_2708&PID_0003&KS" },
-    { "name": "Sono", "id": "TUSBAUDIO_ENUM\\VID_2708&PID_0004&KS" },
-    { "name": "iD44", "id": "TUSBAUDIO_ENUM\\VID_2708&PID_0005&KS" },
-    { "name": "EVO4", "id": "TUSBAUDIO_ENUM\\VID_2708&PID_0006&KS" },
-    { "name": "EVO8", "id": "TUSBAUDIO_ENUM\\VID_2708&PID_0007&KS" },
-    { "name": "iD14", "id": "TUSBAUDIO_ENUM\\VID_2708&PID_0008&KS" },
-    { "name": "iD4", "id": "TUSBAUDIO_ENUM\\VID_2708&PID_0009&KS" },
-    { "name": "EVO16", "id": "TUSBAUDIO_ENUM\\VID_2708&PID_000A&KS" },
-    { "name": "iD44", "id": "TUSBAUDIO_ENUM\\VID_2708&PID_000B&KS" },
-    { "name": "iD24", "id": "TUSBAUDIO_ENUM\\VID_2708&PID_000D&KS" },
-    { "name": "ORIA", "id": "TUSBAUDIO_ENUM\\VID_2708&PID_000E&KS" },
-    { "name": "iD4 Stream OTG", "id": "TUSBAUDIO_ENUM\\VID_2708&PID_000F&KS" },
-    { "name": "iD14 Stream OTG", "id": "TUSBAUDIO_ENUM\\VID_2708&PID_0010&KS" },
-    { "name": "iD48", "id": "TUSBAUDIO_ENUM\\VID_2708&PID_0012&KS" }
-  ],
-  "veto_log_name": "System",
-  "veto_provider_name": "Microsoft-Windows-Kernel-PnP",
-  "veto_event_id": 225,
-  "mixer_process_names": [
-    "iD.exe",
-    "EVO.exe",
-    "Sono.exe",
-    "ORIA Control.exe"
-  ],
-  "task_dir": "AudientDeviceCloser",
-  "task_name": "Device recovery after resume from sleep",
-  "auto_run_delay_ms": 5000,
-  "confirm_max_wait_ms": 5000,
-  "veto_max_wait_ms": 5000,
-  "use_theme": true,
-  "allow_audio_service_pause": false,
-  "simulate": ""
-}
-'@
+@ADC_EMBEDDED_SETTINGS@'@
 
 Add-Type -Namespace Adc -Name Cfg -MemberDefinition @'
 [System.Runtime.InteropServices.DllImport("cfgmgr32.dll", CharSet = System.Runtime.InteropServices.CharSet.Unicode)]
