@@ -95,7 +95,7 @@ struct removal_manager const *removal_manager_system(void);
  * that raises it.
  *
  * @param err the error of a removal that failed
- * @return true when the code is removal_error_veto
+ * @return true when the code is app_error_removal_veto
  */
 bool removal_error_is_veto(struct ov_error const *const err);
 
@@ -103,6 +103,6 @@ bool removal_error_is_veto(struct ov_error const *const err);
  * @brief The code of a removal error, for a caller that carries it further
  *
  * @param err the error of a removal that failed
- * @return the code of ov_error_type_app, removal_error_none when err carries no removal error
+ * @return the code of ov_error_type_app, app_error_none when err carries no removal error
  */
 enum app_error_code removal_error_of(struct ov_error const *const err);

@@ -16,13 +16,13 @@ void removal_manager_select(struct removal_manager const *const manager) {
 }
 #endif // ADC_MOCK
 
-bool removal_error_is_veto(struct ov_error const *const err) { return ov_error_is(err, ov_error_type_app, removal_error_veto); }
+bool removal_error_is_veto(struct ov_error const *const err) { return ov_error_is(err, ov_error_type_app, app_error_removal_veto); }
 
 enum app_error_code removal_error_of(struct ov_error const *const err) {
   int code = 0;
 
   if (!ov_error_get_code(err, ov_error_type_app, &code)) {
-    return removal_error_none;
+    return app_error_none;
   }
   return (enum app_error_code)code;
 }

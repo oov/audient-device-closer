@@ -263,7 +263,7 @@ static void test_registration_needs_the_installed_copy(void) {
   struct ov_error err = {0};
   struct settings const settings = {.task_dir = L"AudientDeviceCloser", .task_name = L"Device recovery after resume from sleep"};
 
-  TEST_FAILED_WITH(task_install(&settings, true, false, &err), &err, ov_error_type_app, task_error_not_installed);
+  TEST_FAILED_WITH(task_install(&settings, true, false, &err), &err, ov_error_type_app, app_error_task_not_installed);
 }
 
 TEST_LIST = {

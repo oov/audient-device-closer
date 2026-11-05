@@ -23,13 +23,13 @@
  */
 static enum app_error_code removal_error_from_configret(unsigned long const cr) {
   if (cr == CR_ACCESS_DENIED) {
-    return removal_error_access_denied;
+    return app_error_removal_access_denied;
   }
   if ((cr == CR_NO_SUCH_DEVNODE) || (cr == CR_NO_SUCH_DEVINST) || (cr == CR_NO_SUCH_VALUE) || (cr == CR_INVALID_DEVNODE) ||
       (cr == CR_INVALID_DEVINST)) {
-    return removal_error_device_gone;
+    return app_error_removal_device_gone;
   }
-  return removal_error_refused;
+  return app_error_removal_refused;
 }
 
 /**
@@ -58,33 +58,33 @@ static NODISCARD bool remove_device(wchar_t const *const ks_devnode, struct ov_e
   wchar_t devnode_id[MAX_DEVICE_ID_LEN + 1] = {0};
 
   if (ks_devnode == NULL) {
-    OV_ERROR_SET(err, ov_error_type_app, removal_error_refused, "the removal was asked for without a devnode");
+    OV_ERROR_SET(err, ov_error_type_app, app_error_removal_refused, "the removal was asked for without a devnode");
     goto cleanup;
   }
   if (wcslen(ks_devnode) >= (sizeof(devnode_id) / sizeof(devnode_id[0]))) {
-    OV_ERROR_SET(err, ov_error_type_app, removal_error_call_failed, "the devnode is too long for the system call");
+    OV_ERROR_SET(err, ov_error_type_app, app_error_removal_call_failed, "the devnode is too long for the system call");
     goto cleanup;
   }
   wcscpy(devnode_id, ks_devnode);
 
   cr = CM_Locate_DevNodeW(&ks, devnode_id, CM_LOCATE_DEVNODE_NORMAL);
   if (cr != CR_SUCCESS) {
-    set_configret_error(err, "CM_Locate_DevNodeW", cr, removal_error_call_failed);
+    set_configret_error(err, "CM_Locate_DevNodeW", cr, app_error_removal_call_failed);
     goto cleanup;
   }
   cr = CM_Get_Parent(&parent, ks, 0);
   if (cr != CR_SUCCESS) {
-    set_configret_error(err, "CM_Get_Parent", cr, removal_error_call_failed);
+    set_configret_error(err, "CM_Get_Parent", cr, app_error_removal_call_failed);
     goto cleanup;
   }
   cr = CM_Get_Device_IDW(parent, parent_id, (ULONG)(sizeof(parent_id) / sizeof(parent_id[0])), 0);
   if (cr != CR_SUCCESS) {
-    set_configret_error(err, "CM_Get_Device_IDW", cr, removal_error_call_failed);
+    set_configret_error(err, "CM_Get_Device_IDW", cr, app_error_removal_call_failed);
     goto cleanup;
   }
   cr = CM_Locate_DevNodeW(&parent_devinst, parent_id, CM_LOCATE_DEVNODE_NORMAL);
   if (cr != CR_SUCCESS) {
-    set_configret_error(err, "CM_Locate_DevNodeW(parent)", cr, removal_error_call_failed);
+    set_configret_error(err, "CM_Locate_DevNodeW(parent)", cr, app_error_removal_call_failed);
     goto cleanup;
   }
   cr = CM_Query_And_Remove_SubTreeW(parent_devinst, &veto_type, veto_name, (ULONG)(sizeof(veto_name) / sizeof(veto_name[0])), 0);
@@ -98,7 +98,7 @@ static NODISCARD bool remove_device(wchar_t const *const ks_devnode, struct ov_e
     }
     OV_ERROR_SETF(err,
                   ov_error_type_app,
-                  removal_error_veto,
+                  app_error_removal_veto,
                   "the removal was vetoed, blocked device: %1$hs",
                   "the removal was vetoed, blocked device: %1$hs",
                   veto_device);
@@ -163,7 +163,7 @@ remove_start(wchar_t const *const devnode, async_notify_fn const notify, void *c
   bool success = false;
 
   if (devnode == NULL) {
-    OV_ERROR_SET(err, ov_error_type_app, removal_error_refused, "the removal was asked for without a devnode");
+    OV_ERROR_SET(err, ov_error_type_app, app_error_removal_refused, "the removal was asked for without a devnode");
     goto cleanup;
   }
   if (!OV_REALLOC(&op, 1, sizeof(*op))) {

@@ -32,7 +32,7 @@ task_target(struct settings const *settings, wchar_t const **const out_dir, wcha
  *
  * Registers the task, or overwrites the one that is already registered.  Fails only when the
  * system refuses the registration, or when this copy is not the one the installer put on the
- * machine.  The second refusal is task_error_not_installed.
+ * machine.  The second refusal is app_error_task_not_installed.
  *
  * @param settings the settings that name the task
  * @param close_mixer the box of the caller that allows closing the mixer

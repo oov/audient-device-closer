@@ -777,27 +777,25 @@ static void test_result_headline(void) {
   char body[512];
 
   TEST_CASE("a closed device");
-  ui_result_dialog_text(
-      REPAIR_OUTCOME_CLOSED, removal_error_none, repair_failure_none, NULL, headline, sizeof(headline), body, sizeof(body));
+  ui_result_dialog_text(REPAIR_OUTCOME_CLOSED, app_error_none, repair_failure_none, NULL, headline, sizeof(headline), body, sizeof(body));
   TEST_CHECK(strcmp(headline, "Audient Device Closer") != 0);
   TEST_CHECK(strstr(headline, "could not") == NULL);
   TEST_CHECK(body[0] != '\0');
 
   TEST_CASE("a device that is not there");
-  ui_result_dialog_text(
-      REPAIR_OUTCOME_ABSENT, removal_error_none, repair_failure_none, NULL, headline, sizeof(headline), body, sizeof(body));
+  ui_result_dialog_text(REPAIR_OUTCOME_ABSENT, app_error_none, repair_failure_none, NULL, headline, sizeof(headline), body, sizeof(body));
   TEST_CHECK(strcmp(headline, "Audient Device Closer") != 0);
   TEST_CHECK(strstr(body, "No Audient device was found") != NULL);
   TEST_CHECK(strstr(body, "try again") == NULL);
 
   TEST_CASE("a device with a problem the removal does not cure");
   ui_result_dialog_text(
-      REPAIR_OUTCOME_OTHER_PROBLEM, removal_error_none, repair_failure_none, NULL, headline, sizeof(headline), body, sizeof(body));
+      REPAIR_OUTCOME_OTHER_PROBLEM, app_error_none, repair_failure_none, NULL, headline, sizeof(headline), body, sizeof(body));
   TEST_CHECK(strcmp(headline, "Audient Device Closer") != 0);
 
   TEST_CASE("a removal the program was not allowed to ask for");
   ui_result_dialog_text(
-      REPAIR_OUTCOME_FAILED, removal_error_access_denied, repair_failure_none, NULL, headline, sizeof(headline), body, sizeof(body));
+      REPAIR_OUTCOME_FAILED, app_error_removal_access_denied, repair_failure_none, NULL, headline, sizeof(headline), body, sizeof(body));
   TEST_CHECK(strcmp(headline, "Failed.") == 0);
   TEST_MSG("want the verdict in the headline of a failed run");
   TEST_CHECK(strstr(body, "administrator") != NULL);
@@ -810,28 +808,27 @@ static void test_result_headline(void) {
 
   TEST_CASE("a process that could not be closed is named");
   ui_result_dialog_text(
-      REPAIR_OUTCOME_FAILED, removal_error_none, repair_failure_process_close, L"iD.exe", headline, sizeof(headline), body, sizeof(body));
+      REPAIR_OUTCOME_FAILED, app_error_none, repair_failure_process_close, L"iD.exe", headline, sizeof(headline), body, sizeof(body));
   TEST_CHECK(strstr(body, "iD.exe") != NULL);
   TEST_MSG("want the process that could not be closed named");
   TEST_CHECK(strstr(body, "could not be closed") != NULL);
 
   TEST_CASE("the service that could not come back is named");
   ui_result_dialog_text(
-      REPAIR_OUTCOME_FAILED, removal_error_none, repair_failure_audio_service_start, NULL, headline, sizeof(headline), body, sizeof(body));
+      REPAIR_OUTCOME_FAILED, app_error_none, repair_failure_audio_service_start, NULL, headline, sizeof(headline), body, sizeof(body));
   TEST_CHECK(strstr(body, "Windows Audio") != NULL);
   TEST_MSG("want the service that would not start named");
 
   TEST_CASE("the devices that could not be read at all are answered");
   ui_result_dialog_text(
-      REPAIR_OUTCOME_FAILED, removal_error_none, repair_failure_device_state, NULL, headline, sizeof(headline), body, sizeof(body));
+      REPAIR_OUTCOME_FAILED, app_error_none, repair_failure_device_state, NULL, headline, sizeof(headline), body, sizeof(body));
   TEST_CHECK(strcmp(headline, "Failed.") == 0);
   TEST_MSG("want the verdict in the headline of a run that could not look");
   TEST_CHECK(strstr(body, "could not be determined") != NULL);
   TEST_MSG("want the reader told that the state was never read");
 
   TEST_CASE("a veto names no process here");
-  ui_result_dialog_text(
-      REPAIR_OUTCOME_VETOED, removal_error_none, repair_failure_none, NULL, headline, sizeof(headline), body, sizeof(body));
+  ui_result_dialog_text(REPAIR_OUTCOME_VETOED, app_error_none, repair_failure_none, NULL, headline, sizeof(headline), body, sizeof(body));
   TEST_CHECK(strstr(body, "A process is still using the device") != NULL);
   TEST_CHECK(strstr(body, ".exe") == NULL);
   TEST_MSG("the names of the blockers belong to the blockers window");
@@ -854,12 +851,12 @@ static void test_result_dialog_lines_differ(void) {
                                                  REPAIR_OUTCOME_VETOED,
                                                  REPAIR_OUTCOME_FAILED,
                                                  REPAIR_OUTCOME_UNKNOWN};
-  static enum app_error_code const removal_errors[] = {removal_error_none,
-                                                       removal_error_access_denied,
-                                                       removal_error_device_gone,
-                                                       removal_error_call_failed,
-                                                       removal_error_veto,
-                                                       removal_error_refused};
+  static enum app_error_code const removal_errors[] = {app_error_none,
+                                                       app_error_removal_access_denied,
+                                                       app_error_removal_device_gone,
+                                                       app_error_removal_call_failed,
+                                                       app_error_removal_veto,
+                                                       app_error_removal_refused};
   size_t i = 0;
   size_t k = 0;
 

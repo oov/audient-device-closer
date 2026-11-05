@@ -23,12 +23,12 @@
  * The codes are the ones CM_Query_And_Remove_SubTreeW really answers with.
  */
 static void test_error_from_configret(void) {
-  TEST_CHECK(removal_error_from_configret(CR_ACCESS_DENIED) == removal_error_access_denied);
-  TEST_CHECK(removal_error_from_configret(CR_NO_SUCH_DEVNODE) == removal_error_device_gone);
-  TEST_CHECK(removal_error_from_configret(CR_INVALID_DEVNODE) == removal_error_device_gone);
-  TEST_CHECK(removal_error_from_configret(CR_NO_SUCH_VALUE) == removal_error_device_gone);
-  TEST_CHECK(removal_error_from_configret(0xFFFFFFFF) == removal_error_refused);
-  TEST_CHECK(removal_error_from_configret(CR_OUT_OF_MEMORY) == removal_error_refused);
+  TEST_CHECK(removal_error_from_configret(CR_ACCESS_DENIED) == app_error_removal_access_denied);
+  TEST_CHECK(removal_error_from_configret(CR_NO_SUCH_DEVNODE) == app_error_removal_device_gone);
+  TEST_CHECK(removal_error_from_configret(CR_INVALID_DEVNODE) == app_error_removal_device_gone);
+  TEST_CHECK(removal_error_from_configret(CR_NO_SUCH_VALUE) == app_error_removal_device_gone);
+  TEST_CHECK(removal_error_from_configret(0xFFFFFFFF) == app_error_removal_refused);
+  TEST_CHECK(removal_error_from_configret(CR_OUT_OF_MEMORY) == app_error_removal_refused);
 }
 
 /**
@@ -55,7 +55,7 @@ static void test_a_missing_devnode_is_a_failed_call(void) {
   struct ov_error err = {0};
   struct removal_manager const *const machine = removal_manager_system();
 
-  TEST_FAILED_WITH(remove_and_wait(machine, L"adc-no-such-device", &err), &err, ov_error_type_app, removal_error_call_failed);
+  TEST_FAILED_WITH(remove_and_wait(machine, L"adc-no-such-device", &err), &err, ov_error_type_app, app_error_removal_call_failed);
 }
 
 /**
@@ -72,7 +72,7 @@ static void test_a_long_devnode_is_refused(void) {
     devnode[i] = L'x';
   }
   devnode[(sizeof(devnode) / sizeof(devnode[0])) - 1] = L'\0';
-  TEST_FAILED_WITH(remove_and_wait(machine, devnode, &err), &err, ov_error_type_app, removal_error_call_failed);
+  TEST_FAILED_WITH(remove_and_wait(machine, devnode, &err), &err, ov_error_type_app, app_error_removal_call_failed);
 }
 
 /**
@@ -82,7 +82,7 @@ static void test_no_devnode_is_refused(void) {
   struct ov_error err = {0};
   struct removal_manager const *const machine = removal_manager_system();
 
-  TEST_FAILED_WITH(remove_and_wait(machine, NULL, &err), &err, ov_error_type_app, removal_error_refused);
+  TEST_FAILED_WITH(remove_and_wait(machine, NULL, &err), &err, ov_error_type_app, app_error_removal_refused);
 }
 
 TEST_LIST = {

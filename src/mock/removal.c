@@ -52,7 +52,7 @@ static NODISCARD bool remove_device(wchar_t const *const devnode, struct ov_erro
     return false;
   }
   if ((devnode == NULL) || (devnode[0] == L'\0')) {
-    OV_ERROR_SET(err, ov_error_type_app, removal_error_refused, "the removal was asked for without a devnode");
+    OV_ERROR_SET(err, ov_error_type_app, app_error_removal_refused, "the removal was asked for without a devnode");
     return false;
   }
   if (g_script.delay_ms > 0) {
@@ -60,10 +60,10 @@ static NODISCARD bool remove_device(wchar_t const *const devnode, struct ov_erro
   }
   g_calls++;
   if (g_calls <= g_script.refusals) {
-    if (g_script.code == removal_error_veto) {
+    if (g_script.code == app_error_removal_veto) {
       OV_ERROR_SETF(err,
                     ov_error_type_app,
-                    removal_error_veto,
+                    app_error_removal_veto,
                     "%1$ls",
                     "the removal was vetoed, blocked device: %1$ls",
                     (g_script.vetoed_device != NULL) ? g_script.vetoed_device : L"");

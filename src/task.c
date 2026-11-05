@@ -455,7 +455,7 @@ cleanup:
  * Registers the task, or overwrites the one that is already registered.  Fails only when
  * the system refuses the registration, or when this copy is not the one the installer put
  * on the machine: a task that runs a file anyone can replace would run it with the
- * privileges of the system.  The second refusal is task_error_not_installed.
+ * privileges of the system.  The second refusal is app_error_task_not_installed.
  *
  * @param settings the settings that name the task
  * @param close_mixer the box of the caller that allows closing the mixer
@@ -479,7 +479,8 @@ NODISCARD bool task_install(struct settings const *const settings,
     return false;
   }
   if (!install_is_installed()) {
-    OV_ERROR_SET(err, ov_error_type_app, task_error_not_installed, "the program is not the installed copy, so the task is not registered");
+    OV_ERROR_SET(
+        err, ov_error_type_app, app_error_task_not_installed, "the program is not the installed copy, so the task is not registered");
     return false;
   }
   exe = paths_executable(err);

@@ -112,7 +112,7 @@ bool simulate_install(wchar_t const *const scenario) {
     return install(g_devnodes, kNodeCount, false, &removals);
   }
   if (wcscmp(scenario, L"access_denied") == 0) {
-    struct removal_mock_script const removals = {.refusals = 1, .code = removal_error_access_denied, .delay_ms = 3000};
+    struct removal_mock_script const removals = {.refusals = 1, .code = app_error_removal_access_denied, .delay_ms = 3000};
     return install(g_devnodes, kNodeCount, false, &removals);
   }
   if (wcscmp(scenario, L"unreadable") == 0) {
