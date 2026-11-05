@@ -5,13 +5,13 @@
 
 ### Run the minimal script
 
-After downloading the script, run it from PowerShell:
+After downloading the script, run it from PowerShell. It asks for administrator rights:
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File .\audient-device-closer_${VERSION}_minimal.ps1
 ```
 
-Or run it without downloading it:
+Or run it without downloading it from a shell with administrator rights:
 
 ```powershell
 # [WARN] This method is handy for a quick test, but it is not meant for everyday use because of safety concerns.

@@ -33,6 +33,26 @@ jobs:
           name: build-bin
           path: |
             build/Release/x86_64/bin/
+      - name: Attest minimal PowerShell script
+        if: ${{ !github.event.repository.private }}
+        id: attest-minimal
+        uses: actions/attest-build-provenance@v4
+        with:
+          subject-path: "build/Release/x86_64/bin/audient-device-closer_*_minimal.ps1"
+      - name: Prepare attestation for minimal script
+        if: ${{ !github.event.repository.private }}
+        shell: bash
+        run: |
+          VERSION="${{ github.ref_name }}"
+          mkdir -p attestations
+          cp "${{ steps.attest-minimal.outputs.bundle-path }}" "attestations/audient-device-closer_${VERSION}_minimal.ps1.attestation.jsonl"
+      - name: Upload attestation for minimal script
+        if: ${{ !github.event.repository.private }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: attestation-minimal
+          path: attestations/
+          retention-days: 1
 
   installer:
     runs-on: windows-latest
@@ -103,6 +123,12 @@ jobs:
         uses: actions/download-artifact@v8
         with:
           name: attestation-setup
+          path: attestations/
+      - name: Download attestation for minimal script
+        if: ${{ !github.event.repository.private }}
+        uses: actions/download-artifact@v8
+        with:
+          name: attestation-minimal
           path: attestations/
       - name: Create Release
         env:
