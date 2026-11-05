@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 1.0.0rc5 2026-11-05
 
 - Generate the minimal PowerShell script at build time with the version and settings embedded
 - Ship the minimal PowerShell script as a versioned release asset
