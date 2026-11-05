@@ -94,6 +94,7 @@ add_library(adc_core STATIC
   settings.c
   logger.c
   paths.c
+  install.c
   process_manager.c
   real/process.c
   device_probe.c
@@ -342,10 +343,11 @@ adc_add_unit_test(blocker SOURCES process_manager.c mock/process.c DEFINES ADC_M
 # The machine of the system has a test of its own, because ending a process is worth checking
 # without a stand-in.  It compiles the machine itself, so the manager that would name it does
 # not come along.
-adc_add_unit_test(real_process SOURCES async.c logger.c paths.c loggate.c clock_manager.c real/clock.c LIBS "advapi32;shlwapi" TEST real/process_test.c)
+adc_add_unit_test(real_process SOURCES async.c logger.c paths.c install.c loggate.c clock_manager.c real/clock.c LIBS "advapi32;shlwapi" TEST real/process_test.c)
 adc_add_unit_test(settings SOURCES paths.c loggate.c clock_manager.c real/clock.c LIBS "yyjson;shlwapi")
-adc_add_unit_test(logger SOURCES paths.c loggate.c clock_manager.c real/clock.c LIBS "yyjson;shlwapi")
-adc_add_unit_test(task SOURCES paths.c LIBS "ole32;oleaut32;uuid;taskschd;shlwapi")
+adc_add_unit_test(logger SOURCES paths.c install.c loggate.c clock_manager.c real/clock.c LIBS "yyjson;shlwapi;advapi32")
+adc_add_unit_test(install SOURCES paths.c install.c LIBS "advapi32;shlwapi")
+adc_add_unit_test(task SOURCES paths.c install.c LIBS "ole32;oleaut32;uuid;taskschd;shlwapi;advapi32")
 
 # The modules whose tests compile them and need nothing else in particular.
 adc_add_unit_test(async)

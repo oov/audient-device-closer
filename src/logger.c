@@ -11,6 +11,7 @@
 #include <ovthreads.h>
 
 #include "clock_manager.h"
+#include "install.h"
 #include "loggate.h"
 #include "paths.h"
 
@@ -241,22 +242,16 @@ static bool logger_is_open(void) { return g_file != INVALID_HANDLE_VALUE; }
  * the executable already sits in.  Without the folder the open cannot succeed either, so a
  * failure here is the failure of the open.
  *
- * @param exe_path the executable the log belongs to
+ * @param installed the copy is the one the installer put on the machine
  * @param err receives the failure of the folder
  * @return false when the folder could not be made
  */
-static NODISCARD bool make_folder(wchar_t const *const exe_path, struct ov_error *const err) {
+static NODISCARD bool make_folder(bool const installed, struct ov_error *const err) {
   wchar_t *folder = NULL;
-  ov_tribool const installed = paths_is_in_program_files(exe_path, err);
   bool success = false;
 
-  if (installed == ov_indeterminate) {
-    OV_ERROR_ADD_TRACE(err);
-    goto cleanup;
-  }
-  if (installed == ov_false) {
-    success = true; // a portable copy writes next to itself, its folder exists already
-    goto cleanup;
+  if (!installed) {
+    return true; // a portable copy writes next to itself, its folder exists already
   }
   folder = paths_log_folder(err);
   if (folder == NULL) {
@@ -277,19 +272,21 @@ cleanup:
 }
 
 /**
- * @brief The log an executable writes next to itself
+ * @brief The log an executable writes
  *
- * The name is the name of the executable with its extension replaced, which is the same
- * computation the settings file goes through: see paths_replace_extension.  An installed copy
- * keeps its log under its own name in the folder paths_log_folder gives, because that copy is
- * run both by the person at the screen and by the task scheduler.
+ * A portable copy keeps the name of the executable with its extension replaced, next to
+ * itself, which is the same computation the settings file goes through: see
+ * paths_replace_extension.  An installed copy keeps its log under its own name in the folder
+ * paths_log_folder gives, because that copy is run both by the person at the screen and by the
+ * task scheduler.
  *
+ * @param installed the copy is the one the installer put on the machine
  * @param exe_path the executable the log belongs to
  * @param err receives the failure of the build
  * @return the path, NULL when it could not be built
  * @note Release with OV_ARRAY_DESTROY.
  */
-static NODISCARD wchar_t *path_for_exe(wchar_t const *const exe_path, struct ov_error *const err) {
+static NODISCARD wchar_t *path_for_exe(bool const installed, wchar_t const *const exe_path, struct ov_error *const err) {
   wchar_t *folder = NULL;
   wchar_t *result = NULL;
   bool success = false;
@@ -298,22 +295,14 @@ static NODISCARD wchar_t *path_for_exe(wchar_t const *const exe_path, struct ov_
     OV_ERROR_SET_GENERIC(err, ov_error_generic_invalid_argument);
     goto cleanup;
   }
-  {
-    ov_tribool const installed = paths_is_in_program_files(exe_path, err);
-
-    if (installed == ov_indeterminate) {
+  if (!installed) {
+    result = paths_replace_extension(exe_path, L".log", err); // a portable copy keeps its log next to itself
+    if (result == NULL) {
       OV_ERROR_ADD_TRACE(err);
       goto cleanup;
     }
-    if (installed == ov_false) {
-      result = paths_replace_extension(exe_path, L".log", err); // a portable copy keeps its log next to itself
-      if (result == NULL) {
-        OV_ERROR_ADD_TRACE(err);
-        goto cleanup;
-      }
-      success = true;
-      goto cleanup;
-    }
+    success = true;
+    goto cleanup;
   }
   folder = paths_log_folder(err);
   if (folder == NULL) {
@@ -470,7 +459,7 @@ static NODISCARD bool write_trim_note(HANDLE const h, struct ov_error *const err
 }
 
 /**
- * @brief Open the log next to the executable and trim it when it is already too big
+ * @brief Open the log of this copy and trim it when it is already too big
  *
  * Without this call every write is a no-op, so a caller that does not want a log simply
  * skips it.  A second call is refused: the handle is owned until logger_close.
@@ -485,6 +474,7 @@ NODISCARD bool logger_open(struct ov_error *const err) {
   HANDLE h = INVALID_HANDLE_VALUE;
   LARGE_INTEGER size;
   LARGE_INTEGER zero;
+  bool const installed = install_is_installed();
 
   if (logger_is_open()) {
     OV_ERROR_SET_GENERIC(err, ov_error_generic_invalid_argument);
@@ -495,12 +485,12 @@ NODISCARD bool logger_open(struct ov_error *const err) {
     OV_ERROR_ADD_TRACE(err);
     goto cleanup;
   }
-  path = path_for_exe(exe, err);
+  path = path_for_exe(installed, exe, err);
   if (path == NULL) {
     OV_ERROR_ADD_TRACE(err);
     goto cleanup;
   }
-  if (!make_folder(exe, err)) {
+  if (!make_folder(installed, err)) {
     OV_ERROR_ADD_TRACE(err);
     goto cleanup;
   }

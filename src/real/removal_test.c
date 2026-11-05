@@ -55,7 +55,7 @@ static void test_a_missing_devnode_is_a_failed_call(void) {
   struct ov_error err = {0};
   struct removal_manager const *const machine = removal_manager_system();
 
-  TEST_FAILED_WITH(remove_and_wait(machine, L"adc-no-such-device", &err), &err, ov_error_type_removal, removal_error_call_failed);
+  TEST_FAILED_WITH(remove_and_wait(machine, L"adc-no-such-device", &err), &err, ov_error_type_app, removal_error_call_failed);
 }
 
 /**
@@ -72,7 +72,7 @@ static void test_a_long_devnode_is_refused(void) {
     devnode[i] = L'x';
   }
   devnode[(sizeof(devnode) / sizeof(devnode[0])) - 1] = L'\0';
-  TEST_FAILED_WITH(remove_and_wait(machine, devnode, &err), &err, ov_error_type_removal, removal_error_call_failed);
+  TEST_FAILED_WITH(remove_and_wait(machine, devnode, &err), &err, ov_error_type_app, removal_error_call_failed);
 }
 
 /**
@@ -82,7 +82,7 @@ static void test_no_devnode_is_refused(void) {
   struct ov_error err = {0};
   struct removal_manager const *const machine = removal_manager_system();
 
-  TEST_FAILED_WITH(remove_and_wait(machine, NULL, &err), &err, ov_error_type_removal, removal_error_refused);
+  TEST_FAILED_WITH(remove_and_wait(machine, NULL, &err), &err, ov_error_type_app, removal_error_refused);
 }
 
 TEST_LIST = {

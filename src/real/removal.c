@@ -19,9 +19,9 @@
  * network error text).
  *
  * @param cr the CONFIGRET the call answered with
- * @return the code of ov_error_type_removal the caller acts on
+ * @return the code of ov_error_type_app the caller acts on
  */
-static enum removal_error_code removal_error_from_configret(unsigned long const cr) {
+static enum app_error_code removal_error_from_configret(unsigned long const cr) {
   if (cr == CR_ACCESS_DENIED) {
     return removal_error_access_denied;
   }
@@ -38,11 +38,11 @@ static enum removal_error_code removal_error_from_configret(unsigned long const 
  * @param err receives the error
  * @param func the name of the call that failed
  * @param cr the CONFIGRET it answered with
- * @param code the code of ov_error_type_removal the caller acts on
+ * @param code the code of ov_error_type_app the caller acts on
  */
 static void
-set_configret_error(struct ov_error *const err, char const *const func, unsigned long const cr, enum removal_error_code const code) {
-  OV_ERROR_SETF(err, ov_error_type_removal, (int)code, "%1$s failed: CONFIGRET=%2$u", "%1$s failed: CONFIGRET=%2$u", func, cr);
+set_configret_error(struct ov_error *const err, char const *const func, unsigned long const cr, enum app_error_code const code) {
+  OV_ERROR_SETF(err, ov_error_type_app, (int)code, "%1$s failed: CONFIGRET=%2$u", "%1$s failed: CONFIGRET=%2$u", func, cr);
 }
 
 static NODISCARD bool remove_device(wchar_t const *const ks_devnode, struct ov_error *const err) {
@@ -58,11 +58,11 @@ static NODISCARD bool remove_device(wchar_t const *const ks_devnode, struct ov_e
   wchar_t devnode_id[MAX_DEVICE_ID_LEN + 1] = {0};
 
   if (ks_devnode == NULL) {
-    OV_ERROR_SET(err, ov_error_type_removal, removal_error_refused, "the removal was asked for without a devnode");
+    OV_ERROR_SET(err, ov_error_type_app, removal_error_refused, "the removal was asked for without a devnode");
     goto cleanup;
   }
   if (wcslen(ks_devnode) >= (sizeof(devnode_id) / sizeof(devnode_id[0]))) {
-    OV_ERROR_SET(err, ov_error_type_removal, removal_error_call_failed, "the devnode is too long for the system call");
+    OV_ERROR_SET(err, ov_error_type_app, removal_error_call_failed, "the devnode is too long for the system call");
     goto cleanup;
   }
   wcscpy(devnode_id, ks_devnode);
@@ -97,7 +97,7 @@ static NODISCARD bool remove_device(wchar_t const *const ks_devnode, struct ov_e
       veto_device[0] = '\0'; // a name the conversion refuses is not worth dropping the report for
     }
     OV_ERROR_SETF(err,
-                  ov_error_type_removal,
+                  ov_error_type_app,
                   removal_error_veto,
                   "the removal was vetoed, blocked device: %1$hs",
                   "the removal was vetoed, blocked device: %1$hs",
@@ -163,7 +163,7 @@ remove_start(wchar_t const *const devnode, async_notify_fn const notify, void *c
   bool success = false;
 
   if (devnode == NULL) {
-    OV_ERROR_SET(err, ov_error_type_removal, removal_error_refused, "the removal was asked for without a devnode");
+    OV_ERROR_SET(err, ov_error_type_app, removal_error_refused, "the removal was asked for without a devnode");
     goto cleanup;
   }
   if (!OV_REALLOC(&op, 1, sizeof(*op))) {

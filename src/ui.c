@@ -19,6 +19,7 @@
 
 #include "device_manager.h"
 #include "device_probe.h"
+#include "error.h"
 #include "layout.h"
 #include "logger.h"
 #include "options.h"
@@ -340,7 +341,21 @@ static void install_task(struct ui_state *const st, HWND const hwnd) {
   struct ov_error err = {0};
   bool const close_mixer = (SendMessageW(st->chk_mixer, BM_GETCHECK, 0, 0) == BST_CHECKED);
   bool const allow_audio_service_pause = (SendMessageW(st->chk_audio_service, BM_GETCHECK, 0, 0) == BST_CHECKED);
+
   bool const ok = task_install(st->settings, close_mixer, allow_audio_service_pause, &err);
+  if (!ok && ov_error_is(&err, ov_error_type_app, task_error_not_installed)) {
+    // the task would run a file the person who unpacked the program can replace, as the
+    // system, so a portable copy never writes one
+    OV_SNPRINTF(title, sizeof(title) / sizeof(title[0]), ph, ph, gettext("Failed."));
+    OV_SNPRINTF(text,
+                sizeof(text) / sizeof(text[0]),
+                ph,
+                ph,
+                gettext("For security reasons, the scheduled task can only be registered by the installer version."));
+    OV_ERROR_REPORT(&err, NULL);
+    report_dialog(hwnd, title, text, TRUE);
+    return;
+  }
 
   OV_SNPRINTF(title, sizeof(title) / sizeof(title[0]), ph, ph, ok ? gettext("Done.") : gettext("Failed."));
   OV_SNPRINTF(text,
@@ -1333,7 +1348,7 @@ static enum ui_press ui_press_action(struct device_target const *const targets, 
  * @param body_size room of body
  */
 static void ui_result_dialog_text(enum repair_outcome const outcome,
-                                  enum removal_error_code const removal_error,
+                                  enum app_error_code const removal_error,
                                   enum repair_failure const failure,
                                   wchar_t const *const mixer_name,
                                   char *const headline,
@@ -1396,7 +1411,8 @@ static void ui_result_dialog_text(enum repair_outcome const outcome,
       case removal_error_veto:
       case removal_error_call_failed:
       case removal_error_refused:
-      case 0:
+      case removal_error_none:
+      case task_error_not_installed:
         break;
       }
     }

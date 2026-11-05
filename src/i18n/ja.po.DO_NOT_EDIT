@@ -77,6 +77,9 @@ msgstr "完了しました。"
 msgid "Failed."
 msgstr "失敗しました。"
 
+msgid "For security reasons, the scheduled task can only be registered by the installer version."
+msgstr "セキュリティ上の理由から、タスクスケジューラーへの登録はインストーラー版でのみ利用できます。"
+
 msgid "Install"
 msgstr "インストール"
 
@@ -156,9 +159,6 @@ msgstr "デバイスは解放しましたが、復帰を確認できませんで
 msgid "The device was released."
 msgstr "デバイスを正常に解放しました。"
 
-msgid "The path is too long to compare"
-msgstr "パスが長すぎて比較できません"
-
 msgid "The process that is using the device could not be found."
 msgstr "デバイスを使用しているプロセスを特定できませんでした。"
 
@@ -211,3 +211,6 @@ msgstr "待機しています..."
 #. trans: This dagger helps UTF-8 detection. You don't need to translate this.
 msgid "†"
 msgstr "†"
+
+#~ msgid "The path is too long to compare"
+#~ msgstr "パスが長すぎて比較できません"

@@ -43,7 +43,7 @@ Rather than installing it right away, first make sure the tool actually helps in
 2. Start this tool.
 3. Press the `Close the Audient device` button.
 4. If the device comes back normally, the tool is working as intended.
-5. Press the `Register the scheduled task` button so that the fix is applied automatically after resuming from sleep.
+5. Press the `Register the scheduled task` button so that the fix is applied automatically after resuming from sleep.  
 
 This tool writes the result of its work to a log file.  
 The zip version keeps the log next to the exe file, and the installer version keeps it in `C:\ProgramData\AudientDeviceCloser`.
@@ -70,12 +70,12 @@ This option is enabled by default.
 
 ### Install
 
-Registering the scheduled task uses the current location of the exe file.  
-If you delete or move the file afterwards, the tool will stop working properly.
+To run the device recovery automatically after the computer resumes from sleep, you can register it with the task scheduler.
 
 #### Register the scheduled task
 
-Registers the application so that it runs automatically after the computer resumes from sleep.
+Registers the application so that it runs automatically after the computer resumes from sleep.  
+For security reasons, this feature is available only in the installer version.
 
 #### Remove the scheduled task
 

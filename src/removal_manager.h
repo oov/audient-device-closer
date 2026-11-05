@@ -5,33 +5,7 @@
 #include <wchar.h>
 
 #include "async.h"
-
-/**
- * @brief The error type of the failures a removal answers with
- *
- * ovbase keeps the types 0-3 for itself (invalid, generic, hresult, errno).  The types of
- * this program start above them, so a report of a removal is told apart from one of the
- * system without reading its message.
- */
-enum {
-  ov_error_type_removal = 0x10,
-};
-
-/**
- * @brief Why a removal did not release the device, as a code of ov_error_type_removal
- *
- * Whether the release happened used to be a result of its own next to a reason; the two
- * are one answer now: the return of remove says whether it happened, and the code of the
- * error it raises says why it did not.
- */
-enum removal_error_code {
-  removal_error_none = 0,          //!< no removal error: the outcome was not a refusal of the removal
-  removal_error_veto = 1,          //!< a process still holds the device; the caller closes it and asks again
-  removal_error_access_denied = 2, //!< this program may not ask for the removal
-  removal_error_call_failed = 3,   //!< an earlier step of the removal already failed
-  removal_error_device_gone = 4,   //!< the device was not there any more
-  removal_error_refused = 5,       //!< the system refused for a reason of its own
-};
+#include "error.h"
 
 /**
  * @brief One removal, running on a thread of its own
@@ -47,7 +21,7 @@ struct removal_op;
  * @brief The release of a device from the machine
  *
  * One question, because releasing is one act: whoever answers it either released the device
- * or says why not, and the why is the code of ov_error_type_removal.
+ * or says why not, and the why is the code of ov_error_type_app.
  */
 struct removal_manager {
   /**
@@ -129,6 +103,6 @@ bool removal_error_is_veto(struct ov_error const *const err);
  * @brief The code of a removal error, for a caller that carries it further
  *
  * @param err the error of a removal that failed
- * @return the code of ov_error_type_removal, removal_error_none when err carries no removal error
+ * @return the code of ov_error_type_app, removal_error_none when err carries no removal error
  */
-enum removal_error_code removal_error_of(struct ov_error const *const err);
+enum app_error_code removal_error_of(struct ov_error const *const err);

@@ -61,12 +61,12 @@ enum repair_failure {
  */
 struct repair_result {
   enum repair_outcome outcome;
-  enum repair_failure failure;           // repair_failure_none unless a step of the repair failed
-  size_t failed_mixer;                   // which of the mixer names of the settings could not be closed
-  enum removal_error_code removal_error; // 0 unless the removal was refused
-  struct veto_event *events;             // ovarray or NULL.  released by repair_result_release
-  uint32_t *closed;                      // ovarray of the process ids this run closed.  released by repair_result_release
-  char message[512];                     // UTF-8, meant for the UI log
+  enum repair_failure failure;       // repair_failure_none unless a step of the repair failed
+  size_t failed_mixer;               // which of the mixer names of the settings could not be closed
+  enum app_error_code removal_error; // 0 unless the removal was refused
+  struct veto_event *events;         // ovarray or NULL.  released by repair_result_release
+  uint32_t *closed;                  // ovarray of the process ids this run closed.  released by repair_result_release
+  char message[512];                 // UTF-8, meant for the UI log
 };
 
 /**

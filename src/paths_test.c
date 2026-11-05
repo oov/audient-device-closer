@@ -14,6 +14,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <wchar.h>
+#include <wctype.h>
 
 #include <ovarray.h>
 #include <ovprintf.h>
@@ -230,78 +231,149 @@ cleanup:
 }
 
 /**
- * @brief The folder of a Program Files is what the system says it is
+ * @brief The same folder is recognised whatever the spelling of its path
  *
- * The folder name is not guessed: a machine can put its programs somewhere else, and the
- * text of a path says nothing about where the file sits.  A file under the folder the
- * system names is in it, a file that sits elsewhere is not, and a path that merely spells
- * the name of the folder is not one of its files.
+ * The answer is the identity of the folder, not the text of its path: a different case, a
+ * trailing separator and a path built with a dot name the folder that is there.
  */
-static void test_is_in_program_files(void) {
+static void test_same_directory(void) {
   struct ov_error err = {0};
-  wchar_t *program_files = NULL;
-  wchar_t *inside = NULL;
-  wchar_t *prefix = NULL;
-  wchar_t *lookalike = NULL;
-  wchar_t *elsewhere = NULL;
-  HRESULT const hr = SHGetKnownFolderPath(&FOLDERID_ProgramFiles, 0, NULL, &program_files);
+  wchar_t tmp[512];
+  wchar_t *folder = NULL;
+  wchar_t *sub = NULL;
+  wchar_t *with_separator = NULL;
+  wchar_t *other_case = NULL;
+  wchar_t *missing = NULL;
+  DWORD len = GetTempPathW((DWORD)(sizeof(tmp) / sizeof(tmp[0])), tmp);
 
-  if (FAILED(hr) || (program_files == NULL)) {
-    TEST_SKIP("want the Program Files folder of this machine");
+  if ((len == 0) || (len >= (DWORD)(sizeof(tmp) / sizeof(tmp[0])))) {
+    TEST_SKIP("want a temporary folder to build in");
     return;
   }
-  if (!TEST_SUCCEEDED(ov_sprintf_wchar(&inside, &err, NULL, L"%ls\\AudientDeviceCloser\\app.exe", program_files), &err)) {
+  if (!TEST_SUCCEEDED(ov_sprintf_wchar(&folder, &err, NULL, L"%ls\\adc-paths-same-%lu", tmp, (unsigned long)GetCurrentProcessId()), &err)) {
     goto cleanup;
   }
-  if (!TEST_SUCCEEDED(ov_sprintf_wchar(&prefix, &err, NULL, L"%lsExtra\\app.exe", program_files), &err)) {
+  RemoveDirectoryW(folder);
+  if (!TEST_SUCCEEDED(paths_create_folder(folder, &err), &err)) {
     goto cleanup;
   }
-  if (!TEST_SUCCEEDED(ov_sprintf_wchar(&lookalike, &err, NULL, L"C:\\somewhere\\Program Files\\app.exe"), &err)) {
+  if (!TEST_SUCCEEDED(ov_sprintf_wchar(&sub, &err, NULL, L"%ls\\sub", folder), &err)) {
     goto cleanup;
   }
-  if (!TEST_SUCCEEDED(ov_sprintf_wchar(&elsewhere, &err, NULL, L"C:\\somewhere\\AudientDeviceCloser\\app.exe"), &err)) {
+  if (!TEST_SUCCEEDED(paths_create_folder(sub, &err), &err)) {
+    goto cleanup;
+  }
+  if (!TEST_SUCCEEDED(ov_sprintf_wchar(&with_separator, &err, NULL, L"%ls\\", folder), &err)) {
+    goto cleanup;
+  }
+  if (!TEST_SUCCEEDED(ov_sprintf_wchar(&other_case, &err, NULL, L"%ls", folder), &err)) {
+    goto cleanup;
+  }
+  for (wchar_t *p = other_case; *p != L'\0'; p++) {
+    *p = (wchar_t)towupper(*p);
+  }
+  if (!TEST_SUCCEEDED(ov_sprintf_wchar(&missing, &err, NULL, L"%ls\\missing", folder), &err)) {
     goto cleanup;
   }
 
-  TEST_CASE("a file under the folder the system names is in it");
-  TEST_SUCCEEDED(paths_is_in_program_files(inside, &err) == ov_true, &err);
+  TEST_CASE("the same folder is the same folder");
+  TEST_SUCCEEDED(paths_same_directory(folder, folder, &err) == ov_true, &err);
 
-  TEST_CASE("a sibling folder that spells the same name in front is not it");
-  TEST_SUCCEEDED(paths_is_in_program_files(prefix, &err) == ov_false, &err);
+  TEST_CASE("a trailing separator does not make another folder");
+  TEST_SUCCEEDED(paths_same_directory(folder, with_separator, &err) == ov_true, &err);
 
-  TEST_CASE("a path elsewhere that spells the name of the folder is not one of its files");
-  TEST_SUCCEEDED(paths_is_in_program_files(lookalike, &err) == ov_false, &err);
-  TEST_SUCCEEDED(paths_is_in_program_files(elsewhere, &err) == ov_false, &err);
+  TEST_CASE("a different case does not make another folder");
+  TEST_SUCCEEDED(paths_same_directory(folder, other_case, &err) == ov_true, &err);
 
-  TEST_CASE("a path too long for the comparison is refused");
-  {
-    wchar_t too_long[MAX_PATH + 2];
+  TEST_CASE("a folder inside it is another folder");
+  TEST_SUCCEEDED(paths_same_directory(folder, sub, &err) == ov_false, &err);
 
-    for (size_t i = 0; i < (sizeof(too_long) / sizeof(too_long[0])) - 1; i++) {
-      too_long[i] = L'a';
-    }
-    too_long[(sizeof(too_long) / sizeof(too_long[0])) - 1] = L'\0';
-    TEST_FAILED_WITH(
-        paths_is_in_program_files(too_long, &err) != ov_indeterminate, &err, ov_error_type_generic, ov_error_generic_invalid_argument);
-  }
+  TEST_CASE("a folder that is not there is not the same folder");
+  TEST_SUCCEEDED(paths_same_directory(folder, missing, &err) == ov_false, &err);
 
   TEST_CASE("no path is refused");
   TEST_FAILED_WITH(
-      paths_is_in_program_files(NULL, &err) != ov_indeterminate, &err, ov_error_type_generic, ov_error_generic_invalid_argument);
+      paths_same_directory(NULL, folder, &err) != ov_indeterminate, &err, ov_error_type_generic, ov_error_generic_invalid_argument);
 
 cleanup:
-  CoTaskMemFree(program_files);
-  if (inside != NULL) {
-    OV_ARRAY_DESTROY(&inside);
+  if (missing != NULL) {
+    OV_ARRAY_DESTROY(&missing);
   }
-  if (prefix != NULL) {
-    OV_ARRAY_DESTROY(&prefix);
+  if (other_case != NULL) {
+    OV_ARRAY_DESTROY(&other_case);
   }
-  if (lookalike != NULL) {
-    OV_ARRAY_DESTROY(&lookalike);
+  if (with_separator != NULL) {
+    OV_ARRAY_DESTROY(&with_separator);
   }
-  if (elsewhere != NULL) {
-    OV_ARRAY_DESTROY(&elsewhere);
+  if (sub != NULL) {
+    RemoveDirectoryW(sub);
+    OV_ARRAY_DESTROY(&sub);
+  }
+  if (folder != NULL) {
+    RemoveDirectoryW(folder);
+    OV_ARRAY_DESTROY(&folder);
+  }
+}
+
+/**
+ * @brief The final path of a file is the one that names it without a reparse point
+ */
+static void test_final_path(void) {
+  struct ov_error err = {0};
+  wchar_t tmp[512];
+  wchar_t *file = NULL;
+  wchar_t *missing = NULL;
+  wchar_t *final = NULL;
+  HANDLE h = INVALID_HANDLE_VALUE;
+  DWORD len = GetTempPathW((DWORD)(sizeof(tmp) / sizeof(tmp[0])), tmp);
+
+  if ((len == 0) || (len >= (DWORD)(sizeof(tmp) / sizeof(tmp[0])))) {
+    TEST_SKIP("want a temporary folder to build in");
+    return;
+  }
+  if (!TEST_SUCCEEDED(ov_sprintf_wchar(&file, &err, NULL, L"%ls\\adc-paths-final-%lu.tmp", tmp, (unsigned long)GetCurrentProcessId()),
+                      &err)) {
+    goto cleanup;
+  }
+  if (!TEST_SUCCEEDED(
+          ov_sprintf_wchar(&missing, &err, NULL, L"%ls\\adc-paths-final-%lu.missing", tmp, (unsigned long)GetCurrentProcessId()), &err)) {
+    goto cleanup;
+  }
+  h = CreateFileW(file, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+  if (!TEST_CHECK(h != INVALID_HANDLE_VALUE)) {
+    goto cleanup;
+  }
+  CloseHandle(h);
+  h = INVALID_HANDLE_VALUE;
+
+  final = paths_final_path(file, &err);
+  if (TEST_SUCCEEDED(final != NULL, &err)) {
+    wchar_t const *leaf = wcsrchr(file, L'\\');
+    leaf = (leaf != NULL) ? leaf + 1 : file;
+    TEST_CHECK(final[0] != L'\\');
+    TEST_CHECK(ends_with(final, leaf));
+    TEST_MSG("want a path that ends with %ls, got %ls", leaf, final);
+  }
+
+  TEST_CASE("a file that is not there is refused");
+  TEST_FAILED_WITH(paths_final_path(missing, &err), &err, ov_error_type_hresult, HRESULT_FROM_WIN32(ERROR_FILE_NOT_FOUND));
+
+  TEST_CASE("no path is refused");
+  TEST_FAILED_WITH(paths_final_path(NULL, &err) != NULL, &err, ov_error_type_generic, ov_error_generic_invalid_argument);
+
+cleanup:
+  if (h != INVALID_HANDLE_VALUE) {
+    CloseHandle(h);
+  }
+  if (final != NULL) {
+    OV_ARRAY_DESTROY(&final);
+  }
+  if (missing != NULL) {
+    OV_ARRAY_DESTROY(&missing);
+  }
+  if (file != NULL) {
+    DeleteFileW(file);
+    OV_ARRAY_DESTROY(&file);
   }
 }
 
@@ -310,7 +382,8 @@ TEST_LIST = {
     {"file_name", test_file_name},
     {"file_name_matches", test_file_name_matches},
     {"files_beside_the_running_executable", test_files_beside_the_running_executable},
-    {"is_in_program_files", test_is_in_program_files},
+    {"same_directory", test_same_directory},
+    {"final_path", test_final_path},
     {"log_folder_is_the_machines", test_log_folder_is_the_machines},
     {"create_folder", test_create_folder},
     {NULL, NULL},

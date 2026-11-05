@@ -5,8 +5,9 @@
 #include <wchar.h>
 
 /**
- * The paths this program derives from its own location: the log has to sit next to the
- * executable, and so does the settings file.  Both computations live here.
+ * The paths this program derives from its own location: the settings file sits next to the
+ * executable, and so does the log of a portable copy.  An installed copy keeps its log in
+ * the machine-wide application data folder.  These computations live here.
  *
  * A path is what the system is asked to open, not a text this program shows or writes, so
  * everything here is a wide string: the Win32 calls take one, and the conversions a UTF-8
@@ -46,25 +47,34 @@ wchar_t const *paths_file_name(wchar_t const *const path);
 bool paths_file_name_matches(wchar_t const *const path, wchar_t const *const name);
 
 /**
- * @brief Is the executable installed under the Program Files folder of this machine
+ * @brief Are two paths the same folder
  *
- * A copy that sits in Program Files belongs to the machine rather than to the person who
- * unpacked it, and the run that repairs the device is often the one the task scheduler
- * started, not the one at the screen: the log of such a copy therefore goes to
- * paths_log_folder instead of next to the executable.
+ * The answer is the identity the file system gives the folder, not the spelling of the
+ * path: the case of the letters, a trailing separator and a path built with a dot all name
+ * the same folder, and a copy of it somewhere else does not.
  *
- * The folder is the one the system names, not one the path spells: a machine may put its
- * programs elsewhere, and a directory that merely carries the name says nothing about
- * where the file sits.  The two paths are compared through the system, so the cases of
- * the letters, the separators and the "." and ".." inside them fold away as the system
- * folds them, which is the whole reason the answer is asked for rather than worked out.
- *
- * @param exe_path the path to look at, NULL is refused
- * @param err receives the failure of the lookup or the refused argument
- * @return ov_true when exe_path names a file under the folder of the system, ov_false when
- *         it does not, ov_indeterminate when the folder could not be read, with err set
+ * @param a the first path to look at, NULL is refused
+ * @param b the second path to look at, NULL is refused
+ * @param err receives the failure of the lookup
+ * @return ov_true when both paths name the same folder, ov_false when they do not or when
+ *         one of them is not there, ov_indeterminate when the answer could not be worked
+ *         out, with err set
  */
-NODISCARD ov_tribool paths_is_in_program_files(wchar_t const *const exe_path, struct ov_error *const err);
+NODISCARD ov_tribool paths_same_directory(wchar_t const *const a, wchar_t const *const b, struct ov_error *const err);
+
+/**
+ * @brief The path of a file with the reparse points on the way resolved
+ *
+ * A junction or a symbolic link makes a file reachable under a path that can be pointed
+ * somewhere else later.  The task scheduler has to carry the path of the file itself, so
+ * this is the path a caller writes into the entry.
+ *
+ * @param path the file to look at, NULL is refused
+ * @param err receives the failure of the lookup
+ * @return the path, NULL when it could not be read
+ * @note Release with OV_ARRAY_DESTROY.
+ */
+NODISCARD wchar_t *paths_final_path(wchar_t const *const path, struct ov_error *const err);
 
 /**
  * @brief The folder the log of an installed copy writes into

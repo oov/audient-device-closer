@@ -1,11 +1,14 @@
 #include <windows.h>
 
+#include <commctrl.h>
+
 #include <ovarray.h>
 #include <ovbase.h>
 #include <ovmo.h>
 #include <ovprintf.h>
 #include <ovprintf_ex.h>
 
+#include "install.h"
 #include "instance.h"
 #include "logger.h"
 #include "options.h"
@@ -57,6 +60,75 @@ cleanup:
 }
 
 /**
+ * @brief Tell the person at the machine that the program cannot start
+ *
+ * The log is not open yet, so the dialog is the only place the reason can go.  The full
+ * error, with the positions it was raised at, goes into the expander, so the headline stays
+ * readable.  If the error cannot be turned into text, the dialog says so and the program
+ * still stops.
+ *
+ * @param report_err the failure of the install check, released by this function
+ */
+static void report_startup_error(struct ov_error *const report_err) {
+  if (!report_err) {
+    return;
+  }
+
+  char *s = NULL;
+  wchar_t message[1024];
+  wchar_t details[1024];
+  TASKDIALOGCONFIG cfg = {
+      .cbSize = sizeof(TASKDIALOGCONFIG),
+      .dwFlags = TDF_ALLOW_DIALOG_CANCELLATION | TDF_EXPAND_FOOTER_AREA,
+      .dwCommonButtons = TDCBF_OK_BUTTON,
+      .pszMainIcon = TD_WARNING_ICON,
+      .pszWindowTitle = L"Audient Device Closer",
+      .pszMainInstruction = L"A serious error occurred during startup.",
+      .pszContent = L"The program will close.",
+      .pszExpandedInformation = L"The details of the error could not be prepared.",
+      .pszExpandedControlText = L"Hide details",
+      .pszCollapsedControlText = L"Show details",
+  };
+  struct ov_error err = {0};
+  bool success = false;
+
+  if (!ov_error_to_string(report_err, &s, false, &err)) {
+    OV_ERROR_ADD_TRACE(&err);
+    goto cleanup;
+  }
+  if (OV_SNPRINTF(message, sizeof(message) / sizeof(message[0]), NULL, L"%1$hs", s) < 0) {
+    OV_ERROR_SET_GENERIC(&err, ov_error_generic_fail);
+    goto cleanup;
+  }
+  cfg.pszContent = message;
+
+  if (!ov_error_to_string(report_err, &s, true, &err)) {
+    OV_ERROR_ADD_TRACE(&err);
+    goto cleanup;
+  }
+  if (OV_SNPRINTF(details, sizeof(details) / sizeof(details[0]), NULL, L"%1$hs", s) < 0) {
+    OV_ERROR_SET_GENERIC(&err, ov_error_generic_fail);
+    goto cleanup;
+  }
+  cfg.pszExpandedInformation = details;
+
+  success = true;
+
+cleanup:
+  if (TaskDialogIndirect(&cfg, NULL, NULL, NULL) != S_OK) {
+    MessageBoxW(NULL, cfg.pszContent, cfg.pszWindowTitle, MB_OK | MB_ICONWARNING);
+  }
+  if (s != NULL) {
+    OV_ARRAY_DESTROY(&s);
+  }
+  OV_ERROR_DESTROY(report_err);
+  if (!success) {
+    // The error has no destination here, so it is discarded.
+    OV_ERROR_DESTROY(&err);
+  }
+}
+
+/**
  * @brief Start the program: read the settings and open the window
  *
  * @param hInstance unused
@@ -88,14 +160,15 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
     return 2;
   }
   logger_init();
-  {
-    // a log that cannot be opened is worth a report and nothing more: without it the
-    // summaries of everything below simply have nowhere to go
-    struct ov_error log_err = {0};
-
-    if (!logger_open(&log_err)) {
-      OV_ERROR_REPORT(&log_err, NULL);
-    }
+  // the installer leaves the folder it installed into on the machine, and the copy that
+  // runs from that folder is the one a task may run as the system.  The answer is wanted
+  // before the log is opened: it decides where the log goes.
+  if (!install_init(&err)) {
+    report_startup_error(&err);
+    goto cleanup;
+  }
+  if (!logger_open(&err)) {
+    OV_ERROR_REPORT(&err, NULL);
   }
 
   // the copy that finds the mutex taken is a second start: it shows the window that is
@@ -118,12 +191,8 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
     OV_ERROR_REPORT(&err, NULL);
   }
 
-  {
-    struct ov_error mo_err = {0};
-
-    mo = mo_parse_from_resource(GetModuleHandleW(NULL), &mo_err);
-    OV_ERROR_REPORT(&mo_err, NULL);
-  }
+  mo = mo_parse_from_resource(GetModuleHandleW(NULL), &err);
+  OV_ERROR_REPORT(&err, NULL);
   if (mo != NULL) {
     mo_set_default(mo);
   }

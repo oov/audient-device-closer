@@ -854,12 +854,12 @@ static void test_result_dialog_lines_differ(void) {
                                                  REPAIR_OUTCOME_VETOED,
                                                  REPAIR_OUTCOME_FAILED,
                                                  REPAIR_OUTCOME_UNKNOWN};
-  static enum removal_error_code const removal_errors[] = {removal_error_none,
-                                                           removal_error_access_denied,
-                                                           removal_error_device_gone,
-                                                           removal_error_call_failed,
-                                                           removal_error_veto,
-                                                           removal_error_refused};
+  static enum app_error_code const removal_errors[] = {removal_error_none,
+                                                       removal_error_access_denied,
+                                                       removal_error_device_gone,
+                                                       removal_error_call_failed,
+                                                       removal_error_veto,
+                                                       removal_error_refused};
   size_t i = 0;
   size_t k = 0;
 

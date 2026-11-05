@@ -253,6 +253,19 @@ static void test_a_task_needs_a_folder_and_a_name(void) {
   }
 }
 
+/**
+ * @brief The task is refused when this copy is not the one the installer put here
+ *
+ * The refusal has to come before the scheduler is reached: a test runs without an elevation
+ * and without a scheduler, so a gate that touched either would fail for another reason.
+ */
+static void test_registration_needs_the_installed_copy(void) {
+  struct ov_error err = {0};
+  struct settings const settings = {.task_dir = L"AudientDeviceCloser", .task_name = L"Device recovery after resume from sleep"};
+
+  TEST_FAILED_WITH(task_install(&settings, true, false, &err), &err, ov_error_type_app, task_error_not_installed);
+}
+
 TEST_LIST = {
     {"arguments_carry_the_switches", test_arguments_carry_the_switches_only},
     {"arguments_carry_both_boxes", test_arguments_carry_both_boxes},
@@ -262,5 +275,6 @@ TEST_LIST = {
     {"xml_describes_the_task", test_xml_describes_what_the_task_is_for},
     {"xml_takes_the_description", test_xml_takes_the_description_it_is_given},
     {"a_task_needs_a_folder_and_a_name", test_a_task_needs_a_folder_and_a_name},
+    {"registration_needs_the_installed_copy", test_registration_needs_the_installed_copy},
     {NULL, NULL},
 };

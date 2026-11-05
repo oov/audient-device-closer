@@ -3,7 +3,6 @@
 #include <windows.h>
 
 #include <shlobj.h>
-#include <shlwapi.h>
 #include <string.h>
 #include <wchar.h>
 
@@ -21,8 +20,8 @@
  */
 NODISCARD wchar_t *paths_executable(struct ov_error *const err) {
   wchar_t *result = NULL;
-  // PathRelativePathToW, which paths_is_in_program_files compares through, refuses a path
-  // of MAX_PATH or more, so a longer one could not be followed through the program anyway.
+  // GetModuleFileNameW fills a buffer of this size; a longer path leaves the buffer full
+  // to the end, and the check below refuses that answer.
   wchar_t self[MAX_PATH];
   DWORD len = 0;
 
@@ -79,94 +78,118 @@ bool paths_file_name_matches(wchar_t const *const path, wchar_t const *const nam
 }
 
 /**
- * @brief Is a path inside a folder
+ * @brief Read the identity the file system gives a folder
  *
- * The comparison is the one of the system, not of the strings.
+ * The identity is the one the system compares, so two spellings of one folder give the same
+ * answer and a copy of the folder elsewhere does not.
  *
- * @param folder the folder to look inside
- * @param path the path to look at
- * @param err receives the failure of the comparison
- * @return ov_true when path names a file under folder, ov_false when it does not,
- *         ov_indeterminate when the two could not be compared, with err set
+ * @param path the folder to open
+ * @param out receives the identity
+ * @param err receives the failure of the open or of the read
+ * @return false when the identity could not be read
  */
-static NODISCARD ov_tribool is_inside_folder(wchar_t const *const folder, wchar_t const *const path, struct ov_error *const err) {
-  wchar_t relative[MAX_PATH];
+static NODISCARD bool folder_identity(wchar_t const *const path, FILE_ID_INFO *const out, struct ov_error *const err) {
+  HANDLE const h = CreateFileW(path,
+                               FILE_READ_ATTRIBUTES,
+                               FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                               NULL,
+                               OPEN_EXISTING,
+                               FILE_FLAG_BACKUP_SEMANTICS,
+                               NULL);
+  bool success = false;
 
-  // PathRelativePathToW refuses both paths beyond MAX_PATH
-  if ((wcslen(folder) >= MAX_PATH) || (wcslen(path) >= MAX_PATH)) {
-    OV_ERROR_SET(err, ov_error_type_generic, ov_error_generic_fail, gettext("The path is too long to compare"));
-    return ov_indeterminate;
+  if (h == INVALID_HANDLE_VALUE) {
+    OV_ERROR_SET_HRESULT(err, HRESULT_FROM_WIN32(GetLastError()));
+    return false;
   }
-  if (!PathRelativePathToW(relative, folder, FILE_ATTRIBUTE_DIRECTORY, path, 0)) {
-    return ov_false;
+  success = GetFileInformationByHandleEx(h, FileIdInfo, out, sizeof(*out)) != 0;
+  if (!success) {
+    OV_ERROR_SET_HRESULT(err, HRESULT_FROM_WIN32(GetLastError()));
   }
-  return ((relative[0] == L'.') && (relative[1] == L'.')) ? ov_false : ov_true;
+  CloseHandle(h);
+  return success;
 }
 
-/**
- * @brief Look up one known folder and ask whether the path is inside it
- *
- * @param id the known folder to look up
- * @param path the path to look at
- * @param err receives the failure of the lookup
- * @return ov_true when path is inside the folder, ov_false when it is not,
- *         ov_indeterminate when the answer could not be worked out, with err set
- */
-static NODISCARD ov_tribool folder_holds(KNOWNFOLDERID const *const id, wchar_t const *const path, struct ov_error *const err) {
-  ov_tribool result = ov_indeterminate;
-  wchar_t *folder = NULL;
-  HRESULT const hr = SHGetKnownFolderPath(id, 0, NULL, &folder);
-  if (FAILED(hr)) {
-    OV_ERROR_SET_HRESULT(err, hr);
-    goto cleanup;
+NODISCARD ov_tribool paths_same_directory(wchar_t const *const a, wchar_t const *const b, struct ov_error *const err) {
+  FILE_ID_INFO ida;
+  FILE_ID_INFO idb;
+
+  if ((a == NULL) || (b == NULL)) {
+    OV_ERROR_SET_GENERIC(err, ov_error_generic_invalid_argument);
+    return ov_indeterminate;
   }
-  if (folder == NULL) {
-    OV_ERROR_SET_GENERIC(err, ov_error_generic_unexpected);
-    goto cleanup;
-  }
-  result = is_inside_folder(folder, path, err);
-  if (result == ov_indeterminate) {
+  if (!folder_identity(a, &ida, err)) {
+    if (ov_error_is(err, ov_error_type_hresult, HRESULT_FROM_WIN32(ERROR_FILE_NOT_FOUND)) ||
+        ov_error_is(err, ov_error_type_hresult, HRESULT_FROM_WIN32(ERROR_PATH_NOT_FOUND))) {
+      OV_ERROR_DESTROY(err); // nothing of that name is not the same folder
+      return ov_false;
+    }
     OV_ERROR_ADD_TRACE(err);
-    goto cleanup;
-  }
-
-cleanup:
-  if (folder != NULL) {
-    CoTaskMemFree(folder);
-  }
-  return result;
-}
-
-NODISCARD ov_tribool paths_is_in_program_files(wchar_t const *const exe_path, struct ov_error *const err) {
-  if (exe_path == NULL) {
-    OV_ERROR_SET_GENERIC(err, ov_error_generic_invalid_argument);
     return ov_indeterminate;
   }
+  if (!folder_identity(b, &idb, err)) {
+    if (ov_error_is(err, ov_error_type_hresult, HRESULT_FROM_WIN32(ERROR_FILE_NOT_FOUND)) ||
+        ov_error_is(err, ov_error_type_hresult, HRESULT_FROM_WIN32(ERROR_PATH_NOT_FOUND))) {
+      OV_ERROR_DESTROY(err);
+      return ov_false;
+    }
+    OV_ERROR_ADD_TRACE(err);
+    return ov_indeterminate;
+  }
+  return (ida.VolumeSerialNumber == idb.VolumeSerialNumber &&
+          memcmp(ida.FileId.Identifier, idb.FileId.Identifier, sizeof(ida.FileId.Identifier)) == 0)
+             ? ov_true
+             : ov_false;
+}
 
-  ov_tribool ret = ov_indeterminate;
+NODISCARD wchar_t *paths_final_path(wchar_t const *const path, struct ov_error *const err) {
+  wchar_t *result = NULL;
+  HANDLE h = INVALID_HANDLE_VALUE;
+  DWORD needed = 0;
+  bool success = false;
 
-  // is_inside_folder compares with PathRelativePathToW, which refuses MAX_PATH and beyond
-  if (wcslen(exe_path) >= MAX_PATH) {
+  if (path == NULL) {
     OV_ERROR_SET_GENERIC(err, ov_error_generic_invalid_argument);
+    return NULL;
+  }
+  h = CreateFileW(path, FILE_READ_ATTRIBUTES, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL, OPEN_EXISTING, 0, NULL);
+  if (h == INVALID_HANDLE_VALUE) {
+    OV_ERROR_SET_HRESULT(err, HRESULT_FROM_WIN32(GetLastError()));
     goto cleanup;
   }
-
-  static KNOWNFOLDERID const *const folders[] = {&FOLDERID_ProgramFiles, &FOLDERID_ProgramFilesX86};
-  for (size_t i = 0; i < (sizeof(folders) / sizeof(folders[0])); i++) {
-    ov_tribool const holds = folder_holds(folders[i], exe_path, err);
-
-    if (holds == ov_indeterminate) {
-      OV_ERROR_ADD_TRACE(err);
-      goto cleanup;
-    }
-    if (holds == ov_true) {
-      ret = ov_true;
-      goto cleanup;
-    }
+  needed = GetFinalPathNameByHandleW(h, NULL, 0, FILE_NAME_NORMALIZED | VOLUME_NAME_DOS);
+  if (needed == 0) {
+    OV_ERROR_SET_HRESULT(err, HRESULT_FROM_WIN32(GetLastError()));
+    goto cleanup;
   }
-  ret = ov_false;
+  if (!OV_ARRAY_GROW(&result, (size_t)needed + 1)) {
+    OV_ERROR_SET_GENERIC(err, ov_error_generic_out_of_memory);
+    goto cleanup;
+  }
+  needed = GetFinalPathNameByHandleW(h, result, needed + 1, FILE_NAME_NORMALIZED | VOLUME_NAME_DOS);
+  if (needed == 0) {
+    OV_ERROR_SET_HRESULT(err, HRESULT_FROM_WIN32(GetLastError()));
+    goto cleanup;
+  }
+  OV_ARRAY_SET_LENGTH(result, needed);
+  // the prefix the API puts in front of the path is no use to the command line it is written
+  // into, and a share comes as \\?\UNC\server\share
+  if (wcsncmp(result, L"\\\\?\\UNC\\", 8) == 0) {
+    memmove(result + 2, result + 8, (wcslen(result + 8) + 1) * sizeof(result[0]));
+  } else if (wcsncmp(result, L"\\\\?\\", 4) == 0) {
+    memmove(result, result + 4, (wcslen(result + 4) + 1) * sizeof(result[0]));
+  }
+  OV_ARRAY_SET_LENGTH(result, wcslen(result));
+  success = true;
+
 cleanup:
-  return ret;
+  if (h != INVALID_HANDLE_VALUE) {
+    CloseHandle(h);
+  }
+  if (!success && (result != NULL)) {
+    OV_ARRAY_DESTROY(&result);
+  }
+  return success ? result : NULL;
 }
 
 NODISCARD wchar_t *paths_log_folder(struct ov_error *const err) {

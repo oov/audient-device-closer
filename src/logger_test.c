@@ -139,52 +139,42 @@ static void test_trim_size(void) {
 }
 
 /**
- * @brief The log path: next to the executable, same name with the extension replaced
+ * @brief The log path: next to a portable copy, in the machine folder for an installed one
  *
- * A copy in Program Files is the exception: the log of an installed copy goes into the
- * machine-wide application data folder, because the account that repairs the device may be the
- * one the task scheduler started rather than the person reading the answer afterwards.
+ * The installed copy goes into the machine-wide application data folder, because the account
+ * that repairs the device may be the one the task scheduler started rather than the person
+ * reading the answer afterwards.
  */
 static void test_path_for_exe(void) {
   struct ov_error err = {0};
   wchar_t const *const installed_leaf = L"\\AudientDeviceCloser\\audient-device-closer.log";
   size_t const installed_leaf_len = wcslen(installed_leaf);
-  wchar_t *program_files = NULL;
-  wchar_t *installed_exe = NULL;
   wchar_t *p = NULL;
 
   TEST_CASE("a portable copy keeps its log next to itself");
-  p = path_for_exe(L"C:\\dir\\audient-device-closer.exe", &err);
+  p = path_for_exe(false, L"C:\\dir\\audient-device-closer.exe", &err);
   if (TEST_CHECK(p != NULL)) {
     TEST_CHECK(wcscmp(p, L"C:\\dir\\audient-device-closer.log") == 0);
     OV_ARRAY_DESTROY(&p);
   }
-  p = path_for_exe(L"C:\\dir\\my.tool\\app", &err);
+  p = path_for_exe(false, L"C:\\dir\\my.tool\\app", &err);
   if (TEST_CHECK(p != NULL)) {
     TEST_CHECK(wcscmp(p, L"C:\\dir\\my.tool\\app.log") == 0);
     OV_ARRAY_DESTROY(&p);
   }
-  p = path_for_exe(L"C:\\a.b.c\\d.e.exe", &err);
+  p = path_for_exe(false, L"C:\\a.b.c\\d.e.exe", &err);
   if (TEST_CHECK(p != NULL)) {
     TEST_CHECK(wcscmp(p, L"C:\\a.b.c\\d.e.log") == 0);
     OV_ARRAY_DESTROY(&p);
   }
-  p = path_for_exe(L"relative.exe", &err);
+  p = path_for_exe(false, L"relative.exe", &err);
   if (TEST_CHECK(p != NULL)) {
     TEST_CHECK(wcscmp(p, L"relative.log") == 0);
     OV_ARRAY_DESTROY(&p);
   }
 
   TEST_CASE("an installed copy writes into the machine-wide application data");
-  if (FAILED(SHGetKnownFolderPath(&FOLDERID_ProgramFiles, 0, NULL, &program_files)) || (program_files == NULL)) {
-    TEST_SKIP("want the Program Files folder of this machine");
-    goto cleanup;
-  }
-  if (!TEST_SUCCEEDED(ov_sprintf_wchar(&installed_exe, &err, NULL, L"%ls\\AudientDeviceCloser\\audient-device-closer.exe", program_files),
-                      &err)) {
-    goto cleanup;
-  }
-  p = path_for_exe(installed_exe, &err);
+  p = path_for_exe(true, L"C:\\dir\\audient-device-closer.exe", &err);
   if (!TEST_SUCCEEDED(p != NULL, &err)) {
     TEST_MSG("want a path, got NULL");
     goto cleanup;
@@ -193,16 +183,14 @@ static void test_path_for_exe(void) {
     size_t const n = wcslen(p);
     TEST_CHECK(n > installed_leaf_len);
     TEST_CHECK(wcscmp(&p[n - installed_leaf_len], installed_leaf) == 0);
+    TEST_MSG("want a path that ends with %ls, got %ls", installed_leaf, p);
     OV_ARRAY_DESTROY(&p);
   }
 
   TEST_CASE("the arguments may be absent");
-  TEST_FAILED_WITH(path_for_exe(NULL, &err), &err, ov_error_type_generic, ov_error_generic_invalid_argument);
+  TEST_FAILED_WITH(path_for_exe(false, NULL, &err), &err, ov_error_type_generic, ov_error_generic_invalid_argument);
+
 cleanup:
-  CoTaskMemFree(program_files);
-  if (installed_exe != NULL) {
-    OV_ARRAY_DESTROY(&installed_exe);
-  }
   if (p != NULL) {
     OV_ARRAY_DESTROY(&p);
   }
@@ -242,7 +230,7 @@ static void test_write_to_file(void) {
   if (!TEST_SUCCEEDED(exe != NULL, &err)) {
     goto cleanup;
   }
-  path = path_for_exe(exe, &err);
+  path = path_for_exe(false, exe, &err);
   if (!TEST_SUCCEEDED(path != NULL, &err)) {
     goto cleanup;
   }
@@ -303,7 +291,7 @@ static NODISCARD bool read_log_file(char **const out_text, struct ov_error *cons
   if (!TEST_CHECK(exe != NULL)) {
     goto cleanup;
   }
-  path = path_for_exe(exe, err);
+  path = path_for_exe(false, exe, err);
   if (!TEST_CHECK(path != NULL)) {
     goto cleanup;
   }
@@ -501,7 +489,7 @@ static void test_trim_on_write(void) {
     TEST_SUCCEEDED(logger_close(&err), &err);
   }
   exe = paths_executable(&err);
-  path = (exe != NULL) ? path_for_exe(exe, &err) : NULL;
+  path = (exe != NULL) ? path_for_exe(false, exe, &err) : NULL;
   if (!TEST_CHECK(path != NULL)) {
     goto cleanup;
   }

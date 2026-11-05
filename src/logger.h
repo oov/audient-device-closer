@@ -3,9 +3,11 @@
 #include <ovbase.h>
 
 /**
- * The log lives next to the executable, under the same name with the extension replaced:
- * audient-device-closer.exe -> audient-device-closer.log.  It is the one file this program
- * writes, and it exists so that a failure that only reaches the log leaves a trace at all.
+ * A portable copy keeps the log next to the executable, under the same name with the
+ * extension replaced: audient-device-closer.exe -> audient-device-closer.log.  An installed
+ * copy keeps it in the machine-wide application data folder, under the same name.  It is the
+ * one file this program writes, and it exists so that a failure that only reaches the log
+ * leaves a trace at all.
  *
  * One record is one physical line, tab separated, in this order:
  *
@@ -18,7 +20,11 @@
  */
 
 /**
- * @brief Open the log next to the executable and trim it when it is already too big
+ * @brief Open the log of this copy and trim it when it is already too big
+ *
+ * The installed copy writes into the machine-wide application data folder, because the
+ * account that repairs the device may be the one the task scheduler started rather than the
+ * person reading the answer afterwards.  A portable copy writes next to itself.
  *
  * Without this call every write is a no-op, so a caller that does not want a log simply
  * skips it.  A second call is refused: the handle is owned until logger_close.

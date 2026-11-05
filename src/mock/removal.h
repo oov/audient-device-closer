@@ -9,7 +9,7 @@
  */
 struct removal_mock_script {
   size_t refusals;                    //!< how many removals are refused before one is let through
-  enum removal_error_code code;       //!< the code a refusal carries
+  enum app_error_code code;           //!< the code a refusal carries
   wchar_t const *vetoed_device;       //!< the device a veto names
   unsigned long delay_ms;             //!< how long the answer takes, milliseconds
   void (*on_success)(void *userdata); //!< called when a removal is let through, may be NULL

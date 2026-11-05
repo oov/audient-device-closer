@@ -13,6 +13,8 @@
 
 #include <wchar.h>
 
+#include "error.h"
+#include "install.h"
 #include "paths.h"
 #include "settings.h"
 
@@ -451,7 +453,9 @@ cleanup:
  * @brief Register the task of this program
  *
  * Registers the task, or overwrites the one that is already registered.  Fails only when
- * the system refuses the registration.
+ * the system refuses the registration, or when this copy is not the one the installer put
+ * on the machine: a task that runs a file anyone can replace would run it with the
+ * privileges of the system.  The second refusal is task_error_not_installed.
  *
  * @param settings the settings that name the task
  * @param close_mixer the box of the caller that allows closing the mixer
@@ -465,6 +469,7 @@ NODISCARD bool task_install(struct settings const *const settings,
                             bool const allow_audio_service_pause,
                             struct ov_error *const err) {
   wchar_t *exe = NULL;
+  wchar_t *command = NULL;
   wchar_t *args = NULL;
   wchar_t *xml = NULL;
   bool success = false;
@@ -473,8 +478,17 @@ NODISCARD bool task_install(struct settings const *const settings,
     OV_ERROR_SET_GENERIC(err, ov_error_generic_invalid_argument);
     return false;
   }
+  if (!install_is_installed()) {
+    OV_ERROR_SET(err, ov_error_type_app, task_error_not_installed, "the program is not the installed copy, so the task is not registered");
+    return false;
+  }
   exe = paths_executable(err);
   if (exe == NULL) {
+    OV_ERROR_ADD_TRACE(err);
+    goto cleanup;
+  }
+  command = paths_final_path(exe, err);
+  if (command == NULL) {
     OV_ERROR_ADD_TRACE(err);
     goto cleanup;
   }
@@ -483,7 +497,7 @@ NODISCARD bool task_install(struct settings const *const settings,
     OV_ERROR_ADD_TRACE(err);
     goto cleanup;
   }
-  xml = build_xml(exe, args, NULL, err);
+  xml = build_xml(command, args, NULL, err);
   if (xml == NULL) {
     OV_ERROR_ADD_TRACE(err);
     goto cleanup;
@@ -498,6 +512,10 @@ cleanup:
   if (args != NULL) {
     OV_ARRAY_DESTROY(&args);
     args = NULL;
+  }
+  if (command != NULL) {
+    OV_ARRAY_DESTROY(&command);
+    command = NULL;
   }
   if (exe != NULL) {
     OV_ARRAY_DESTROY(&exe);

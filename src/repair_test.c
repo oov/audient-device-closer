@@ -1165,7 +1165,7 @@ static void test_a_removal_that_failed_for_another_reason_stops_the_run(void) {
   TEST_CHECK_(outcome == REPAIR_OUTCOME_FAILED, "want the failed outcome, got %d", (int)outcome);
   TEST_CHECK_(r.removal_error == removal_error_access_denied, "want the code kept for the user, got %d", (int)r.removal_error);
   TEST_CHECK_(removal_mock_remove_count() == 1, "want no second attempt, got %zu removal(s)", removal_mock_remove_count());
-  TEST_FAILED_WITH(outcome != REPAIR_OUTCOME_FAILED, &err, ov_error_type_removal, removal_error_access_denied);
+  TEST_FAILED_WITH(outcome != REPAIR_OUTCOME_FAILED, &err, ov_error_type_app, removal_error_access_denied);
 
 cleanup:
   repair_result_release(&r);
@@ -1262,7 +1262,7 @@ static void test_a_failure_that_came_first_is_the_one_reported(void) {
   TEST_CHECK_(outcome == REPAIR_OUTCOME_FAILED, "want the failed outcome, got %d", (int)outcome);
   TEST_CHECK_(r.removal_error == removal_error_access_denied, "want the refusal kept for the user, got %d", (int)r.removal_error);
   TEST_CHECK_(r.failure == repair_failure_none, "want no later failure to take its place, got %d", (int)r.failure);
-  TEST_CHECK_(ov_error_is(&err, ov_error_type_removal, removal_error_access_denied), "want the reason the run stopped");
+  TEST_CHECK_(ov_error_is(&err, ov_error_type_app, removal_error_access_denied), "want the reason the run stopped");
   TEST_FAILED_WITH(outcome != REPAIR_OUTCOME_FAILED, &err, ov_error_type_generic, ov_error_generic_fail);
 cleanup:
   repair_result_release(&r);

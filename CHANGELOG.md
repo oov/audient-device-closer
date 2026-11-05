@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Register the scheduled task only from the installed copy, and keep the log of a portable copy next to the exe file
+
 ## 1.0.0rc3 2026-11-02
 
 - Support 16 Audient products

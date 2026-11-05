@@ -35,7 +35,7 @@ static bool remove_and_wait(wchar_t const *const devnode, struct ov_error *const
 static void test_remove_null(void) {
   struct ov_error err = {0};
 
-  TEST_FAILED_WITH(remove_and_wait(NULL, &err), &err, ov_error_type_removal, removal_error_refused);
+  TEST_FAILED_WITH(remove_and_wait(NULL, &err), &err, ov_error_type_app, removal_error_refused);
 }
 
 /**
@@ -44,7 +44,7 @@ static void test_remove_null(void) {
 static void test_remove_missing_devnode(void) {
   struct ov_error err = {0};
 
-  TEST_FAILED_WITH(remove_and_wait(L"adc-no-such-device", &err), &err, ov_error_type_removal, removal_error_call_failed);
+  TEST_FAILED_WITH(remove_and_wait(L"adc-no-such-device", &err), &err, ov_error_type_app, removal_error_call_failed);
 }
 
 /**
@@ -60,7 +60,7 @@ static void test_remove_refuses_a_long_devnode(void) {
     devnode[i] = L'x';
   }
   devnode[(sizeof(devnode) / sizeof(devnode[0])) - 1] = L'\0';
-  TEST_FAILED_WITH(remove_and_wait(devnode, &err), &err, ov_error_type_removal, removal_error_call_failed);
+  TEST_FAILED_WITH(remove_and_wait(devnode, &err), &err, ov_error_type_app, removal_error_call_failed);
 }
 
 /**
@@ -81,7 +81,7 @@ static void test_mock_answers_the_removal(void) {
 
   TEST_CASE("the first removal is refused as a veto");
   TEST_FAILED_WITH(
-      remove_and_wait(L"TUSBAUDIO_ENUM\\VID_2708&PID_0008&KS\\6&deadbee&0&2", &err), &err, ov_error_type_removal, removal_error_veto);
+      remove_and_wait(L"TUSBAUDIO_ENUM\\VID_2708&PID_0008&KS\\6&deadbee&0&2", &err), &err, ov_error_type_app, removal_error_veto);
   TEST_CHECK_(removal_mock_remove_count() == 1, "want one removal asked for, got %zu", removal_mock_remove_count());
 
   TEST_CASE("the second one goes through");
@@ -102,10 +102,8 @@ static void test_mock_refuses_for_another_reason(void) {
   struct ov_error err = {0};
 
   TEST_ASSERT(removal_mock_install(&denied));
-  TEST_FAILED_WITH(remove_and_wait(L"TUSBAUDIO_ENUM\\VID_2708&PID_0008&KS\\6&deadbee&0&2", &err),
-                   &err,
-                   ov_error_type_removal,
-                   removal_error_access_denied);
+  TEST_FAILED_WITH(
+      remove_and_wait(L"TUSBAUDIO_ENUM\\VID_2708&PID_0008&KS\\6&deadbee&0&2", &err), &err, ov_error_type_app, removal_error_access_denied);
   removal_mock_reset();
 }
 
@@ -120,10 +118,10 @@ static void test_error_is_veto(void) {
   struct ov_error denied = {0};
   struct ov_error generic = {0};
 
-  OV_ERROR_SET(&veto, ov_error_type_removal, removal_error_veto, "the removal was vetoed");
+  OV_ERROR_SET(&veto, ov_error_type_app, removal_error_veto, "the removal was vetoed");
   TEST_CHECK(removal_error_is_veto(&veto) == true);
 
-  OV_ERROR_SET(&denied, ov_error_type_removal, removal_error_access_denied, "not allowed");
+  OV_ERROR_SET(&denied, ov_error_type_app, removal_error_access_denied, "not allowed");
   TEST_CHECK(removal_error_is_veto(&denied) == false);
 
   OV_ERROR_SET_GENERIC(&generic, ov_error_generic_fail);
