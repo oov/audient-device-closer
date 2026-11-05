@@ -8,7 +8,6 @@ INSTALL_TOOLS=1
 REBUILD=0
 SKIP_TESTS=0
 SKIP_BUILD=0
-CREATE_ZIP=0
 CREATE_INSTALLER=0
 CMAKE_BUILD_TYPE=Release
 
@@ -28,10 +27,6 @@ while [[ $# -gt 0 ]]; do
       ;;
     -r | --rebuild)
       REBUILD=1
-      shift
-      ;;
-    -z | --zip)
-      CREATE_ZIP=1
       shift
       ;;
     -i | --installer)
@@ -222,19 +217,11 @@ extract_privileges() {
 # The privilege section exists for the installer alone, and the installer asks for
 # the elevation the release binary carries: a debug build never makes a dist, so
 # the extraction happens only when a package is asked for.
-if [ "${CREATE_ZIP}" -eq 1 ] || [ "${CREATE_INSTALLER}" -eq 1 ]; then
+if [ "${CREATE_INSTALLER}" -eq 1 ]; then
   distdir="${PWD}/build/${CMAKE_BUILD_TYPE}/dist"
   mkdir -p "${distdir}"
   extract_privileges "${PWD}/README.md" "${distdir}/PRIVILEGES.txt"
   extract_privileges "${PWD}/README-jp.md" "${distdir}/PRIVILEGES-jp.txt"
-fi
-
-if [ "${CREATE_ZIP}" -eq 1 ]; then
-  distdir="${PWD}/build/${CMAKE_BUILD_TYPE}/dist"
-  zippath="${distdir}/audient-device-closer_${ADC_VERSION:-dev}.zip"
-  rm -f "${zippath}"
-  (cd "${destdir}/bin" && cmake -E tar cf "${zippath}" --format=zip .)
-  echo "zip: ${zippath}"
 fi
 
 # The installer is compiled with the Inno Setup of the host: ISCC.exe sits in "Program

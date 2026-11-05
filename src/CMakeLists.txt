@@ -216,11 +216,10 @@ add_custom_command(TARGET adc POST_BUILD
   VERBATIM
 )
 # The readmes, the license and the agreement describe the program that sits in this folder,
-# so a build leaves them beside it: a folder taken away from a build explains itself, and the
-# zip made from this folder carries the papers the program is given with.  This is a rule of
-# its own rather than a post build step of the program, so that a changed document is copied
-# without relinking the program and the program is relinked without copying an unchanged
-# document.
+# so a build leaves them beside it: a folder taken away from a build explains itself.  This is
+# a rule of its own rather than a post build step of the program, so that a changed document
+# is copied without relinking the program and the program is relinked without copying an
+# unchanged document.
 set(adc_readmes "README.md" "README-jp.md" "LICENSE")
 set(adc_readme_inputs "")
 set(adc_readme_outputs "")

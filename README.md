@@ -37,7 +37,7 @@ If these explanations do not convince you, or you do not trust it, please stop u
 
 ## Getting Started
 
-Rather than installing it right away, first make sure the tool actually helps in your environment.
+Rather than registering the scheduled task right away, first make sure the tool actually helps in your environment.
 
 1. Reproduce the situation where no sound comes out after resuming from sleep.
 2. Start this tool.
@@ -46,7 +46,7 @@ Rather than installing it right away, first make sure the tool actually helps in
 5. Press the `Register the scheduled task` button so that the fix is applied automatically after resuming from sleep.  
 
 This tool writes the result of its work to a log file.  
-The zip version keeps the log next to the exe file, and the installer version keeps it in `C:\ProgramData\AudientDeviceCloser`.
+The log is kept in `C:\ProgramData\AudientDeviceCloser`.
 
 ## Usage
 
@@ -74,8 +74,7 @@ To run the device recovery automatically after the computer resumes from sleep, 
 
 #### Register the scheduled task
 
-Registers the application so that it runs automatically after the computer resumes from sleep.  
-For security reasons, this feature is available only in the installer version.
+Registers the application so that it runs automatically after the computer resumes from sleep.
 
 #### Remove the scheduled task
 
